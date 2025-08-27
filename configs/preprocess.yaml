@@ -1,0 +1,8 @@
+video_path: "/home/cizinsky/soccer_net/clips/modric_vs_ribberi.mp4"
+
+
+hydra:
+  run:
+    dir: /scratch/izar/cizinsky/thesis/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
+  job:
+    chdir: False
