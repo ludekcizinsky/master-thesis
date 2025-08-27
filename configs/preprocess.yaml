@@ -1,5 +1,9 @@
-video_path: "/home/cizinsky/soccer_net/clips/modric_vs_ribberi.mp4"
+scene_name: ???
+output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 
+frame_extraction:
+  video_path: /home/cizinsky/soccer_net/clips/modric_vs_ribberi.mp4
+  sample_fps: 24
 
 hydra:
   run:
