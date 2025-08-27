@@ -1,0 +1,3 @@
+[submodule "submodules/4D-Humans"]
+	path = submodules/4D-Humans
+	url = git@github.com:shubham-goel/4D-Humans.git
