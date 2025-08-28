@@ -33,4 +33,4 @@ def extract_frames(cfg):
         frame_idx += 1
     cap.release()
 
-    print(f"Saved {saved_idx} frames to {output_image_folder}")
+    print(f"--- FYI: Saved {saved_idx} frames to {output_image_folder}")
