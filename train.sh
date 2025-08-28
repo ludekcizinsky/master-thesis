@@ -10,3 +10,4 @@ python preprocess/run.py scene_name=modric_vs_ribberi frame_extraction.sample_fp
 
 
 # 3DGS training
+# todo: this

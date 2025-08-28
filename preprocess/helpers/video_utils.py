@@ -1,6 +1,8 @@
 import os
 import cv2
 
+from pathlib import Path
+
 
 def extract_frames(cfg):
 
@@ -34,3 +36,17 @@ def extract_frames(cfg):
     cap.release()
 
     print(f"--- FYI: Saved {saved_idx} frames to {output_image_folder}")
+
+def extract_frame_id(name: str) -> int:
+    return int(name.split("_")[1].split(".")[0])
+
+def load_images(img_dir: str):
+    img_dir = Path(img_dir)
+    img_dict = dict()
+
+    for img_fname in (list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))):
+        img = cv2.imread(str(img_fname))
+        fid = extract_frame_id(img_fname.name)
+        img_dict[fid] = img
+
+    return img_dict

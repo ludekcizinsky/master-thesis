@@ -18,3 +18,8 @@ bash train.sh
 ```
 
 
+## TODOs
+
+Preprocessing:
+
+- [] PHALP assumed F=5000 when projecting 3D points to 2D, how does that affect the results?

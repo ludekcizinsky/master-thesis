@@ -3,6 +3,7 @@ import joblib
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from hydra.core.global_hydra import GlobalHydra
 from hydra import initialize, compose
@@ -11,6 +12,9 @@ import torch
 from pytorch3d.transforms import matrix_to_axis_angle
 
 from pycocotools import mask as mask_utils
+
+
+from preprocess.helpers.video_utils import extract_frame_id, load_images
 
 
 def run_human4d(cfg):
@@ -40,10 +44,15 @@ def run_human4d(cfg):
 def visualise_human4d(cfg):
 
     # 0. Load dataset
-    human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images_jpg.pkl")
-    assert human4d_resfile.exists(), f"Visualing of humans4d failed. Did not find the resulting file {str(human4d_resfile)}"
+    human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images.pkl")
+    os.path.exists(human4d_resfile), f"Visualing of humans4d failed. Did not find the resulting file {str(human4d_resfile)}"
     h4d_results = load_human4d_results(human4d_resfile)
     print("--- FYI: Loaded Human4D results")
+
+    img_dir = os.path.join(cfg.output_dir, "preprocess", "images")
+    img_dict = load_images(img_dir)
+
+    # TODO: continue here
 
 
 def phalp_smpl2op(smpl_joints):
@@ -107,24 +116,28 @@ def get_op_joints(v, person_track_id):
 
     return j2d
 
-def rotmat_to_axisangle(R: torch.Tensor) -> np.ndarray:
+def rotmat_to_axisangle(R: np.ndarray) -> np.ndarray:
     """
     Convert rotation matrices to axis-angle (Rodrigues) vectors.
     Args:
-        R: (..., 3, 3) tensor of rotation matrices (e.g., (N,3,3)).
+        R: (..., 3, 3) array of rotation matrices (e.g., (N,3,3)).
     Returns:
-        rotvec: (..., 3) tensor of axis-angle vectors.
+        rotvec: (..., 3) array of axis-angle vectors.
     """
+
+    R = torch.tensor(R, dtype=torch.float32)
     if R.shape[-2:] != (3, 3):
         raise ValueError(f"Expected (...,3,3) rotation matrices, got {R.shape}")
     return matrix_to_axis_angle(R).numpy()
 
-def get_smpl_params(smpl_estimation):
+def get_smpl_params(v, i):
 
+
+    smpl_estimation = v['smpl'][i]
     global_orient = rotmat_to_axisangle(smpl_estimation['global_orient']).reshape(-1)
     body_pose = rotmat_to_axisangle(smpl_estimation['body_pose']).reshape(-1)
     beta = smpl_estimation['betas']
-    transl = smpl_estimation['transl']
+    transl = v['camera'][i] 
 
     smpl_param = np.concatenate([
         np.ones(1, dtype=np.float32),
@@ -145,6 +158,10 @@ def load_human4d_results(path_to_results):
 
     Returns:
         dict: a dictionary containing the tracking results
+    
+    Notes:
+        See in detail the phalp result file structure here:
+        https://github.com/brjathu/PHALP?tab=readme-ov-file#output-pkl-structure
     """
 
     # Load the tracking results from phalp (tracking ids, poses etc.)
@@ -161,8 +178,6 @@ def load_human4d_results(path_to_results):
     for pid in tracked_ids:
         track_res[pid] = dict()
 
-    extract_frame_id = lambda name: int(name.split("_")[1].split(".")[0])
-
     for k in sorted(list(phalp_res.keys())):
         v = phalp_res[k]
         frame_id = extract_frame_id(Path(k).name)
@@ -175,8 +190,7 @@ def load_human4d_results(path_to_results):
             mask = mask_utils.decode(v['mask'][i][0])
 
             # Extract SMPL estimates
-            smpl_estimation = v['smpl'][i]
-            smpl_param = get_smpl_params(smpl_estimation)
+            smpl_param = get_smpl_params(v, i)
 
             # Save the results
             track_res[pid][frame_id] = dict(
