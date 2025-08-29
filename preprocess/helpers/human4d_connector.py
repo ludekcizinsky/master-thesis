@@ -1,25 +1,25 @@
 import os
-import cv2
 import joblib
 from pathlib import Path
 
 import numpy as np
-from tqdm import tqdm
 
 from hydra.core.global_hydra import GlobalHydra
 from hydra import initialize, compose
 
 import torch
 from pytorch3d.transforms import matrix_to_axis_angle
-import supervision as sv
 
 from pycocotools import mask as mask_utils
 
-from preprocess.helpers.pose import OP19_SKELETON_1B, xywh_to_xyxy, op25_to_op19
-from preprocess.helpers.video_utils import extract_frame_id, load_images, frames_to_video
+from preprocess.helpers.pose import op25_to_op19
+from preprocess.helpers.video_utils import extract_frame_id
 
+# TODO: some of this adapted from GTU
 
 def run_human4d(cfg):
+    os.makedirs(f"{cfg.output_dir}/phalp_v2", exist_ok=True)
+
     # Import registers the submodule's ConfigStore entries
     import submodules.humans4d.track as track  # exposes HMR2_4dhuman or similar
 
@@ -42,81 +42,6 @@ def run_human4d(cfg):
     tracker = track.HMR2_4dhuman(composed)
     tracker.track()
 
-
-def visualise_human4d(cfg):
-
-    human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images.pkl")
-    os.path.exists(human4d_resfile), f"Visualing of humans4d failed. Did not find the resulting file {str(human4d_resfile)}"
-    h4d_results = load_human4d_results(human4d_resfile)
-    print("--- FYI: Loaded Human4D results")
-
-    img_dir = os.path.join(cfg.output_dir, "preprocess", "images")
-    img_dict = load_images(img_dir)
-    print("--- FYI: Loaded images")
-
-    edge_annotator   = sv.EdgeAnnotator(thickness=2, edges=OP19_SKELETON_1B, color=sv.Color.BLUE)
-    vertex_annotator = sv.VertexAnnotator(radius=5, color=sv.Color.GREEN)
-    box_annotator    = sv.BoxAnnotator(thickness=2)
-    label_annotator = sv.LabelAnnotator(text_position=sv.Position.TOP_LEFT)
-    mask_annotator = sv.MaskAnnotator()
-
-    for fid, frame_results in tqdm(h4d_results.items()):
-        bboxes = []
-        pids = []
-        joints = []
-        masks = []
-        for pid, frame_res in frame_results.items():
-            bboxes.append(frame_res['bbox'])
-            pids.append(pid)
-            joints.append(frame_res['phalp_j2ds'])
-            masks.append(frame_res['phalp_mask'])
-        img = img_dict[fid]
-        bboxes = np.stack(bboxes)
-        joints_arr = np.stack(joints)  # (P, 25, 2)
-        op19_joints = op25_to_op19(joints_arr)
-        xyxy_bboxes = xywh_to_xyxy(bboxes)
-        masks_arr = np.stack(masks).astype(bool)  # (P, H, W)
-        pids = np.array(pids)
-
-        if len(bboxes) > 0:
-
-            det = sv.Detections(xyxy=xyxy_bboxes, class_id=pids, mask=masks_arr)
-
-            img = box_annotator.annotate(
-                scene=img,
-                detections=det,
-            )
-            img = label_annotator.annotate(
-                scene=img,
-                detections=det,
-            )
-            img = mask_annotator.annotate(
-                scene=img,
-                detections=det,
-            )
-
-        if len(joints_arr) > 0:
-            kps = sv.KeyPoints(xy=op19_joints, class_id=pids)
-
-            img = edge_annotator.annotate(
-                scene=img,
-                key_points=kps,
-            )
-            img = vertex_annotator.annotate(
-                scene=img,
-                key_points=kps,
-            )
-
-        img_dict[fid] = img
-
-    # Save annotated images
-    frames_dir = os.path.join(cfg.output_dir, "visualizations", "tracking", "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-    for fid, img in img_dict.items():
-        cv2.imwrite(os.path.join(frames_dir, f"frame_{fid:05d}.png"), img)
-
-    output_file = os.path.join(cfg.output_dir, "visualizations", "tracking", "video.mp4")
-    frames_to_video(frames_dir, output_file, framerate=12)
 
 def phalp_smpl2op(smpl_joints):
     """
@@ -185,7 +110,6 @@ def rotmat_to_axisangle(R: np.ndarray) -> np.ndarray:
 
 def get_smpl_params(v, i):
 
-
     smpl_estimation = v['smpl'][i]
     global_orient = rotmat_to_axisangle(smpl_estimation['global_orient']).reshape(-1)
     body_pose = rotmat_to_axisangle(smpl_estimation['body_pose']).reshape(-1)
@@ -236,6 +160,7 @@ def load_human4d_results(path_to_results):
         for _, pid in enumerate(v['tracked_ids']):
             # Extract Open Pose joints (Body-25)
             j2d = get_op_joints(v, pid)
+            j2d = op25_to_op19(j2d)
 
             # Extract mask for the given human
             i = v['tid'].index(pid)

@@ -8,7 +8,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../subm
 from omegaconf import DictConfig
 
 from preprocess.helpers.video_utils import extract_frames
-from preprocess.helpers.human4d_connector import run_human4d, visualise_human4d
+from preprocess.helpers.human4d_connector import run_human4d, load_human4d_results
+from preprocess.helpers.visualise import visualise_human4d
+from utils.io import save_frame_map_jsonl_with_masks
 
 
 @hydra.main(config_path="../configs", config_name="preprocess.yaml", version_base=None)
@@ -24,12 +26,25 @@ def main(cfg: DictConfig):
 
     # Step 2 / Human Tracking
     print("ℹ️  Start of human tracking")
-    # os.makedirs(f"{cfg.output_dir}/phalp_v2", exist_ok=True)
     #run_human4d(cfg)
+    # Load the raw results from the tracker
+    print("✅ Human tracking completed.\n")
+
+    # Step 3 / Save Frame Map
+    print("ℹ️  Start of saving frame map")
+    human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images.pkl")
+    humand4d_results = load_human4d_results(human4d_resfile) 
+    save_frame_map_jsonl_with_masks(
+        humand4d_results,
+        f"{cfg.output_dir}/preprocess/frame_map.jsonl",
+        f"{cfg.output_dir}/preprocess/masks"
+    )
+    print("✅ Frame map saving completed.\n")
+
+    # Step 4 / Visualization
+    print("ℹ️  Start of visualization")
     visualise_human4d(cfg)
-    print("✅ Human tracking completed.")
-
-
+    print("✅ Visualization completed.")
 
 
 if __name__ == "__main__":
