@@ -110,12 +110,12 @@ def visualise_human4d(cfg):
         img_dict[fid] = img
 
     # Save annotated images
-    frames_dir = os.path.join(cfg.output_dir, "visualizations", "box_and_pose", "frames")
+    frames_dir = os.path.join(cfg.output_dir, "visualizations", "tracking", "frames")
     os.makedirs(frames_dir, exist_ok=True)
     for fid, img in img_dict.items():
         cv2.imwrite(os.path.join(frames_dir, f"frame_{fid:05d}.png"), img)
 
-    output_file = os.path.join(cfg.output_dir, "visualizations", "box_and_pose", "video.mp4")
+    output_file = os.path.join(cfg.output_dir, "visualizations", "tracking", "video.mp4")
     frames_to_video(frames_dir, output_file, framerate=12)
 
 def phalp_smpl2op(smpl_joints):
