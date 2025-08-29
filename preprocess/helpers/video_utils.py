@@ -1,6 +1,6 @@
 import os
 import cv2
-
+import subprocess
 from pathlib import Path
 
 
@@ -50,3 +50,15 @@ def load_images(img_dir: str):
         img_dict[fid] = img
 
     return img_dict
+
+
+def frames_to_video(frames_dir, output_file, framerate=24):
+    command = [
+        "ffmpeg",
+        "-framerate", str(framerate),
+        "-i", f"{frames_dir}/frame_%05d.png",  # matches frame_00000.png, frame_00001.png...
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_file
+    ]
+    subprocess.run(command, check=True)

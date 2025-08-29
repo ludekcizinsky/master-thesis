@@ -16,7 +16,7 @@ import supervision as sv
 from pycocotools import mask as mask_utils
 
 from preprocess.helpers.pose import OP19_SKELETON_1B, xywh_to_xyxy, op25_to_op19
-from preprocess.helpers.video_utils import extract_frame_id, load_images
+from preprocess.helpers.video_utils import extract_frame_id, load_images, frames_to_video
 
 
 def run_human4d(cfg):
@@ -58,31 +58,39 @@ def visualise_human4d(cfg):
     vertex_annotator = sv.VertexAnnotator(radius=5, color=sv.Color.GREEN)
     box_annotator    = sv.BoxAnnotator(thickness=2)
     label_annotator = sv.LabelAnnotator(text_position=sv.Position.TOP_LEFT)
+    mask_annotator = sv.MaskAnnotator()
 
     for fid, frame_results in tqdm(h4d_results.items()):
         bboxes = []
         pids = []
         joints = []
+        masks = []
         for pid, frame_res in frame_results.items():
             bboxes.append(frame_res['bbox'])
             pids.append(pid)
             joints.append(frame_res['phalp_j2ds'])
+            masks.append(frame_res['phalp_mask'])
         img = img_dict[fid]
         bboxes = np.stack(bboxes)
         joints_arr = np.stack(joints)  # (P, 25, 2)
         op19_joints = op25_to_op19(joints_arr)
         xyxy_bboxes = xywh_to_xyxy(bboxes)
+        masks_arr = np.stack(masks).astype(bool)  # (P, H, W)
         pids = np.array(pids)
 
         if len(bboxes) > 0:
 
-            det = sv.Detections(xyxy=xyxy_bboxes, class_id=pids)
+            det = sv.Detections(xyxy=xyxy_bboxes, class_id=pids, mask=masks_arr)
 
             img = box_annotator.annotate(
                 scene=img,
                 detections=det,
             )
             img = label_annotator.annotate(
+                scene=img,
+                detections=det,
+            )
+            img = mask_annotator.annotate(
                 scene=img,
                 detections=det,
             )
@@ -101,12 +109,14 @@ def visualise_human4d(cfg):
 
         img_dict[fid] = img
 
-
     # Save annotated images
-    output_dir = os.path.join(cfg.output_dir, "visualizations", "box_and__pose", "frames")
-    os.makedirs(output_dir, exist_ok=True)
+    frames_dir = os.path.join(cfg.output_dir, "visualizations", "box_and_pose", "frames")
+    os.makedirs(frames_dir, exist_ok=True)
     for fid, img in img_dict.items():
-        cv2.imwrite(os.path.join(output_dir, f"frame_{fid:04d}.png"), img)
+        cv2.imwrite(os.path.join(frames_dir, f"frame_{fid:05d}.png"), img)
+
+    output_file = os.path.join(cfg.output_dir, "visualizations", "box_and_pose", "video.mp4")
+    frames_to_video(frames_dir, output_file, framerate=12)
 
 def phalp_smpl2op(smpl_joints):
     """
