@@ -15,7 +15,7 @@ import supervision as sv
 
 from pycocotools import mask as mask_utils
 
-from preprocess.helpers.pose import OP18_SKELETON, xywh_to_xyxy, joints_to_keypoints, op25_to_op18
+from preprocess.helpers.pose import OP19_SKELETON_1B, xywh_to_xyxy, op25_to_op19
 from preprocess.helpers.video_utils import extract_frame_id, load_images
 
 
@@ -54,75 +54,79 @@ def visualise_human4d(cfg):
     img_dict = load_images(img_dir)
     print("--- FYI: Loaded images")
 
-    edge_annotator   = sv.EdgeAnnotator(edges=OP18_SKELETON, thickness=2)
-    vertex_annotator = sv.VertexAnnotator(radius=3)
+    edge_annotator   = sv.EdgeAnnotator(thickness=2, edges=OP19_SKELETON_1B, color=sv.Color.BLUE)
+    vertex_annotator = sv.VertexAnnotator(radius=5, color=sv.Color.GREEN)
     box_annotator    = sv.BoxAnnotator(thickness=2)
+    label_annotator = sv.LabelAnnotator(text_position=sv.Position.TOP_LEFT)
 
-    for pid, final_result in tqdm(h4d_results.items()):
-        for fid, frame_res in final_result.items():
-            img = img_dict[fid]
+    for fid, frame_results in tqdm(h4d_results.items()):
+        bboxes = []
+        pids = []
+        joints = []
+        for pid, frame_res in frame_results.items():
+            bboxes.append(frame_res['bbox'])
+            pids.append(pid)
+            joints.append(frame_res['phalp_j2ds'])
+        img = img_dict[fid]
+        bboxes = np.stack(bboxes)
+        joints_arr = np.stack(joints)  # (P, 25, 2)
+        op19_joints = op25_to_op19(joints_arr)
+        xyxy_bboxes = xywh_to_xyxy(bboxes)
+        pids = np.array(pids)
 
-            # bbox (optional)
-            if frame_res['bbox'] is not None:
-                det = sv.Detections(xyxy=xywh_to_xyxy(frame_res['bbox'])[None, :])
-                img = box_annotator.annotate(
-                    scene=img,
-                    detections=det,
-                    custom_color_lookup=sv.ColorLookup.INDEX
-                )
+        if len(bboxes) > 0:
 
-            # keypoints (skeleton + vertices)
-            if frame_res['phalp_j2ds'] is not None:
-                jnts18 = op25_to_op18(frame_res['phalp_j2ds'])
-                kps = joints_to_keypoints(jnts18, K=18)
+            det = sv.Detections(xyxy=xyxy_bboxes, class_id=pids)
 
-                img = edge_annotator.annotate(
-                    scene=img,
-                    key_points=kps,
-                )
-                img = vertex_annotator.annotate(
-                    scene=img,
-                    key_points=kps,
-                )
+            img = box_annotator.annotate(
+                scene=img,
+                detections=det,
+            )
+            img = label_annotator.annotate(
+                scene=img,
+                detections=det,
+            )
 
-            img_dict[fid] = img
+        if len(joints_arr) > 0:
+            kps = sv.KeyPoints(xy=op19_joints, class_id=pids)
+
+            img = edge_annotator.annotate(
+                scene=img,
+                key_points=kps,
+            )
+            img = vertex_annotator.annotate(
+                scene=img,
+                key_points=kps,
+            )
+
+        img_dict[fid] = img
 
 
     # Save annotated images
-    output_dir = os.path.join(cfg.output_dir, "visualizations", "box_and__pose")
+    output_dir = os.path.join(cfg.output_dir, "visualizations", "box_and__pose", "frames")
     os.makedirs(output_dir, exist_ok=True)
     for fid, img in img_dict.items():
         cv2.imwrite(os.path.join(output_dir, f"frame_{fid:04d}.png"), img)
 
 def phalp_smpl2op(smpl_joints):
     """
-    Mapping from extracted SMPL joints to OpenPose format.
-    In particular, the reordering is done for the joints between left and right feet.
-
-
-    Args:
-        smpl_joints: SMPL joints in the format (N, 2)
-
-    Returns:
-        op_joints: OpenPose joints in the format (N, 2)
+    Remap PHALP/SMPL feet to OP25 foot convention:
+    OP25 wants: [BigToe, SmallToe, Heel]
+    PHALP gives: [Heel, BigToe, SmallToe]
     """
-
     j_inds = np.arange(25)
-    j_inds[19] = 22
-    j_inds[20] = 23
-    j_inds[21] = 24
-    j_inds[22] = 19
-    j_inds[23] = 20
-    j_inds[24] = 21
 
-    op_joints = []
-    for j_ind in j_inds:
-        if j_ind >= len(smpl_joints):
-            raise ValueError(f"smpl_joints has only {len(smpl_joints)} joints, but trying to access {j_ind}")
-        else:
-            op_joints.append(smpl_joints[j_ind])
+    # left foot
+    j_inds[19] = 20  # LBigToe  <- PHALP BigToe
+    j_inds[20] = 21  # LSmallToe<- PHALP SmallToe
+    j_inds[21] = 19  # LHeel    <- PHALP Heel
 
-    return op_joints
+    # right foot
+    j_inds[22] = 23  # RBigToe  <- PHALP BigToe
+    j_inds[23] = 24  # RSmallToe<- PHALP SmallToe
+    j_inds[24] = 22  # RHeel    <- PHALP Heel
+
+    return smpl_joints[j_inds]
 
 
 def get_op_joints(v, person_track_id):
@@ -214,12 +218,11 @@ def load_human4d_results(path_to_results):
 
     # Init the result dict
     track_res = dict()
-    for pid in tracked_ids:
-        track_res[pid] = dict()
 
     for k in sorted(list(phalp_res.keys())):
         v = phalp_res[k]
         frame_id = extract_frame_id(Path(k).name)
+        track_res[frame_id] = dict()
         for _, pid in enumerate(v['tracked_ids']):
             # Extract Open Pose joints (Body-25)
             j2d = get_op_joints(v, pid)
@@ -232,7 +235,7 @@ def load_human4d_results(path_to_results):
             smpl_param = get_smpl_params(v, i)
 
             # Save the results
-            track_res[pid][frame_id] = dict(
+            track_res[frame_id][pid] = dict(
                 bbox=v['bbox'][i],
                 smpl_param=smpl_param,
                 phalp_mask=mask,
