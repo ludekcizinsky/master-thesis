@@ -1,4 +1,5 @@
 import os
+import cv2
 import joblib
 from pathlib import Path
 
@@ -10,10 +11,11 @@ from hydra import initialize, compose
 
 import torch
 from pytorch3d.transforms import matrix_to_axis_angle
+import supervision as sv
 
 from pycocotools import mask as mask_utils
 
-
+from preprocess.helpers.pose import OP18_SKELETON, xywh_to_xyxy, joints_to_keypoints, op25_to_op18
 from preprocess.helpers.video_utils import extract_frame_id, load_images
 
 
@@ -43,7 +45,6 @@ def run_human4d(cfg):
 
 def visualise_human4d(cfg):
 
-    # 0. Load dataset
     human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images.pkl")
     os.path.exists(human4d_resfile), f"Visualing of humans4d failed. Did not find the resulting file {str(human4d_resfile)}"
     h4d_results = load_human4d_results(human4d_resfile)
@@ -51,9 +52,47 @@ def visualise_human4d(cfg):
 
     img_dir = os.path.join(cfg.output_dir, "preprocess", "images")
     img_dict = load_images(img_dir)
+    print("--- FYI: Loaded images")
 
-    # TODO: continue here
+    edge_annotator   = sv.EdgeAnnotator(edges=OP18_SKELETON, thickness=2)
+    vertex_annotator = sv.VertexAnnotator(radius=3)
+    box_annotator    = sv.BoxAnnotator(thickness=2)
 
+    for pid, final_result in tqdm(h4d_results.items()):
+        for fid, frame_res in final_result.items():
+            img = img_dict[fid]
+
+            # bbox (optional)
+            if frame_res['bbox'] is not None:
+                det = sv.Detections(xyxy=xywh_to_xyxy(frame_res['bbox'])[None, :])
+                img = box_annotator.annotate(
+                    scene=img,
+                    detections=det,
+                    custom_color_lookup=sv.ColorLookup.INDEX
+                )
+
+            # keypoints (skeleton + vertices)
+            if frame_res['phalp_j2ds'] is not None:
+                jnts18 = op25_to_op18(frame_res['phalp_j2ds'])
+                kps = joints_to_keypoints(jnts18, K=18)
+
+                img = edge_annotator.annotate(
+                    scene=img,
+                    key_points=kps,
+                )
+                img = vertex_annotator.annotate(
+                    scene=img,
+                    key_points=kps,
+                )
+
+            img_dict[fid] = img
+
+
+    # Save annotated images
+    output_dir = os.path.join(cfg.output_dir, "visualizations", "box_and__pose")
+    os.makedirs(output_dir, exist_ok=True)
+    for fid, img in img_dict.items():
+        cv2.imwrite(os.path.join(output_dir, f"frame_{fid:04d}.png"), img)
 
 def phalp_smpl2op(smpl_joints):
     """
