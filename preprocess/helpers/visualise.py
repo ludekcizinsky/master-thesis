@@ -12,13 +12,13 @@ from preprocess.helpers.video_utils import load_images, frames_to_video
 from utils.io import load_frame_map_jsonl_restore
 from utils.render import render_w_pytorch3d
 from utils.smpl_deformer.smpl_server import SMPLServer
-from preprocess.helpers.cameras import load_default_camdicts
+from preprocess.helpers.cameras import load_camdicts_json
 
 
 def visualise_smpl(cfg, h4d_results, frames):
 
-    phalp_res_path = f"{cfg.output_dir}/phalp_v2/results/demo_images.pkl"
-    default_cam_dicts = load_default_camdicts(phalp_res_path)
+    cam_dicts_path = f"{cfg.output_dir}/preprocess/cam_dicts.json"
+    default_cam_dicts = load_camdicts_json(cam_dicts_path)
 
     smpl_server = SMPLServer()
     rendered_smpl = render_w_pytorch3d(
@@ -131,5 +131,5 @@ def visualise_human4d(cfg):
     frames = load_images(img_dir)
     print("--- FYI: Loaded images")
 
-    # visualise_tracking_results(cfg, h4d_results, frames)
+    visualise_tracking_results(cfg, h4d_results, frames)
     visualise_smpl(cfg, h4d_results, frames)

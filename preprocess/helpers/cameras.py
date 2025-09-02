@@ -1,5 +1,6 @@
 import joblib
 from pathlib import Path
+import json
 
 import numpy as np
 from preprocess.helpers.video_utils import extract_frame_id
@@ -55,4 +56,27 @@ def load_default_camdicts(phalp_res_path):
         cam_dict['projection'] = intrinsic @ w2c
         cam_dicts[fid] = cam_dict
     
+    return cam_dicts
+
+def save_camdicts_json(cam_dicts, save_path):
+    serializable = {}
+    for fid, cam in cam_dicts.items():
+        serializable[fid] = {
+            k: v.tolist() if isinstance(v, np.ndarray) else v
+            for k, v in cam.items()
+        }
+    with open(save_path, "w") as f:
+        json.dump(serializable, f)
+    print(f"Saved cam_dicts to {save_path}")
+
+def load_camdicts_json(load_path):
+    with open(load_path, "r") as f:
+        data = json.load(f)
+    cam_dicts = {}
+    for fid, cam in data.items():
+        cam_dicts[int(fid)] = {
+            k: np.array(v, dtype=np.float32) if isinstance(v, list) else v
+            for k, v in cam.items()
+        }
+    print(f"Loaded cam_dicts from {load_path}, {len(cam_dicts)} frames")
     return cam_dicts
