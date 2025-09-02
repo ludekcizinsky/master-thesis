@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../subm
 from omegaconf import DictConfig
 
 from preprocess.helpers.video_utils import extract_frames
-from preprocess.helpers.human4d_connector import run_human4d, load_human4d_results
+from preprocess.helpers.human4d_connector import run_human4d, load_human4d_results, load_default_camdicts
 from preprocess.helpers.visualise import visualise_human4d
 from utils.io import save_frame_map_jsonl_with_masks
 
@@ -33,7 +33,8 @@ def main(cfg: DictConfig):
     # Step 3 / Save Frame Map
     print("ℹ️  Start of saving frame map")
     human4d_resfile = os.path.join(cfg.output_dir, "phalp_v2", "results", "demo_images.pkl")
-    humand4d_results = load_human4d_results(human4d_resfile) 
+    humand4d_results = load_human4d_results(human4d_resfile)
+    # default_cam_dicts = load_default_camdicts(human4d_resfile)
     save_frame_map_jsonl_with_masks(
         humand4d_results,
         f"{cfg.output_dir}/preprocess/frame_map.jsonl",
