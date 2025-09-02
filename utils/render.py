@@ -46,7 +46,6 @@ def camdict_to_torch3d(camdict, device, zoom_scale=1.):
     cam_R[:, :2, :] *= -1.0
     cam_T[:, :1] *= -1.0
     cam_T[:, :2] *= -1.0
-    # self.cam_R = torch.transpose(self.cam_R,1,2)
     
     cameras = PerspectiveCameras(focal_length=focal_length, principal_point=principal_point, R=cam_R, T=cam_T, device=device, in_ndc=False, image_size=[img_size])
 
@@ -73,10 +72,6 @@ def render_w_pytorch3d(
     for fid in tqdm(sorted(render_camdicts.keys()), desc="Render (PyTorch3D)"):
         camdict = render_camdicts[fid]
         H, W = int(camdict["H"]), int(camdict["W"])
-
-#        cameras = build_cameras(camdict, device, zoom_scale,
-                                           #matrix_is_c2w=False,
-                                            #w2c_is_opencv=True)
         cameras = camdict_to_torch3d(camdict, device, zoom_scale)
 
         mesh_rast = RasterizationSettings(image_size=(H, W), blur_radius=0.0, faces_per_pixel=1)
@@ -91,8 +86,7 @@ def render_w_pytorch3d(
         for pid, payload in frame_people.items():
             params = payload.get("smpl_params", payload.get("smpl_param"))
             if params is None:
-                # DEBUG: print missing keys once
-                # print(f"[warn] fid={fid} pid={pid} has no 'smpl_params'/'smpl_param' keys: {list(payload.keys())}")
+                print(f"--- FYIL fid={fid} pid={pid} has no 'smpl_params'/'smpl_param' keys: {list(payload.keys())}")
                 continue
             smpl_param = torch.as_tensor(params, device=device, dtype=torch.float32)
             if smpl_param.ndim == 1: smpl_param = smpl_param.unsqueeze(0)

@@ -2,6 +2,7 @@ import joblib
 from pathlib import Path
 
 import numpy as np
+from preprocess.helpers.video_utils import extract_frame_id
 
 def load_default_camdicts(phalp_res_path):
     """
@@ -39,8 +40,8 @@ def load_default_camdicts(phalp_res_path):
             [0., 0., 1., 0.],
             [0., 0., 0., 1.],
         ])
-        fid = int(Path(k).name.split(".")[0])
-        
+        fid = extract_frame_id(Path(k).name)
+
         cam_dict['fid'] = fid
         cam_dict['H'] = H
         cam_dict['W'] = W

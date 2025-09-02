@@ -8,7 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../subm
 from omegaconf import DictConfig
 
 from preprocess.helpers.video_utils import extract_frames
-from preprocess.helpers.human4d_connector import run_human4d, load_human4d_results, load_default_camdicts
+from preprocess.helpers.human4d_connector import run_human4d, load_human4d_results
+from preprocess.helpers.cameras import load_default_camdicts
 from preprocess.helpers.visualise import visualise_human4d
 from utils.io import save_frame_map_jsonl_with_masks
 
