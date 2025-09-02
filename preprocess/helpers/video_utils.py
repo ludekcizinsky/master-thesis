@@ -44,7 +44,9 @@ def load_images(img_dir: str):
     img_dir = Path(img_dir)
     img_dict = dict()
 
-    for img_fname in (list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))):
+    paths = list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))
+
+    for img_fname in paths:
         img = cv2.imread(str(img_fname))
         fid = extract_frame_id(img_fname.name)
         img_dict[fid] = img

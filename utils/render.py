@@ -110,8 +110,11 @@ def render_w_pytorch3d(
             scene_mesh = smpl_to_scene_mesh(smpl_verts_dict, smpl_faces, smpl_colors_dict, device)
             rgba = mesh_renderer(meshes_world=scene_mesh)[0]  # single scene -> one image
 
-        out_rgb = rgba[..., :3] * rgba[..., 3:] + (1 - rgba[..., 3:]) * torch.ones((H, W, 3), device=device)
-        img = (out_rgb.clamp(0, 1) * 255).byte().cpu().numpy()[..., ::-1]
+#        out_rgb = rgba[..., :3] * rgba[..., 3:] + (1 - rgba[..., 3:]) * torch.ones((H, W, 3), device=device)
+        #img = (out_rgb.clamp(0, 1) * 255).byte().cpu().numpy()[..., ::-1]
+        #results[fid] = img
+
+        img = (rgba.clamp(0, 1) * 255).byte().cpu().numpy()  # (H,W,4), RGBA
         results[fid] = img
 
     return results
