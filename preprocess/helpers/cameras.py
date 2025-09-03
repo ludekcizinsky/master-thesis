@@ -18,6 +18,11 @@ def load_default_camdicts(phalp_res_path):
     - W
     which all python native variable or numpy array
     TODO: taken from gtu, give them cred
+
+    Notes
+    - fx = fy = f (assume square pixels) -> fair assumption for modern broadcast cams
+    - principal point being in the middle of the image cx/cy = W/2, H/2 -> not so accurate
+    - focal length calculation -> also not so accurate (possibly in correct ballpark)
     """
     phalp_res = joblib.load(phalp_res_path)
 
@@ -34,13 +39,14 @@ def load_default_camdicts(phalp_res_path):
         f = 5000 / 256 * max(H, W)                                                # PHALP default settings
         cx = W / 2
         cy = H / 2
-        w2c = np.eye(4, dtype=np.float32)
+
         intrinsic = np.array([
             [f, 0., cx, 0.],
             [0., f, cy, 0.],
             [0., 0., 1., 0.],
             [0., 0., 0., 1.],
         ])
+        w2c = np.eye(4, dtype=np.float32)
         fid = extract_frame_id(Path(k).name)
 
         cam_dict['fid'] = fid

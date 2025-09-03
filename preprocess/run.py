@@ -3,7 +3,8 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../submodules/humans4d")))
-
+os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
+os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 
 from omegaconf import DictConfig
 
@@ -18,7 +19,6 @@ from utils.io import save_frame_map_jsonl_with_masks
 def main(cfg: DictConfig):
 
     os.makedirs(f"{cfg.output_dir}/preprocess", exist_ok=True)
-
     # Step 1 / Frame Extraction
     print("ℹ️  Start of frame extraction")
     extract_frames(cfg)
@@ -47,7 +47,6 @@ def main(cfg: DictConfig):
     print("ℹ️  Start of visualization")
     visualise_human4d(cfg)
     print("✅ Visualization completed.")
-
 
 if __name__ == "__main__":
     main()
