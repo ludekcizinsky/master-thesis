@@ -128,8 +128,9 @@ def visualise_human4d(cfg):
     print("--- FYI: Loaded Human4D results")
 
     img_dir = os.path.join(cfg.output_dir, "preprocess", "images")
-    frames = load_images(img_dir)
-    print("--- FYI: Loaded images")
 
+    frames = load_images(img_dir)
     visualise_tracking_results(cfg, h4d_results, frames)
+
+    frames = load_images(img_dir) # reload frames since the old ones had track annotations
     visualise_smpl(cfg, h4d_results, frames)
