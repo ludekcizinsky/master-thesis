@@ -88,14 +88,15 @@ def save_loss_visualization(
 
 @torch.no_grad()
 def save_canonical_preview(
-    gaus,                      # CanonicalGaussians module (self.gaus)
+    gaus,          # CanonicalGaussians module (self.gaus)
     out_path: str,
     H: int = 512,
     W: int = 384,
     fov_deg: float = 18.0,     # ~tight portrait; smaller => more zoom
     bg_color=(1.0, 1.0, 1.0),  # white background
     flip_z: bool = False,      # set True if your renderer expects -Z forward (OpenGL)
-    color_mode: str = "learned" # "learned" | "bone"
+    color_mode: str = "learned", # "learned" | "bone"
+    sigma_mult: float = 15.0,  # multiplier for scale -> pixel sigma heuristic
 ):
     """
     Render the current canonical Gaussians from a virtual front-view camera and save as PNG.
@@ -156,7 +157,6 @@ def save_canonical_preview(
 
     # --- Convert canonical scales to pixel sigmas (heuristic) ---
     # A simple linear map using focal and depth. Tweak sigma_mult to control blob size.
-    sigma_mult = 60.0
     scales_pix = (scales_w * (fx / max(H, W)) * sigma_mult).clamp(0.5, 50.0)
 
     # (Optional) color by bone for debugging skinning weights
@@ -473,11 +473,10 @@ class Trainer:
         device: str = "cuda",
         downscale: int = 2,
         n_gauss_keep: int = 3000,
-        lr: float = 1e-2,
-        learn_per_frame_f: bool = True,
-        focal_prior_weight: float = 1e-4,
+        sigma_mult: float = 15.0,  # multiplier for scale -> pixel sigma heuristic
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.sigma_mult = sigma_mult
         print(f"--- FYI: using {self.device}")
         self.dataset = HumanOnlyDataset(scene_root, tid, downscale=downscale)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
@@ -498,44 +497,21 @@ class Trainer:
 
         # Gaussians in canonical space
         self.gaus = CanonicalGaussians(verts_c, weights_c, n_keep=n_gauss_keep).to(self.device)
-
-        # Intrinsics (per-frame focal learnable option)
-        # We'll keep cx,cy fixed; optionally learn fx,fy per frame around their initial values.
-        self.learn_per_frame_f = learn_per_frame_f
-        self.focal_prior_weight = focal_prior_weight
-
-        if self.learn_per_frame_f:
-            # Map fid->Parameter
-            self.fx_params: Dict[int, nn.Parameter] = {}
-            self.fy_params: Dict[int, nn.Parameter] = {}
-            for fid in self.dataset.samples:
-                # Capture per-frame K to seed
-                K = self.dataset.cam_dicts[fid]
-                fx0, fy0 = float(K["fx"]) / self.dataset.downscale, float(K["fy"]) / self.dataset.downscale
-                self.fx_params[fid] = nn.Parameter(torch.tensor(fx0, dtype=torch.float32, device=self.device))
-                self.fy_params[fid] = nn.Parameter(torch.tensor(fy0, dtype=torch.float32, device=self.device))
-            self.f_params = nn.ParameterList(list(self.fx_params.values()) + list(self.fy_params.values()))
-        else:
-            self.f_params = nn.ParameterList([])
-        print("--- FYI: learning per frame focal is enabled" if self.learn_per_frame_f else "--- FYI: keeping focal fixed")
+        param_groups = [
+            {"params": [self.gaus.means_c],       "lr": 1e-4},
+            {"params": [self.gaus.log_scales],    "lr": 1e-4},
+            {"params": [self.gaus.opacity_logit], "lr": 1e-4},
+            {"params": [self.gaus.colors],        "lr": 2e-3},
+        ]
 
         # Optimizer: Gaussians + (optional) focal
-        params = list(self.gaus.parameters()) + list(self.f_params.parameters())
+        self.opt = torch.optim.Adam(param_groups)
+        self.grad_clip = 1.0  # store a value
+        params = list(self.gaus.parameters())
         print(f"--- FYI: training {sum(p.numel() for p in params)} parameters")
-        self.opt = torch.optim.Adam(params, lr=lr)
 
         # Warm-start colors from first available frame (project once)
         self._init_colors()
-
-        save_path = self.trn_viz_canon_dir / f"preview_init.png"
-        save_canonical_preview(
-            gaus=self.gaus,
-            out_path=save_path,
-            H=640, W=480,
-            fov_deg=18.0,
-            flip_z=False,         # set True if your renderer uses -Z forward
-            color_mode="learned"  # or "bone" to visualize by SMPL bone IDs
-        )
 
     @torch.no_grad()
     def _init_colors(self):
@@ -563,21 +539,29 @@ class Trainer:
         colors = sampled.squeeze(0).squeeze(-1).permute(1, 0)  # [M,3]
         self.gaus.colors.data.copy_(colors.clamp(0, 1))
 
+        save_path = self.trn_viz_canon_dir / f"preview_init.png"
+        save_canonical_preview(
+            gaus=self.gaus,
+            out_path=save_path,
+            H=640, W=480,
+            fov_deg=18.0,
+            flip_z=False,         # set True if your renderer uses -Z forward
+            color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
+            sigma_mult=self.sigma_mult
+        )
+
+
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         image = batch["image"].squeeze(0).to(self.device)  # [3,H,W]
         mask  = batch["mask"].squeeze(0).to(self.device)   # [H,W]
-        K_in  = batch["K"].squeeze(0).to(self.device)      # [3,3]
+        K  = batch["K"].squeeze(0).to(self.device)      # [3,3]
         smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
-        fid = batch["fid"].item()
         H, W = image.shape[-2:]
 
-        # Optionally replace fx,fy with learnable per-frame values (keep cx,cy fixed)
-        if self.learn_per_frame_f:
-            K = K_in.clone()
-            K[0, 0] = self.fx_params[fid]
-            K[1, 1] = self.fy_params[fid]
-        else:
-            K = K_in
+#        with torch.no_grad():
+            #self.gaus.opacity_logit.data.clamp_(min=torch.logit(torch.tensor(0.02)),
+                                                #max=torch.logit(torch.tensor(0.6)))
+            #self.gaus.log_scales.data.clamp_(math.log(1e-3), math.log(0.08))
 
         out = self.smpl_server(smpl_param, absolute=False)
         T_rel = out["smpl_tfs"][0]   # [24,4,4]
@@ -585,7 +569,12 @@ class Trainer:
 
         uv, Z = project_points(means_cam, K)  # [M,2], [M]
         # debug_projection_stats(uv, Z, H, W, tag=f"fid{fid}")
-        scales_pix = self.gaus.scales() * (K[0,0] / max(H, W)) * 15
+        # scales_pix = self.gaus.scales() * (K[0,0] / max(H, W)) * self.sigma_mult    
+        eps = 1e-6
+        sigma_mult = 8.0          # try 8 first; you can go down to 6
+        scales_pix = (self.gaus.scales() * K[0,0] / (Z + eps) * sigma_mult)
+        scales_pix = scales_pix.clamp(0.6, 7.0)   # was wider; tighten upper clamp
+
         # NOTE: crude heuristic scale -> pixels; adjust multiplier if splats look too big/small.
 
         rgb_pred, alpha_pred = render_gaussians_2d(
@@ -613,26 +602,18 @@ class Trainer:
         l_scale_reg = self.gaus.scales().mean() * 1e-3
         l_opacity_reg = (self.gaus.opacity() ** 2).mean() * 1e-4
 
-        # Focal prior
-        if self.learn_per_frame_f:
-            fx0 = K_in[0,0].detach()
-            fy0 = K_in[1,1].detach()
-            l_focal = (self.fx_params[fid] - fx0).pow(2) + (self.fy_params[fid] - fy0).pow(2)
-            l_focal = l_focal * self.focal_prior_weight
-        else:
-            l_focal = torch.tensor(0.0, device=self.device)
-
-        loss = l_rgb + 0.5 * l_sil + l_scale_reg + l_opacity_reg + l_focal
+        loss = l_rgb + 1.0 * l_sil + l_scale_reg + l_opacity_reg 
 
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
+        if self.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(self.gaus.parameters(), self.grad_clip)
         self.opt.step()
 
         return {
             "loss": float(loss.item()),
             "l_rgb": float(l_rgb.item()),
             "l_sil": float(l_sil.item()),
-            "l_focal": float(l_focal.item()) if self.learn_per_frame_f else 0.0,
         }
 
     def train_loop(self, iters: int = 2000):
@@ -649,7 +630,6 @@ class Trainer:
                         "loss": f"{logs['loss']:.4f}",
                         "rgb": f"{logs['l_rgb']:.4f}",
                         "sil": f"{logs['l_sil']:.4f}",
-                        "focal": f"{logs['l_focal']:.6f}"
                     })
 
                     # Periodic canonical preview
@@ -661,12 +641,12 @@ class Trainer:
                             H=640, W=480,
                             fov_deg=18.0,
                             flip_z=False,         # set True if your renderer uses -Z forward
-                            color_mode="learned"  # or "bone" to visualize by SMPL bone IDs
+                            color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
+                            sigma_mult=self.sigma_mult
                         )
 
                     if it >= iters:
                         break
-
 
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
@@ -678,8 +658,7 @@ def main(cfg: DictConfig):
         device=cfg.device,
         downscale=cfg.downscale,
         n_gauss_keep=cfg.n_gauss,
-        lr=cfg.lr,
-        learn_per_frame_f=not cfg.no_learn_f,
+        sigma_mult=cfg.sigma_mult,
     )
     print("✅ Trainer initialized.\n")
 

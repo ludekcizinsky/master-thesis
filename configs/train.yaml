@@ -4,9 +4,8 @@ tid: 1 # track ID of the person to train the 3DGS on
 device: cuda
 downscale: 2 # downscale factor for the input video frames (1 = no down scaling)
 n_gauss: 2000 # TODO: what is this
-lr: 1e-2
-no_learn_f: True # if True, do not learn the focal length per frame, keep it fixed
 iters: 2000 # number of training iterations
+sigma_mult: 15.0 # multiplier for scale -> pixel sigma heuristic
 
 
 hydra:
