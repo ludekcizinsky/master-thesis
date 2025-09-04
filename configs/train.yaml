@@ -1,0 +1,17 @@
+scene_name: ???
+output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
+tid: 1 # track ID of the person to train the 3DGS on
+device: cuda
+downscale: 2 # downscale factor for the input video frames (1 = no down scaling)
+n_gauss: 2000 # TODO: what is this
+lr: 1e-4
+flip_z: True # should be true if using OpenGL camera convetion
+no_learn_f: True # if True, do not learn the focal length per frame, keep it fixed
+iters: 2000 # number of training iterations
+
+
+hydra:
+  run:
+    dir: /scratch/izar/cizinsky/thesis/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
+  job:
+    chdir: False

@@ -84,5 +84,5 @@ def load_camdicts_json(load_path):
             k: np.array(v, dtype=np.float32) if isinstance(v, list) else v
             for k, v in cam.items()
         }
-    print(f"Loaded cam_dicts from {load_path}, {len(cam_dicts)} frames")
+    print(f"--- FYI: Loaded cam_dicts from {load_path}, {len(cam_dicts)} frames")
     return cam_dicts
