@@ -30,7 +30,7 @@ from preprocess.helpers.cameras import load_camdicts_json
 from tqdm import tqdm
 
 # -----------------------------
-# Utility: image & mask loading
+# Utility: image & mask loading & Visualization
 # -----------------------------
 def load_image(path: Path, downscale: int = 1) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
@@ -47,6 +47,149 @@ def load_mask(path: Path, downscale: int = 1) -> torch.Tensor:
         m = m.resize((w // downscale, h // downscale), Image.NEAREST)
     m = torch.from_numpy(np.array(m)).float() / 255.0  # [H,W]
     return m.clamp(0, 1)
+
+@torch.no_grad()
+def debug_projection_stats(uv, Z, H, W, tag=""):
+    u, v = uv[:,0], uv[:,1]
+    in_u = (u >= 0) & (u < W)
+    in_v = (v >= 0) & (v < H)
+    in_img = in_u & in_v
+    pct_in = 100.0 * in_img.float().mean().item()
+    pct_zpos = 100.0 * (Z > 0).float().mean().item()
+    print(f"[{tag}] uv range: u=({u.min():.1f},{u.max():.1f}) v=({v.min():.1f},{v.max():.1f}) | "
+          f"in-img: {pct_in:.1f}% | Z>0: {pct_zpos:.1f}% | Z range=({Z.min():.3f},{Z.max():.3f})")
+
+@torch.no_grad()
+def save_loss_visualization(
+    image: torch.Tensor,       # [3,H,W], GT image in [0,1]
+    mask: torch.Tensor,        # [H,W], 0–1
+    rgb_pred: torch.Tensor,    # [3,H,W], predicted image in [0,1]
+    out_path: str,
+):
+    """
+    Saves a side-by-side visualization of:
+    - original image
+    - masked image (image * mask)
+    - predicted image
+    """
+    # Ensure all are 3×H×W tensors
+    H, W = image.shape[-2:]
+    mask3 = mask.expand_as(image)  # [3,H,W]
+    masked_img = image * mask3
+
+    # Stack [3, H, W] tensors into [3, H, 3*W]
+    comparison = torch.cat([image, masked_img, rgb_pred.clamp(0,1)], dim=-1)
+
+    # Convert to uint8 for saving
+    img = (comparison.permute(1,2,0).cpu().numpy().clip(0,1) * 255).astype(np.uint8)
+    Image.fromarray(img).save(out_path)
+
+    return out_path
+
+@torch.no_grad()
+def save_canonical_preview(
+    gaus,                      # CanonicalGaussians module (self.gaus)
+    out_path: str,
+    H: int = 512,
+    W: int = 384,
+    fov_deg: float = 18.0,     # ~tight portrait; smaller => more zoom
+    bg_color=(1.0, 1.0, 1.0),  # white background
+    flip_z: bool = False,      # set True if your renderer expects -Z forward (OpenGL)
+    color_mode: str = "learned" # "learned" | "bone"
+):
+    """
+    Render the current canonical Gaussians from a virtual front-view camera and save as PNG.
+
+    NOTES / ASSUMPTIONS:
+    - Assumes canonical SMPL faces +Y. We rotate canonical by +90° around X so that +Y -> +Z,
+      i.e., the person faces the camera (+Z out of image in PyTorch3D convention).
+      If you discover your canonical faces another axis, tweak the rotation (see NOTE A below).
+    - Uses the lightweight 2D splatter you already have.
+    - Scales are mapped to pixel sigmas with a heuristic; adjust 'sigma_mult' if blobs look off.
+    """
+    device = gaus.means_c.device
+    out_path = str(out_path)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+
+    means_c = gaus.means_c.detach()          # [M,3] in canonical space
+    colors  = gaus.colors.detach().clamp(0,1) # [M,3]
+    opac    = gaus.opacity().detach().clamp(0,1) # [M]
+    scales_w = gaus.scales().detach()        # [M] (world/canonical units)
+
+    # --- Virtual camera setup ---
+    # Focal from FOV (pin-hole): f = 0.5*W / tan(FOV/2)
+    f_pix = 0.5 * W / math.tan(math.radians(fov_deg) * 0.5)
+    fx = fy = torch.tensor(float(f_pix), device=device)
+    cx = torch.tensor(W * 0.5, device=device)
+    cy = torch.tensor(H * 0.5, device=device)
+
+    # NOTE A (Facing): rotate canonical so front faces +Z (camera looks down +Z in PyTorch3D).
+    # If your canonical faces +Y, Rx(+90°) maps +Y -> +Z. If you find it's off, try Rx(-90°) or add a Ry(±90°).
+    # R = _rx(-90.0, device=device)  # [3,3]
+    R = torch.eye(3, device=device)  # assume canonical already faces +Z
+    R[:2, :] *= -1.0
+    X = (R @ means_c.T).T  # [M,3]
+
+    # Centering: make sure pelvis/centroid is roughly at origin before placing at distance.
+    center = X.mean(dim=0, keepdim=True)
+    X = X - center
+
+    # Choose camera distance so the person fits nicely:
+    # Compute XY extent and back-compute a distance from FOV (with small margin).
+    ext = (X[:, :2].abs().max(dim=0).values).max().item()  # rough radius in XY
+    margin = 1.2
+    dist = margin * (ext / math.tan(math.radians(fov_deg) * 0.5) + 1e-6)
+
+    # Camera coordinates: translate along +Z so the subject is in front
+    X_cam = X.clone()
+    X_cam[:, 2] = X_cam[:, 2] + dist  # [M,3], Z positive
+
+    # Optional z-flip if your renderer expects -Z forward (OpenGL-like):
+    if flip_z:
+        X_cam[:, 2] = -X_cam[:, 2]
+
+    # --- Project to pixels ---
+    Z = X_cam[:, 2].clamp(min=1e-6)            # [M]
+    u = fx * (X_cam[:, 0] / Z) + cx
+    v = fy * (X_cam[:, 1] / Z) + cy
+    uv = torch.stack([u, v], dim=-1)           # [M,2]
+
+    # --- Convert canonical scales to pixel sigmas (heuristic) ---
+    # A simple linear map using focal and depth. Tweak sigma_mult to control blob size.
+    sigma_mult = 60.0
+    scales_pix = (scales_w * (fx / max(H, W)) * sigma_mult).clamp(0.5, 50.0)
+
+    # (Optional) color by bone for debugging skinning weights
+    if color_mode == "bone":
+        # Argmax over weights to assign a pseudo-color per bone id
+        # (needs weights_c handy; else skip)
+        if hasattr(gaus, "weights_c"):
+            bone_id = gaus.weights_c.argmax(dim=1)  # [M]
+            # simple color table
+            torch.manual_seed(0)
+            palette = torch.rand(24, 3, device=device)
+            colors = palette[bone_id]
+        else:
+            # fallback: keep learned colors
+            pass
+
+    # --- Render ---
+    rgb, alpha = render_gaussians_2d(
+        uv=uv, z=Z,
+        scales=scales_pix, colors=colors, opacity=opac,
+        H=H, W=W, soft_z_temp=1e-2, truncate=3.0
+    )
+
+    # Composite over bg
+    bg = torch.tensor(bg_color, dtype=torch.float32, device=device).view(3,1,1)
+    out = rgb + (1.0 - alpha).unsqueeze(0) * bg  # [3,H,W]
+
+    # Save
+    import numpy as np
+    from PIL import Image
+    img = (out.clamp(0,1).permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+    Image.fromarray(img).save(out_path)
+    return out_path
 
 
 # -----------------------------
@@ -176,7 +319,7 @@ class CanonicalGaussians(nn.Module):
         # colors (initialized later from first frame), range [0,1]
         self.colors = nn.Parameter(torch.rand(verts_c.shape[0], 3, device=device))
         # opacities in (0,1) (we store in logit space for stability)
-        self.opacity_logit = nn.Parameter(torch.full((verts_c.shape[0],), torch.logit(torch.tensor(0.1)), device=device))
+        self.opacity_logit = nn.Parameter(torch.full((verts_c.shape[0],), torch.logit(torch.tensor(0.1)), device=device, requires_grad=True))
 
     def opacity(self):
         return torch.sigmoid(self.opacity_logit)  # [M]
@@ -215,83 +358,106 @@ def lbs_apply(means_c: torch.Tensor, weights_c: torch.Tensor, T_rel: torch.Tenso
 # Simple differentiable 2D Gaussian "splat" render
 # ------------------------------------------------
 def render_gaussians_2d(
-    uv: torch.Tensor,            # [M,2] projected centers in pixels
-    z: torch.Tensor,             # [M] depth (used only for soft visibility sort)
-    scales: torch.Tensor,        # [M] isotropic sigma in pixels
+    uv: torch.Tensor,            # [M,2]
+    z: torch.Tensor,             # [M]
+    scales: torch.Tensor,        # [M] sigma in pixels
     colors: torch.Tensor,        # [M,3] in [0,1]
     opacity: torch.Tensor,       # [M] in (0,1)
     H: int, W: int,
-    soft_z_temp: float = 1e-2,   # smaller → sharper z-occlusion weighting
-    truncate: float = 3.0        # window = +/- truncate*sigma
+    soft_z_temp: float = 0.0,    # 0 => no depth fading; start with 0
+    truncate: float = 2.5,       # tighter footprint
+    z_sort: bool = True,         # painter’s algorithm (back-to-front)
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Super-simple splatter: accumulates per-Gaussian kernels onto the canvas.
-    Visibility: soft z-weight using exp(-temp * z). (Not physically correct; good enough to start.)
-    Returns: rgb [3,H,W], alpha [H,W], both in [0,1].
+    Rasterize isotropic 2D Gaussians with correct 'over' compositing:
+        A_new = A + (1 - A) * a_i
+        C_new = C + (1 - A) * (a_i * c_i)
+    where a_i = kernel * per-splat opacity * visibility
     """
     device = uv.device
-    img = torch.zeros(3, H, W, device=device)
-    alpha = torch.zeros(H, W, device=device)
+    img  = torch.zeros(3, H, W, device=device)
+    A    = torch.zeros(H, W, device=device)
 
-    # Windowed per-splat loop. This is O(M * window^2).
-    # Keep M small (e.g., 2-4k) and downscale images for a first test.
-    # TODO: replace with diff-gaussian-rasterization for speed/quality later.
-    vis_w = torch.exp(-soft_z_temp * z).clamp(0.0, 1.0)  # [M]
+    # Visibility weight (keep simple first)
+    vis_w = torch.ones_like(z)
+    if soft_z_temp and soft_z_temp > 0:
+        vis_w = torch.exp(-soft_z_temp * z).clamp(0.0, 1.0)
 
-    for i in range(uv.shape[0]):
-        cx, cy = uv[i]  # pixel center (u,v)
-        s = scales[i]
-        if s.item() < 1e-3:
-            continue  # too tiny
-        rad = int(truncate * s.item()) + 1
+    # Optional painter’s algorithm: draw far → near
+    if z_sort:
+        order = torch.argsort(z, descending=True)  # far first
+    else:
+        order = torch.arange(uv.shape[0], device=device)
+
+    for i in order.tolist():
+        cx, cy = uv[i]
+        s = float(scales[i].item())
+        if s < 1e-3:
+            continue
+
+        rad = int(truncate * s) + 1
         u0, u1 = int(cx.item()) - rad, int(cx.item()) + rad + 1
         v0, v1 = int(cy.item()) - rad, int(cy.item()) + rad + 1
-        if u1 < 0 or v1 < 0 or u0 >= W or v0 >= H:
+        if u1 <= 0 or v1 <= 0 or u0 >= W or v0 >= H:
             continue
+
         uu = torch.arange(max(0, u0), min(W, u1), device=device)
         vv = torch.arange(max(0, v0), min(H, v1), device=device)
         if uu.numel() == 0 or vv.numel() == 0:
             continue
-        U, V = torch.meshgrid(uu, vv, indexing="xy")  # [w,h]
-        du2 = (U - cx) ** 2
-        dv2 = (V - cy) ** 2
-        s2 = (2.0 * (s ** 2))
-        kernel = torch.exp(-(du2 + dv2) / s2)  # [w,h]
-        k = kernel * opacity[i] * vis_w[i]     # weight
 
-        # alpha accumulation (1 - prod(1-a_i)) approximated by additive with clamp
-        alpha_patch = alpha[vv[:, None], uu[None, :]]
-        new_alpha = (alpha_patch + k).clamp(0, 1)
+        U, V = torch.meshgrid(uu, vv, indexing="xy")
+        du2 = (U.float() - cx) ** 2
+        dv2 = (V.float() - cy) ** 2
+        s2  = 2.0 * (s ** 2)
 
-        # RGB accumulate (pre-multiplied alpha style)
-        col = colors[i][:, None, None]  # [3,1,1]
-        img_patch = img[:, vv[:, None], uu[None, :]]
-        img[:, vv[:, None], uu[None, :]] = img_patch * (alpha_patch / (new_alpha + 1e-8)) * (new_alpha > 1e-5) + col * k
+        kernel = torch.exp(-(du2 + dv2) / s2)              # [w,h]
+        a_i    = (kernel * opacity[i] * vis_w[i]).clamp(0, 1)
 
-        # Write alpha
-        alpha[vv[:, None], uu[None, :]] = new_alpha
+        # Pull current alpha
+        A_patch = A[vv[:, None], uu[None, :]]
 
-    return img.clamp(0, 1), alpha.clamp(0, 1)
+        # Over compositing
+        one_mA  = (1.0 - A_patch)
+        A_new   = A_patch + one_mA * a_i
+        C_add   = (one_mA * a_i)[None, :, :] * colors[i][:, None, None]
+
+        img[:, vv[:, None], uu[None, :]] += C_add
+        A[vv[:, None], uu[None, :]] = A_new
+
+    return img.clamp(0, 1), A.clamp(0, 1)
 
 
 # -----------------------------
 # Projection: camera -> pixels
 # -----------------------------
-def project_points(X_cam: torch.Tensor, K: torch.Tensor, flip_z: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+def project_points(
+    X_cam: torch.Tensor,
+    K: torch.Tensor,
+    flip_z: bool = False,
+    rz180: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    X_cam: [M,3] in camera-view coordinates. Assumes Z>0 means in front of camera.
+    X_cam: [M,3] in camera-view coordinates.
     K: [3,3] intrinsics.
-    flip_z: set True if your coordinates are OpenGL-style (camera looking down -Z).
-    Returns: (uv [M,2], z [M])
+    flip_z: set True if your renderer uses -Z forward (OpenGL-style).
+    rz180: set True to apply a global 180° rotation around Z (x->-x, y->-y).
+           This matches the canonical preview fix you discovered.
     """
-    if flip_z:
-        X_cam = X_cam.clone()
-        X_cam[:, 2] = -X_cam[:, 2]
+    Xc = X_cam.clone()
 
-    Z = X_cam[:, 2].clamp(min=1e-6)
+    if rz180:
+        # 180° rotation around Z: (x,y,z) -> (-x,-y,z)
+        Xc[:, 0] = -Xc[:, 0]
+        Xc[:, 1] = -Xc[:, 1]
+
+    if flip_z:
+        Xc[:, 2] = -Xc[:, 2]
+
+    Z = Xc[:, 2].clamp(min=1e-6)
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    u = fx * (X_cam[:, 0] / Z) + cx
-    v = fy * (X_cam[:, 1] / Z) + cy
+    u = fx * (Xc[:, 0] / Z) + cx
+    v = fy * (Xc[:, 1] / Z) + cy
     uv = torch.stack([u, v], dim=-1)
     return uv, Z
 
@@ -308,7 +474,6 @@ class Trainer:
         downscale: int = 2,
         n_gauss_keep: int = 3000,
         lr: float = 1e-2,
-        flip_z: bool = False,
         learn_per_frame_f: bool = True,
         focal_prior_weight: float = 1e-4,
     ):
@@ -317,6 +482,12 @@ class Trainer:
         self.dataset = HumanOnlyDataset(scene_root, tid, downscale=downscale)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
+        self.trn_dir = Path(scene_root) / "training"
+        self.trn_dir.mkdir(parents=True, exist_ok=True)
+        self.trn_viz_dir = self.trn_dir / "visualizations"
+        self.trn_viz_dir.mkdir(parents=True, exist_ok=True)
+        self.trn_viz_canon_dir = self.trn_viz_dir / "canonical"
+        self.trn_viz_canon_dir.mkdir(parents=True, exist_ok=True)
 
         # --- SMPL server init & canonical cache ---
         self.smpl_server = SMPLServer().to(self.device).eval()
@@ -332,7 +503,6 @@ class Trainer:
         # We'll keep cx,cy fixed; optionally learn fx,fy per frame around their initial values.
         self.learn_per_frame_f = learn_per_frame_f
         self.focal_prior_weight = focal_prior_weight
-        self.flip_z = flip_z
 
         if self.learn_per_frame_f:
             # Map fid->Parameter
@@ -351,10 +521,21 @@ class Trainer:
 
         # Optimizer: Gaussians + (optional) focal
         params = list(self.gaus.parameters()) + list(self.f_params.parameters())
+        print(f"--- FYI: training {sum(p.numel() for p in params)} parameters")
         self.opt = torch.optim.Adam(params, lr=lr)
 
         # Warm-start colors from first available frame (project once)
         self._init_colors()
+
+        save_path = self.trn_viz_canon_dir / f"preview_init.png"
+        save_canonical_preview(
+            gaus=self.gaus,
+            out_path=save_path,
+            H=640, W=480,
+            fov_deg=18.0,
+            flip_z=False,         # set True if your renderer uses -Z forward
+            color_mode="learned"  # or "bone" to visualize by SMPL bone IDs
+        )
 
     @torch.no_grad()
     def _init_colors(self):
@@ -369,7 +550,9 @@ class Trainer:
         T_rel = out["smpl_tfs"][0].to(self.device)       # [24,4,4]
         means_cam = lbs_apply(self.gaus.means_c, self.gaus.weights_c, T_rel)  # [M,3]
 
-        uv, Z = project_points(means_cam, K, flip_z=self.flip_z)  # [M,2], [M]
+        uv, Z = project_points(means_cam, K)  # [M,2], [M]
+        # debug_projection_stats(uv, Z, image.shape[-2], image.shape[-1], tag="init_colors")
+
         # Bilinear sample colors (ignore out-of-bounds)
         H, W = image.shape[-2:]
         u = uv[:, 0].clamp(0, W - 1 - 1e-3)
@@ -380,8 +563,8 @@ class Trainer:
         colors = sampled.squeeze(0).squeeze(-1).permute(1, 0)  # [M,3]
         self.gaus.colors.data.copy_(colors.clamp(0, 1))
 
-    def step(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        image = batch["image"].to(self.device)  # [3,H,W]
+    def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
+        image = batch["image"].squeeze(0).to(self.device)  # [3,H,W]
         mask  = batch["mask"].squeeze(0).to(self.device)   # [H,W]
         K_in  = batch["K"].squeeze(0).to(self.device)      # [3,3]
         smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
@@ -400,8 +583,9 @@ class Trainer:
         T_rel = out["smpl_tfs"][0]   # [24,4,4]
         means_cam = lbs_apply(self.gaus.means_c, self.gaus.weights_c, T_rel)  # [M,3]
 
-        uv, Z = project_points(means_cam, K, flip_z=self.flip_z)  # [M,2], [M]
-        scales_pix = self.gaus.scales() * (K[0,0] / max(H, W)) * 60.0
+        uv, Z = project_points(means_cam, K)  # [M,2], [M]
+        # debug_projection_stats(uv, Z, H, W, tag=f"fid{fid}")
+        scales_pix = self.gaus.scales() * (K[0,0] / max(H, W)) * 15
         # NOTE: crude heuristic scale -> pixels; adjust multiplier if splats look too big/small.
 
         rgb_pred, alpha_pred = render_gaussians_2d(
@@ -412,6 +596,14 @@ class Trainer:
         # Losses
         mask3 = mask.expand_as(rgb_pred)
         l_rgb = (mask3 * (rgb_pred - image).abs()).mean()
+
+        if it_number % 20 == 0:
+            save_loss_visualization(
+                image=image,
+                mask=mask,
+                rgb_pred=rgb_pred,
+                out_path=self.trn_viz_dir / "debug" / f"lossviz_it{it_number:05d}.png"
+            )
 
         # Silhouette BCE
         eps = 1e-6
@@ -449,7 +641,7 @@ class Trainer:
             while it < iters:
                 for batch in self.loader:
                     it += 1
-                    logs = self.step(batch)
+                    logs = self.step(batch, it)
 
                     # Update progress bar
                     pbar.update(1)
@@ -459,6 +651,18 @@ class Trainer:
                         "sil": f"{logs['l_sil']:.4f}",
                         "focal": f"{logs['l_focal']:.6f}"
                     })
+
+                    # Periodic canonical preview
+                    if it % 50 == 0 or it == iters:
+                        save_path = self.trn_viz_canon_dir / f"preview_it{it:05d}.png"
+                        save_canonical_preview(
+                            gaus=self.gaus,
+                            out_path=save_path,
+                            H=640, W=480,
+                            fov_deg=18.0,
+                            flip_z=False,         # set True if your renderer uses -Z forward
+                            color_mode="learned"  # or "bone" to visualize by SMPL bone IDs
+                        )
 
                     if it >= iters:
                         break
@@ -475,7 +679,6 @@ def main(cfg: DictConfig):
         downscale=cfg.downscale,
         n_gauss_keep=cfg.n_gauss,
         lr=cfg.lr,
-        flip_z=cfg.flip_z,
         learn_per_frame_f=not cfg.no_learn_f,
     )
     print("✅ Trainer initialized.\n")

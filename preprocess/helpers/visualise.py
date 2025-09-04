@@ -44,14 +44,14 @@ def visualise_smpl(cfg, h4d_results, frames):
         final_imgs.append(final_img)
 
     # Save annotated images
-    frames_dir = os.path.join(cfg.output_dir, "visualizations", "smpl", "frames")
+    frames_dir = os.path.join(cfg.output_dir, "preprocess", "visualizations", "smpl", "frames")
     os.makedirs(frames_dir, exist_ok=True)
     for fid, img in enumerate(final_imgs):
         img_bgr = (img * 255).clip(0,255).astype(np.uint8)[..., ::-1]
         cv2.imwrite(os.path.join(frames_dir, f"frame_{fid:05d}.png"), img_bgr)
 
     # Create video from frames
-    output_file = os.path.join(cfg.output_dir, "visualizations", "smpl", "video.mp4")
+    output_file = os.path.join(cfg.output_dir, "preprocess", "visualizations", "smpl", "video.mp4")
     frames_to_video(frames_dir, output_file, framerate=12)
 
 def visualise_tracking_results(cfg, h4d_results, frames):
@@ -110,13 +110,13 @@ def visualise_tracking_results(cfg, h4d_results, frames):
         frames[fid] = img
 
     # Save annotated images
-    frames_dir = os.path.join(cfg.output_dir, "visualizations", "tracking", "frames")
+    frames_dir = os.path.join(cfg.output_dir, "preprocess", "visualizations", "tracking", "frames")
     os.makedirs(frames_dir, exist_ok=True)
     for fid, img in frames.items():
         cv2.imwrite(os.path.join(frames_dir, f"frame_{fid:05d}.png"), img)
 
     # Create video from frames
-    output_file = os.path.join(cfg.output_dir, "visualizations", "tracking", "video.mp4")
+    output_file = os.path.join(cfg.output_dir, "preprocess", "visualizations", "tracking", "video.mp4")
     frames_to_video(frames_dir, output_file, framerate=12)
 
 
@@ -127,7 +127,7 @@ def visualise_human4d(cfg):
     h4d_results = load_frame_map_jsonl_restore(frame_results_path, scene_root=scene_root)
     print("--- FYI: Loaded Human4D results")
 
-    img_dir = os.path.join(cfg.output_dir, "preprocess", "images")
+    img_dir = os.path.join(cfg.output_dir, "preprocess",  "images")
 
     frames = load_images(img_dir)
     visualise_tracking_results(cfg, h4d_results, frames)

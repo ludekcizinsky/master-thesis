@@ -6,4 +6,4 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 conda activate thesis
 
 # Training
-python training/run.py scene_name=modric_vs_ribberi
+python training/run.py scene_name=modric_vs_ribberi 
