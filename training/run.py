@@ -205,23 +205,21 @@ class HumanOnlyDataset(Dataset):
 
     def __init__(
         self,
-        scene_root: Path,
+        preprocess_dir: Path,
         tid: int,
         downscale: int = 2,
-        mask_folder: str = "masks",  # masks/<tid>/<fid>.png
     ):
-        self.scene_root = Path(scene_root)
+        self.preprocess_dir = preprocess_dir
         self.tid = int(tid)
         self.downscale = downscale
 
         # Load cam dicts (by frame_id)
-        cam_dicts_path = self.scene_root / "preprocess" / "cam_dicts.json"
+        cam_dicts_path = self.preprocess_dir / "cam_dicts.json"
         self.cam_dicts = load_camdicts_json(cam_dicts_path)
 
         # Load frame map jsonl
-        preprocess_dir = self.scene_root / "preprocess"
-        frame_map_path = self.scene_root / "preprocess" / "frame_map.jsonl"
-        self.frame_map = load_frame_map_jsonl_restore(frame_map_path, preprocess_dir)
+        frame_map_path = self.preprocess_dir / "frame_map.jsonl"
+        self.frame_map = load_frame_map_jsonl_restore(frame_map_path, self.preprocess_dir)
 
         # Collect frame_ids where this tid exists
         self.samples: List[int] = []
@@ -232,8 +230,8 @@ class HumanOnlyDataset(Dataset):
         print(f"--- FYI: found {len(self.samples)} frames for tid={self.tid}")
 
         # Paths
-        self.images_dir = self.scene_root / "preprocess" / "images"
-        self.masks_dir = self.scene_root / "preprocess" / mask_folder / str(self.tid)
+        self.images_dir = self.preprocess_dir / "images"
+        self.masks_dir = self.preprocess_dir / "masks" / str(self.tid)
         assert self.images_dir.exists(), f"Images dir not found: {self.images_dir}"
         assert self.masks_dir.exists(), f"Masks dir not found: {self.masks_dir}"
 
@@ -469,47 +467,40 @@ def project_points(
 # Trainer (one tid, no SfM)
 # -----------------------------------
 class Trainer:
-    def __init__(
-        self,
-        scene_root: str,
-        tid: int,
-        device: str = "cuda",
-        downscale: int = 2,
-        n_gauss_keep: int = 3000,
-        sigma_mult: float = 15.0,  # multiplier for scale -> pixel sigma heuristic
-    ):
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.sigma_mult = sigma_mult
-        print(f"--- FYI: using {self.device}")
-        self.dataset = HumanOnlyDataset(scene_root, tid, downscale=downscale)
+    def __init__(self, cfg: DictConfig):
+        self.sigma_mult = cfg.sigma_mult
+        self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        print(f"--- FYI: using device {self.device}")
+
+        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, downscale=cfg.downscale)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
-        self.trn_dir = Path(scene_root) / "training"
-        self.trn_dir.mkdir(parents=True, exist_ok=True)
-        self.trn_viz_dir = self.trn_dir / "visualizations"
-        self.trn_viz_dir.mkdir(parents=True, exist_ok=True)
-        self.trn_viz_canon_dir = self.trn_viz_dir / "canonical"
-        self.trn_viz_canon_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- SMPL server init & canonical cache ---
+
+        self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
+        self.trn_viz_canon_dir = self.experiment_dir / "visualizations" / "canonical"
+        self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
+        os.makedirs(self.trn_viz_canon_dir, exist_ok=True)
+        os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
+        print(f"--- FYI: experiment output dir: {self.experiment_dir}")
+
         self.smpl_server = SMPLServer().to(self.device).eval()
         with torch.no_grad():
-            # use canonical cached from server
             verts_c = self.smpl_server.verts_c[0].to(self.device)      # [6890,3]
             weights_c = self.smpl_server.weights_c[0].to(self.device)  # [6890,24]
 
         # Gaussians in canonical space
-        self.gaus = CanonicalGaussians(verts_c, weights_c, n_keep=n_gauss_keep).to(self.device)
+        self.gaus = CanonicalGaussians(verts_c, weights_c, n_keep=cfg.n_gauss).to(self.device)
         param_groups = [
-            {"params": [self.gaus.means_c],       "lr": 1e-4},
-            {"params": [self.gaus.log_scales],    "lr": 1e-4},
-            {"params": [self.gaus.opacity_logit], "lr": 1e-4},
-            {"params": [self.gaus.colors],        "lr": 2e-3},
+            {"params": [self.gaus.means_c],       "lr": cfg.lrs.mean},
+            {"params": [self.gaus.log_scales],    "lr": cfg.lrs.scale},
+            {"params": [self.gaus.opacity_logit], "lr": cfg.lrs.opacity},
+            {"params": [self.gaus.colors],        "lr": cfg.lrs.colour},
         ]
 
-        # Optimizer: Gaussians + (optional) focal
+        # Optimizer: Gaussians
         self.opt = torch.optim.Adam(param_groups)
-        self.grad_clip = 1.0  # store a value
+        self.grad_clip = cfg.grad_clip
         params = list(self.gaus.parameters())
         print(f"--- FYI: training {sum(p.numel() for p in params)} parameters")
 
@@ -594,7 +585,7 @@ class Trainer:
                 image=image,
                 mask=mask,
                 rgb_pred=rgb_pred,
-                out_path=self.trn_viz_dir / "debug" / f"lossviz_it{it_number:05d}.png"
+                out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
         # Silhouette BCE
@@ -665,14 +656,7 @@ def main(cfg: DictConfig):
 
     print("ℹ️ Initializing Trainer")
     init_logging(cfg)
-    trainer = Trainer(
-        scene_root=cfg.output_dir,
-        tid=cfg.tid,
-        device=cfg.device,
-        downscale=cfg.downscale,
-        n_gauss_keep=cfg.n_gauss,
-        sigma_mult=cfg.sigma_mult,
-    )
+    trainer = Trainer(cfg)
     print("✅ Trainer initialized.\n")
 
     print("ℹ️ Starting training")

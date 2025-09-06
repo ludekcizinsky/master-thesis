@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def init_logging(cfg):     
-    wandb_path = Path("/scratch/izar/cizinsky/thesis/") / "wandb"
+    wandb_path = Path("/scratch/izar/cizinsky/thesis/")
     os.makedirs(wandb_path, exist_ok=True)
     wandb.init(
         project=cfg.logger.project,

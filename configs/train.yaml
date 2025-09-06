@@ -10,12 +10,19 @@ n_gauss: 2000 # amount of gaussians to update every iteration
 iters: 2000 # number of training iterations
 sigma_mult: 15.0 # multiplier for scale -> pixel sigma heuristic
 
-
 logger:
   project: master-thesis
   entity: ludekcizinsky
   tags: [dev]
   run_id: null # this is for resuming
+
+lrs:
+  mean: 1e-4 # learning rate for gaussian means and scales
+  scale: 1e-4 # learning rate for background color
+  opacity: 1e-4 # learning rate for feature MLP
+  colour: 2e-3 # learning rate for color MLP
+
+grad_clip: 1.0 # gradient clipping value (0 = no clipping)
 
 hydra:
   run:
