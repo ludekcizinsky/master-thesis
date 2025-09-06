@@ -552,34 +552,47 @@ class Trainer:
         smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
         H, W = image.shape[-2:]
 
-#        with torch.no_grad():
-            #self.gaus.opacity_logit.data.clamp_(min=torch.logit(torch.tensor(0.02)),
-                                                #max=torch.logit(torch.tensor(0.6)))
-            #self.gaus.log_scales.data.clamp_(math.log(1e-3), math.log(0.08))
-
+        # Apply LBS to get posed means in camera space (from canonical coordinate space)
         out = self.smpl_server(smpl_param, absolute=False)
         T_rel = out["smpl_tfs"][0]   # [24,4,4]
         means_cam = lbs_apply(self.gaus.means_c, self.gaus.weights_c, T_rel)  # [M,3]
 
+        # Project from 3D camera space to 2D pixels
         uv, Z = project_points(means_cam, K)  # [M,2], [M]
-        # debug_projection_stats(uv, Z, H, W, tag=f"fid{fid}")
-        # scales_pix = self.gaus.scales() * (K[0,0] / max(H, W)) * self.sigma_mult    
         eps = 1e-6
-        sigma_mult = 8.0          # try 8 first; you can go down to 6
-        scales_pix = (self.gaus.scales() * K[0,0] / (Z + eps) * sigma_mult)
-        scales_pix = scales_pix.clamp(0.6, 7.0)   # was wider; tighten upper clamp
+        scales_pix = (self.gaus.scales() * K[0,0] / (Z + eps) * self.sigma_mult)
+        scales_pix = scales_pix.clamp(0.6, 7.0)
 
-        # NOTE: crude heuristic scale -> pixels; adjust multiplier if splats look too big/small.
-
+        # Render via 2D Gaussian splat
         rgb_pred, alpha_pred = render_gaussians_2d(
             uv=uv, z=Z, scales=scales_pix, colors=self.gaus.colors,
             opacity=self.gaus.opacity(), H=H, W=W, soft_z_temp=1e-2, truncate=3.0
         )  # [3,H,W], [H,W]
 
         # Losses
+        # - RGB L1 (masked)
         mask3 = mask.expand_as(rgb_pred)
         l_rgb = (mask3 * (rgb_pred - image).abs()).mean()
 
+        # - Silhouette BCE
+        eps = 1e-6
+        l_sil = F.binary_cross_entropy(alpha_pred.clamp(eps, 1 - eps), mask)
+
+        # - Regularizers
+        l_scale_reg = self.gaus.scales().mean() * 1e-3
+        l_opacity_reg = (self.gaus.opacity() ** 2).mean() * 1e-4
+
+        # Total loss
+        loss = l_rgb + l_sil + l_scale_reg + l_opacity_reg 
+
+        # Update weights step
+        self.opt.zero_grad(set_to_none=True)
+        loss.backward()
+        if self.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(self.gaus.parameters(), self.grad_clip)
+        self.opt.step()
+
+        # Periodic debug visualization
         if it_number % 20 == 0:
             save_loss_visualization(
                 image=image,
@@ -587,22 +600,6 @@ class Trainer:
                 rgb_pred=rgb_pred,
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
-
-        # Silhouette BCE
-        eps = 1e-6
-        l_sil = F.binary_cross_entropy(alpha_pred.clamp(eps, 1 - eps), mask)
-
-        # Regularizers
-        l_scale_reg = self.gaus.scales().mean() * 1e-3
-        l_opacity_reg = (self.gaus.opacity() ** 2).mean() * 1e-4
-
-        loss = l_rgb + 1.0 * l_sil + l_scale_reg + l_opacity_reg 
-
-        self.opt.zero_grad(set_to_none=True)
-        loss.backward()
-        if self.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.gaus.parameters(), self.grad_clip)
-        self.opt.step()
 
         return {
             "loss": float(loss.item()),
