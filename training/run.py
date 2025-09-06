@@ -22,12 +22,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+import wandb
 
 from utils.smpl_deformer.smpl_server import SMPLServer
 from utils.io import load_frame_map_jsonl_restore
 from preprocess.helpers.cameras import load_camdicts_json
 
 from tqdm import tqdm
+
+from training.helpers.utils import init_logging
 
 # -----------------------------
 # Utility: image & mask loading & Visualization
@@ -632,6 +635,14 @@ class Trainer:
                         "sil": f"{logs['l_sil']:.4f}",
                     })
 
+                    # Log to wandb
+                    wandb.log({
+                        "loss": logs["loss"],
+                        "l_rgb": logs["l_rgb"],
+                        "l_sil": logs["l_sil"],
+                        "iteration": it,
+                    })
+
                     # Periodic canonical preview
                     if it % 50 == 0 or it == iters:
                         save_path = self.trn_viz_canon_dir / f"preview_it{it:05d}.png"
@@ -651,7 +662,9 @@ class Trainer:
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
 def main(cfg: DictConfig):
+
     print("ℹ️ Initializing Trainer")
+    init_logging(cfg)
     trainer = Trainer(
         scene_root=cfg.output_dir,
         tid=cfg.tid,
