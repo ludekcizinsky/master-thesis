@@ -1,12 +1,12 @@
 scene_name: ???
-debug: True # if true -> disable wandb logging
+debug: False # if true -> disable wandb logging
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 preprocess_dir: ${output_dir}/preprocess
 train_dir: ${output_dir}/training
 tid: 1 # track ID of the person to train the 3DGS on
 device: cuda
 downscale: 2 # downscale factor for the input video frames (1 = no down scaling)
-n_gauss: 2000 # amount of gaussians to update every iteration
+n_gauss: 4000 # amount of gaussians to update every iteration
 iters: 2000 # number of training iterations
 sigma_mult: 8.0 # multiplier for scale -> pixel sigma heuristic
 
