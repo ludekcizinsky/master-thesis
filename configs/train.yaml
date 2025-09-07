@@ -1,5 +1,5 @@
 scene_name: ???
-debug: False # if true -> disable wandb logging
+debug: True # if true -> disable wandb logging
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 preprocess_dir: ${output_dir}/preprocess
 train_dir: ${output_dir}/training

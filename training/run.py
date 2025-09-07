@@ -31,6 +31,7 @@ from preprocess.helpers.cameras import load_camdicts_json
 from tqdm import tqdm
 
 from training.helpers.utils import init_logging
+from training.helpers.render import gsplat_render, lbs_apply
 
 # -----------------------------
 # Utility: image & mask loading & Visualization
@@ -329,32 +330,6 @@ class CanonicalGaussians(nn.Module):
         return torch.exp(self.log_scales).clamp(1e-4, 1.0)  # [M]
 
 
-# ---------------------------------
-# LBS: canonical -> posed (camera)
-# ---------------------------------
-def lbs_apply(means_c: torch.Tensor, weights_c: torch.Tensor, T_rel: torch.Tensor) -> torch.Tensor:
-    """
-    means_c:  [M,3] canonical means
-    weights_c:[M,24]
-    T_rel:    [24,4,4] bone transforms canonical->current pose
-    returns:  [M,3] posed in camera coordinates
-    """
-    M = means_c.shape[0]
-    device = means_c.device
-    xyz1 = torch.cat([means_c, torch.ones(M, 1, device=device)], dim=1)  # [M,4]
-
-    # Expand for bones
-    # xyz1_exp: [M,24,4,1], T_rel: [24,4,4]
-    xyz1_exp = xyz1[:, None, :, None]            # [M,1,4,1]
-    T_rel_exp = T_rel[None, :, :, :]             # [1,24,4,4]
-    out = (T_rel_exp @ xyz1_exp).squeeze(-1)     # [M,24,4]
-    out = out[..., :3]                           # [M,24,3]
-
-    # Blend by weights
-    posed = (weights_c.unsqueeze(-1) * out).sum(dim=1)  # [M,3]
-    return posed
-
-
 # ------------------------------------------------
 # Simple differentiable 2D Gaussian "splat" render
 # ------------------------------------------------
@@ -476,7 +451,6 @@ class Trainer:
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
-
         self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_canon_dir = self.experiment_dir / "visualizations" / "canonical"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
@@ -533,16 +507,16 @@ class Trainer:
         colors = sampled.squeeze(0).squeeze(-1).permute(1, 0)  # [M,3]
         self.gaus.colors.data.copy_(colors.clamp(0, 1))
 
-        save_path = self.trn_viz_canon_dir / f"preview_init.png"
-        save_canonical_preview(
-            gaus=self.gaus,
-            out_path=save_path,
-            H=640, W=480,
-            fov_deg=18.0,
-            flip_z=False,         # set True if your renderer uses -Z forward
-            color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
-            sigma_mult=self.sigma_mult
-        )
+#         save_path = self.trn_viz_canon_dir / f"preview_init.png"
+        # save_canonical_preview(
+            # gaus=self.gaus,
+            # out_path=save_path,
+            # H=640, W=480,
+            # fov_deg=18.0,
+            # flip_z=False,         # set True if your renderer uses -Z forward
+            # color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
+            # sigma_mult=self.sigma_mult
+        # )
 
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
@@ -552,38 +526,24 @@ class Trainer:
         smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
         H, W = image.shape[-2:]
 
-        # Apply LBS to get posed means in camera space (from canonical coordinate space)
-        out = self.smpl_server(smpl_param, absolute=False)
-        T_rel = out["smpl_tfs"][0]   # [24,4,4]
-        means_cam = lbs_apply(self.gaus.means_c, self.gaus.weights_c, T_rel)  # [M,3]
-
-        # Project from 3D camera space to 2D pixels
-        uv, Z = project_points(means_cam, K)  # [M,2], [M]
-        eps = 1e-6
-        scales_pix = (self.gaus.scales() * K[0,0] / (Z + eps) * self.sigma_mult)
-        scales_pix = scales_pix.clamp(0.6, 7.0)
-
-        # Render via 2D Gaussian splat
-        rgb_pred, alpha_pred = render_gaussians_2d(
-            uv=uv, z=Z, scales=scales_pix, colors=self.gaus.colors,
-            opacity=self.gaus.opacity(), H=H, W=W, soft_z_temp=1e-2, truncate=3.0
-        )  # [3,H,W], [H,W]
+        rgb_pred = gsplat_render(
+            trainer=self,
+            smpl_param=smpl_param,
+            K=K,
+            img_wh=(W, H)
+        )  # [3,H,W]
 
         # Losses
         # - RGB L1 (masked)
         mask3 = mask.expand_as(rgb_pred)
         l_rgb = (mask3 * (rgb_pred - image).abs()).mean()
 
-        # - Silhouette BCE
-        eps = 1e-6
-        l_sil = F.binary_cross_entropy(alpha_pred.clamp(eps, 1 - eps), mask)
-
         # - Regularizers
         l_scale_reg = self.gaus.scales().mean() * 1e-3
         l_opacity_reg = (self.gaus.opacity() ** 2).mean() * 1e-4
 
         # Total loss
-        loss = l_rgb + l_sil + l_scale_reg + l_opacity_reg 
+        loss = l_rgb + l_scale_reg + l_opacity_reg
 
         # Update weights step
         self.opt.zero_grad(set_to_none=True)
@@ -604,7 +564,6 @@ class Trainer:
         return {
             "loss": float(loss.item()),
             "l_rgb": float(l_rgb.item()),
-            "l_sil": float(l_sil.item()),
         }
 
     def train_loop(self, iters: int = 2000):
@@ -620,29 +579,27 @@ class Trainer:
                     pbar.set_postfix({
                         "loss": f"{logs['loss']:.4f}",
                         "rgb": f"{logs['l_rgb']:.4f}",
-                        "sil": f"{logs['l_sil']:.4f}",
                     })
 
                     # Log to wandb
                     wandb.log({
                         "loss": logs["loss"],
                         "l_rgb": logs["l_rgb"],
-                        "l_sil": logs["l_sil"],
                         "iteration": it,
                     })
 
                     # Periodic canonical preview
-                    if it % 50 == 0 or it == iters:
-                        save_path = self.trn_viz_canon_dir / f"preview_it{it:05d}.png"
-                        save_canonical_preview(
-                            gaus=self.gaus,
-                            out_path=save_path,
-                            H=640, W=480,
-                            fov_deg=18.0,
-                            flip_z=False,         # set True if your renderer uses -Z forward
-                            color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
-                            sigma_mult=self.sigma_mult
-                        )
+#                     if it % 50 == 0 or it == iters:
+                        # save_path = self.trn_viz_canon_dir / f"preview_it{it:05d}.png"
+                        # save_canonical_preview(
+                            # gaus=self.gaus,
+                            # out_path=save_path,
+                            # H=640, W=480,
+                            # fov_deg=18.0,
+                            # flip_z=False,         # set True if your renderer uses -Z forward
+                            # color_mode="learned",  # or "bone" to visualize by SMPL bone IDs
+                            # sigma_mult=self.sigma_mult
+                        # )
 
                     if it >= iters:
                         break
