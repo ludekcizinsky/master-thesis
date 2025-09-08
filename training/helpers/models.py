@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import math
 import torch
 import torch.nn as nn
+import numpy as np
 
 from utils.smpl_deformer.smpl_server import SMPLServer
 from training.helpers.utils import lbs_apply
@@ -76,3 +79,15 @@ class CanonicalGaussians(nn.Module):
         """
         q = self.quats
         return q / (q.norm(dim=-1, keepdim=True) + 1e-8)
+    
+    # ---- Saving / loading ----
+    @torch.no_grad()
+    def export_canonical_npz(self, path: Path):
+        data = {
+            "means_c": self.means_c.detach().cpu().numpy(),          # [M,3]
+            "log_scales": self.log_scales.detach().cpu().numpy(),    # [M,3]
+            "quats": self.rotations().detach().cpu().numpy(),        # [M,4] unit quats [w,x,y,z]
+            "colors": self.get_colors().detach().cpu().numpy(),      # [M,3], [0,1]
+            "opacity": self.opacity().detach().cpu().numpy(),        # [M]
+        }
+        np.savez(path, **data)

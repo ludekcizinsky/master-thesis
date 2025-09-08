@@ -24,7 +24,7 @@ from training.helpers.dataset import HumanOnlyDataset
 
 class Trainer:
     def __init__(self, cfg: DictConfig):
-        self.sigma_mult = cfg.sigma_mult
+        self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
@@ -113,7 +113,7 @@ class Trainer:
         self.opt.step()
 
         # Periodic debug visualization
-        if it_number % 20 == 0:
+        if it_number % 20 == 0 and self.visualise_cam_preds:
             save_loss_visualization(
                 image=image,
                 mask=mask,
@@ -150,6 +150,9 @@ class Trainer:
 
                     if it >= iters:
                         break
+        
+        # End of training: save model and canonical viz
+        self.gaus.export_canonical_npz(self.experiment_dir / "model_canonical.npz")
 
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
