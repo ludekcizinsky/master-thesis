@@ -1,3 +1,4 @@
+import math
 import hydra
 import os
 import sys
@@ -14,13 +15,71 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import wandb
+import numpy as np
 
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, project_points, save_loss_visualization
+from training.helpers.utils import init_logging, project_points, save_loss_visualization, lbs_apply
 from training.helpers.render import gsplat_render
+from gsplat.strategy import DefaultStrategy
 from training.helpers.models import CanonicalGaussians
 from training.helpers.dataset import HumanOnlyDataset
+
+from utils.smpl_deformer.smpl_server import SMPLServer
+
+
+def create_splats_with_optimizers(device, cfg):
+
+    smpl_server = SMPLServer().to(device).eval()
+    with torch.no_grad():
+        verts_c = smpl_server.verts_c[0].to(device)      # [6890,3]
+        weights_c = smpl_server.weights_c[0].to(device)  # [6890,24]
+
+    M = verts_c.shape[0]
+
+    # --- Splats (the model)
+    # means 
+    smpl_vertices = verts_c.clone()                     # [M,3]
+
+    # anisotropic per-axis log-scales
+    init_sigma = 0.02
+    log_scales = torch.full((M, 3), math.log(init_sigma), device=device) # [M,3]
+
+    # rotations as quaternions [w,x,y,z], init to identity
+    quats_init = torch.zeros(M, 4, device=device)
+    quats_init[:, 0] = 1.0
+
+    # colors and opacities
+    colors = torch.rand(M, 3, device=device)      # [M,3]
+    init_opacity = 0.1
+    opacity_logit = torch.full((M,), torch.logit(torch.tensor(init_opacity, device=device)))
+
+
+    params = [
+        # name, value, lr
+        ("means", torch.nn.Parameter(smpl_vertices), cfg.lrs.mean),
+        ("scales", torch.nn.Parameter(log_scales), cfg.lrs.scale),
+        ("quats", torch.nn.Parameter(quats_init), cfg.lrs.quats),
+        ("opacities", torch.nn.Parameter(opacity_logit), cfg.lrs.opacity),
+        ("colors", torch.nn.Parameter(colors), cfg.lrs.color), # TODO: understand better how they represent color in gsplat
+    ]
+
+    splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
+
+    # --- Optimizers
+    BS = 1
+    optimizers = {
+        name: torch.optim.Adam(
+            [{"params": splats[name], "lr": lr * math.sqrt(BS), "name": name}],
+            eps=1e-15 / math.sqrt(BS),
+            # TODO: check betas logic when BS is larger than 10 betas[0] will be zero.
+            betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
+        )
+        for name, _, lr in params
+    }
+
+    return splats, optimizers, weights_c, smpl_server
+
 
 class Trainer:
     def __init__(self, cfg: DictConfig):
@@ -39,23 +98,49 @@ class Trainer:
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
-        # Gaussians in canonical space
-        self.gaus = CanonicalGaussians(self.device).to(self.device)
-        param_groups = [
-            {"params": [self.gaus.means_c],       "lr": cfg.lrs.mean},
-            {"params": [self.gaus.log_scales],    "lr": cfg.lrs.scale},
-            {"params": [self.gaus.opacity_logit], "lr": cfg.lrs.opacity},
-            {"params": [self.gaus.colors],        "lr": cfg.lrs.colour},
-        ]
-
-        # Optimizer: Gaussians
-        self.opt = torch.optim.Adam(param_groups)
+        # Define model and optimizers
         self.grad_clip = cfg.grad_clip
-        params = list(self.gaus.parameters())
-        print(f"--- FYI: training {sum(p.numel() for p in params)} parameters")
+        out = create_splats_with_optimizers(self.device, cfg)
+        self.splats, self.optimizers, self.weights_c, self.smpl_server = out
+        print("--- FYI: Model initialized. Number of GS:", len(self.splats["means"]))
+
+        # Adaptive densification strategy
+        self.strategy = DefaultStrategy(verbose=True)
+        self.strategy.check_sanity(self.splats, self.optimizers)
 
         # Warm-start colors from first available frame (project once)
         self._init_colors()
+
+    def means_can_to_cam(self, smpl_param: torch.Tensor) -> torch.Tensor:
+
+        out = self.smpl_server(smpl_param, absolute=False)
+        T_rel = out["smpl_tfs"][0].to(self.device)       # [24,4,4]
+        means_cam = lbs_apply(self.splats["means"], self.weights_c, T_rel)  # [M,3]
+        return means_cam
+
+    def opacity(self) -> torch.Tensor:
+        """[M] in (0,1)"""
+        return torch.sigmoid(self.splats["opacities"])
+
+    def get_colors(self) -> torch.Tensor:
+        """[M,3] in [0,1]"""
+        return self.splats["colors"].clamp(0, 1)
+
+    def scales(self) -> torch.Tensor:
+        """Per-axis std devs [M,3], clamped."""
+        s = torch.exp(self.splats["scales"])
+        min_sigma = 1e-4
+        max_sigma = 1.0
+        return s.clamp(min_sigma, max_sigma)
+
+    def rotations(self) -> torch.Tensor:
+        """
+        Return unit quaternions [w, x, y, z] with shape [M,4],
+        which matches your rasteriser's expected format.
+        """
+        q = self.splats["quats"]
+        return q / (q.norm(dim=-1, keepdim=True) + 1e-8)
+    
 
     @torch.no_grad()
     def _init_colors(self):
@@ -65,7 +150,7 @@ class Trainer:
         K = sample["K"].to(self.device)
         smpl_param = sample["smpl_param"].unsqueeze(0).to(self.device)  # [1,86]
 
-        means_cam = self.gaus.means_cam(smpl_param)  # [M,3]
+        means_cam = self.means_can_to_cam(smpl_param)  # [M,3]
         uv, _ = project_points(means_cam, K)  # [M,2]
 
         # Bilinear sample colors (ignore out-of-bounds)
@@ -76,7 +161,7 @@ class Trainer:
         # grid_sample expects [N,C,H,W] and grid [N,H_out,W_out,2]
         sampled = F.grid_sample(image.unsqueeze(0), grid, align_corners=True, mode="bilinear")  # [1,3,M,1]
         colors = sampled.squeeze(0).squeeze(-1).permute(1, 0)  # [M,3]
-        self.gaus.colors.data.copy_(colors.clamp(0, 1))
+        self.splats["colors"].data.copy_(colors.clamp(0, 1))
 
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
@@ -99,21 +184,26 @@ class Trainer:
         l_rgb = (mask3 * (rgb_pred - image).abs()).mean()
 
         # - Regularizers
-        l_scale_reg = self.gaus.scales().mean() * 1e-3
-        l_opacity_reg = (self.gaus.opacity() ** 2).mean() * 1e-4
+        l_scale_reg = self.scales().mean() * 1e-3
+        l_opacity_reg = (self.opacity() ** 2).mean() * 1e-4
 
         # Total loss
         loss = l_rgb + l_scale_reg + l_opacity_reg
 
         # Update weights step
-        self.opt.zero_grad(set_to_none=True)
+        # self.opt.zero_grad(set_to_none=True)
+        for opt in self.optimizers.values():
+            opt.zero_grad(set_to_none=True)
         loss.backward()
         if self.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.gaus.parameters(), self.grad_clip)
-        self.opt.step()
+            parameters = [p for p in self.splats.values() if p.requires_grad]
+            torch.nn.utils.clip_grad_norm_(parameters, self.grad_clip)
+        # self.opt.step()
+        for opt in self.optimizers.values():
+            opt.step()
 
         # Periodic debug visualization
-        if it_number % 20 == 0 and self.visualise_cam_preds:
+        if it_number % 50 == 0 and self.visualise_cam_preds:
             save_loss_visualization(
                 image=image,
                 mask=mask,
@@ -152,8 +242,18 @@ class Trainer:
                         break
         
         # End of training: save model and canonical viz
-        self.gaus.export_canonical_npz(self.experiment_dir / "model_canonical.npz")
+        self.export_canonical_npz(self.experiment_dir / "model_canonical.npz")
 
+    @torch.no_grad()
+    def export_canonical_npz(self, path: Path):
+        data = {
+            "means_c": self.splats["means"].detach().cpu().numpy(),          # [M,3]
+            "log_scales": self.splats["scales"].detach().cpu().numpy(),    # [M,3]
+            "quats": self.rotations().detach().cpu().numpy(),        # [M,4] unit quats [w,x,y,z]
+            "colors": self.get_colors().detach().cpu().numpy(),      # [M,3], [0,1]
+            "opacity": self.opacity().detach().cpu().numpy(),        # [M]
+        }
+        np.savez(path, **data)
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
 def main(cfg: DictConfig):

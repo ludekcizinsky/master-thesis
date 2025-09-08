@@ -9,15 +9,15 @@ def gsplat_render(trainer, smpl_param, K, img_wh):
 
     # Prepare gaussians
     # - Means
-    dev_means = trainer.gaus.means_cam(smpl_param)  # [M,3]
+    dev_means = trainer.means_can_to_cam(smpl_param)  # [M,3]
     # - Quats
-    dev_quats = trainer.gaus.rotations()  # [M,4]
+    dev_quats = trainer.rotations()  # [M,4]
     # - Scales
-    dev_scales = trainer.gaus.scales() # [M,3]
+    dev_scales = trainer.scales() # [M,3]
     # - Colours
-    dev_colors = trainer.gaus.get_colors()
+    dev_colors = trainer.get_colors()
     # - Opacity
-    dev_opacity = trainer.gaus.opacity()
+    dev_opacity = trainer.opacity()
 
     # Define cameras
     dev_viewmats = torch.eye(4, device=device, dtype=dtype).unsqueeze(0)   # [1,4,4]
