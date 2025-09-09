@@ -3,44 +3,28 @@ import numpy as np
 from utils.smpl_deformer.smpl.body_models import SMPL
 
 class SMPLServer(torch.nn.Module):
-    def __init__(self, gender='neutral', scale=1, betas=None, v_template=None, use_hands=False, use_feet_keypoints=False, use_v11=False):
+    def __init__(self, gender='neutral'):
         super().__init__()
 
-        smpl_model_path = 'gtu/smpl_deformer/smpl/smpl1.1' if use_v11 else 'gtu/smpl_deformer/smpl/smpl_model'
-        
-        self.scale = scale
+        smpl_model_path = 'gtu/smpl_deformer/smpl/smpl_model'
+
+        self.scale = 1.0
         self.smpl = SMPL(model_path=smpl_model_path,
                          gender=gender,
                          batch_size=1,
-                         use_hands=use_hands,
-                         use_feet_keypoints=use_feet_keypoints,
+                         use_hands=False,
+                         use_feet_keypoints=False,
                          dtype=torch.float32).cuda()
 
         self.bone_parents = self.smpl.bone_parents.astype(int)
         self.bone_parents[0] = -1
-        self.bone_ids = []
-        for i in range(24): self.bone_ids.append([self.bone_parents[i], i])
-
-        if v_template is not None:
-            self.v_template = torch.tensor(v_template).float().cuda()
-        else:
-            self.v_template = None
-
-        if betas is not None:
-            if isinstance(betas, np.ndarray):
-                self.betas = torch.tensor(betas).float().cuda()
-            else:
-                self.betas = betas.float().cuda()
-        else:
-            self.betas = None
+        self.bone_ids = [[self.bone_parents[i], i] for i in range(24)]
 
         # define the canonical pose
         param_canonical = torch.zeros((1, 86),dtype=torch.float32).cuda()
         param_canonical[0, 0] = self.scale
         param_canonical[0, 9] = np.pi / 6
         param_canonical[0, 12] = -np.pi / 6
-        if self.betas is not None and self.v_template is None:
-            param_canonical[0,-10:] = self.betas
         self.param_canonical = param_canonical
 
         output = self.forward(param_canonical, absolute=True)
@@ -66,10 +50,6 @@ class SMPLServer(torch.nn.Module):
         output = {}
 
         scale, transl, thetas, betas = torch.split(smpl_params, [1, 3, 72, 10], dim=1)
-
-        # # ignore betas if v_template is provided
-        # if self.v_template is not None:
-        #     betas = torch.zeros_like(betas)
 
         smpl_output = self.smpl.forward(betas=betas,
                                         transl=torch.zeros_like(transl),
