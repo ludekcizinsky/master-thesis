@@ -20,13 +20,12 @@ import numpy as np
 from tqdm import tqdm
 
 from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
-from training.helpers.render import gsplat_render
+from training.helpers.render import rasterize_splats
 from gsplat.strategy import DefaultStrategy
 from training.helpers.dataset import HumanOnlyDataset
 
-
 from utils.smpl_deformer.smpl_server import SMPLServer
-
+from fused_ssim import fused_ssim
 
 
 def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
@@ -93,7 +92,7 @@ def create_splats_with_optimizers(device, cfg):
 
 class Trainer:
     def __init__(self, cfg: DictConfig):
-        self.sh_degree = cfg.sh_degree
+        self.cfg = cfg
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
@@ -221,20 +220,23 @@ class Trainer:
         return q / (q.norm(dim=-1, keepdim=True) + 1e-8)
     
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
-        image = batch["image"].squeeze(0).to(self.device)  # [3,H,W]
-        mask  = batch["mask"].squeeze(0).to(self.device)   # [H,W]
-        K  = batch["K"].squeeze(0).to(self.device)      # [3,3]
-        smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
-        H, W = image.shape[-2:]
+        images = batch["image"].to(self.device)  # [B,H,W,3]
+        masks  = batch["mask"].to(self.device)   # [B,H,W]
+        K  = batch["K"].to(self.device)      # [B, 3,3]
+        smpl_param = batch["smpl_param"].to(self.device)  # [B,86]
+        H, W = images.shape[1:3]
 
         # Forward pass: render
-        rgb_pred, _, info = gsplat_render(
+        renders, alphas, info = rasterize_splats(
             trainer=self,
             smpl_param=smpl_param,
             K=K,
             img_wh=(W, H),
-            sh_degree=self.sh_degree
-        )  # [3,H,W]
+            sh_degree=self.cfg.sh_degree,
+            masks=masks
+        ) # renders of shape [1,H,W,3]
+
+        colors = renders
 
         with torch.no_grad():
             self.strategy.step_pre_backward(
@@ -245,17 +247,25 @@ class Trainer:
                 info=info,
             )
 
-        # Losses
-        # - RGB L1 (masked)
-        mask3 = mask.expand_as(rgb_pred)
-        l_rgb = (mask3 * (rgb_pred - image).abs()).mean()
+        # --- Losses
+        # L1 (masked)
+        l1_loss = F.l1_loss(colors, images)
 
-        # - Regularizers
-        l_scale_reg = self.scales().mean() * 1e-3
-        l_opacity_reg = (self.opacity() ** 2).mean() * 1e-4
+        # SSIM (masked) 
+        ssim_loss = 1.0 - fused_ssim(
+            colors.permute(0, 3, 1, 2), images.permute(0, 3, 1, 2), padding="valid"
+        )
 
-        # Total loss
-        loss = l_rgb + l_scale_reg + l_opacity_reg
+        # Combined 
+        loss = l1_loss * (1.0 - self.cfg.ssim_lambda) + ssim_loss * self.cfg.ssim_lambda
+
+        # Add Regularizers
+        reg_scales = self.scales().mean() * 1e-3
+        loss += reg_scales
+        reg_opacity = (self.opacity() ** 2).mean() * 1e-4
+        loss += reg_opacity
+
+        # --- Backprop
         loss.backward()
 
         # Update weights step
@@ -274,17 +284,21 @@ class Trainer:
             )
 
         # Periodic debug visualization
-        if it_number % 1000 == 0 and self.visualise_cam_preds:
+        if it_number % 1000 == 0 and self.cfg.visualise_cam_preds:
             save_loss_visualization(
-                image=image,
-                mask=mask,
-                rgb_pred=rgb_pred,
+                images=images,
+                masks=masks,
+                colors=colors,
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
         return {
-            "loss": float(loss.item()),
-            "l_rgb": float(l_rgb.item()),
+            "loss/combined": float(loss.item()),
+            "loss/masked_l1": float(l1_loss.item()),
+            "loss/masked_ssim": float(ssim_loss.item()),
+            "loss/reg_scales": float(reg_scales.item()),
+            "loss/reg_opacity": float(reg_opacity.item()),
+            "splats/num": len(self.splats["means"]),
         }
 
     def train_loop(self, iters: int = 2000):
@@ -298,17 +312,12 @@ class Trainer:
                     # Update progress bar
                     pbar.update(1)
                     pbar.set_postfix({
-                        "loss": f"{logs['loss']:.4f}",
-                        "rgb": f"{logs['l_rgb']:.4f}",
+                        "loss": f"{logs['loss/combined']:.4f}",
                     })
 
                     # Log to wandb
-                    wandb.log({
-                        "loss": logs["loss"],
-                        "l_rgb": logs["l_rgb"],
-                        "iteration": it,
-                        "num_splats": len(self.splats["means"]),
-                    })
+                    logs["iteration"] = it
+                    wandb.log(logs)
 
                     if it >= iters:
                         break

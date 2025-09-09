@@ -11,6 +11,7 @@ iters: 30000 # number of training iterations
 sh_degree: 3 # spherical harmonics degree for splat colors
 sh0_lr: 2.5e-3 # learning rate for the 0-th SH coefficient (diffuse color)
 shN_lr: 1.25e-4 # learning rate for the higher order SH coefficients (
+ssim_lambda: 0.2 # weight of the SSIM loss term (1.0 = only SSIM, 0.0 = only L1)
 
 logger:
   project: master-thesis

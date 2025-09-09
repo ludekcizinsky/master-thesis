@@ -116,5 +116,5 @@ def view_npz(npz_path: str, quat_order="wxyz", align_to="+z", scale_multiplier=1
 
 if __name__ == "__main__":
     # path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/woven-energy-17_2owmwlvm/model_canonical.npz"
-    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/likely-flower-26_tum6fois/model_canonical.npz"
+    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/still-star-30_a0k9rev6/model_canonical.npz"
     view_npz(path, quat_order="wxyz", align_to=None, scale_multiplier=1.0)

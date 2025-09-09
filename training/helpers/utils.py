@@ -62,7 +62,7 @@ def load_image(path: Path, downscale: int = 1) -> torch.Tensor:
         w, h = img.size
         img = img.resize((w // downscale, h // downscale), Image.BILINEAR)
     im = torch.from_numpy(np.array(img)).float() / 255.0  # [H,W,3]
-    return im.permute(2, 0, 1).contiguous()  # [3,H,W]
+    return im.contiguous() 
 
 def load_mask(path: Path, downscale: int = 1) -> torch.Tensor:
     m = Image.open(path).convert("L")
@@ -70,7 +70,9 @@ def load_mask(path: Path, downscale: int = 1) -> torch.Tensor:
         w, h = m.size
         m = m.resize((w // downscale, h // downscale), Image.NEAREST)
     m = torch.from_numpy(np.array(m)).float() / 255.0  # [H,W]
-    return m.clamp(0, 1)
+    # convert to binary mask boolean dtype mask
+    m = (m > 0.5).to(torch.bool)
+    return m
 
 @torch.no_grad()
 def debug_projection_stats(uv, Z, H, W, tag=""):
@@ -85,9 +87,9 @@ def debug_projection_stats(uv, Z, H, W, tag=""):
 
 @torch.no_grad()
 def save_loss_visualization(
-    image: torch.Tensor,       # [3,H,W], GT image in [0,1]
-    mask: torch.Tensor,        # [H,W], 0–1
-    rgb_pred: torch.Tensor,    # [3,H,W], predicted image in [0,1]
+    images: torch.Tensor,       # [B, H,W, 3], GT image in [0,1]
+    masks: torch.Tensor,        # [B, H,W], 0–1
+    colors: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
     out_path: str,
 ):
     """
@@ -97,15 +99,13 @@ def save_loss_visualization(
     - predicted image
     """
     # Ensure all are 3×H×W tensors
-    H, W = image.shape[-2:]
-    mask3 = mask.expand_as(image)  # [3,H,W]
-    masked_img = image * mask3
+    masked_img = images * masks[..., None]
 
-    # Stack [3, H, W] tensors into [3, H, 3*W]
-    comparison = torch.cat([image, masked_img, rgb_pred.clamp(0,1)], dim=-1)
+    comparison = torch.cat([images, masked_img, colors], dim=2)  # [B,H,3W,3]
+    comparison = comparison[0]  # Take first in batch
 
     # Convert to uint8 for saving
-    img = (comparison.permute(1,2,0).cpu().numpy().clip(0,1) * 255).astype(np.uint8)
+    img = (comparison.cpu().numpy() * 255.0).astype(np.uint8)
     Image.fromarray(img).save(out_path)
 
     return out_path

@@ -66,7 +66,7 @@ class HumanOnlyDataset(Dataset):
         # Load image & mask
         img_path = self.images_dir / f"frame_{fid:05d}.jpg"
 
-        image = load_image(img_path, self.downscale)  # [3,H,W]
+        image = load_image(img_path, self.downscale)  # [H,W,3]
 
         mask_path = self.masks_dir / f"{fid:05d}.png"
         if mask_path.exists():

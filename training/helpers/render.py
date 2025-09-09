@@ -2,7 +2,7 @@ import torch
 from gsplat import rasterization
 
 
-def gsplat_render(trainer, smpl_param, K, img_wh, sh_degree):
+def rasterize_splats(trainer, smpl_param, K, img_wh, sh_degree, masks=None):
 
     device, dtype = trainer.device, torch.float32
     dev_width, dev_height = img_wh
@@ -21,12 +21,13 @@ def gsplat_render(trainer, smpl_param, K, img_wh, sh_degree):
 
     # Define cameras
     dev_viewmats = torch.eye(4, device=device, dtype=dtype).unsqueeze(0)   # [1,4,4]
-    dev_Ks = K.to(device, dtype).unsqueeze(0).contiguous()                  # [1,3,3]
+    dev_Ks = K.to(device, dtype).contiguous()                  # [1,3,3]
 
     # Render
-    colors, alphas, info = rasterization(
+    render_colors, render_alphas, info = rasterization(
         dev_means, dev_quats, dev_scales, dev_opacity, dev_colors, dev_viewmats, dev_Ks, dev_width, dev_height, sh_degree=sh_degree
     )
-    rgb_pred = colors.squeeze().permute(2, 0, 1)
 
-    return rgb_pred, alphas, info
+    if masks is not None:
+        render_colors[~masks] = 0
+    return render_colors, render_alphas, info
