@@ -6,6 +6,20 @@ import numpy as np
 import viser
 import time
 
+
+_C0 = 0.28209479177387814  # Y_00 = 1/(2*sqrt(pi))
+
+def _sh_dc_to_rgb(sh_coeffs: np.ndarray) -> np.ndarray:
+    """
+    sh_coeffs: [N, K, 3] real SH coeffs (GraphDECO/gsplat layout).
+    Uses DC-only (k=0): rgb = 0.5 + C0 * sh0.
+    Returns [N,3] in [0,1].
+    """
+    sh0 = sh_coeffs[:, 0, :]            # [N,3]
+    rgb = 0.5 + _C0 * sh0
+    return np.clip(rgb, 0.0, 1.0).astype(np.float32)
+
+
 # ---------- math utils (pure NumPy) ----------
 def _quat_to_matrix(quats: np.ndarray, order="wxyz") -> np.ndarray:
     """quats: [N,4]; returns [N,3,3]."""
@@ -52,8 +66,26 @@ def _apply_global_rotation(centers, covs, R):
 def view_npz(npz_path: str, quat_order="wxyz", align_to="+z", scale_multiplier=1.0):
     data = np.load(npz_path)
     centers = data["means"] if "means" in data else data["means_c"]
-    rgbs = data["colors"].astype(np.float32)
-    if rgbs.max() > 1.0: rgbs /= 255.0
+    # --- colors ---
+    if "colors" in data:
+        cols = data["colors"].astype(np.float32)
+        if cols.ndim == 2 and cols.shape[1] == 3:
+            # Legacy: already RGB
+            rgbs = cols if cols.max() <= 1.0 else cols / 255.0
+        elif cols.ndim == 3 and cols.shape[2] == 3:
+            # Your case now: SH coeffs [N,K,3] stored in "colors"
+            rgbs = _sh_dc_to_rgb(cols)
+        else:
+            raise ValueError(f"Unexpected 'colors' shape: {cols.shape}")
+    elif "sh0" in data and "shN" in data:
+        # Alternative gsplat-style storage
+        sh_coeffs = np.concatenate([data["sh0"], data["shN"]], axis=1).astype(np.float32)  # [N,K,3]
+        rgbs = _sh_dc_to_rgb(sh_coeffs)
+    else:
+        # Fallback
+        rgbs = np.ones((centers.shape[0], 3), dtype=np.float32) * 0.5  # grey
+
+
     opacities = (data["opacity"].astype(np.float32).reshape(-1,1)
                  if "opacity" in data else np.ones((centers.shape[0],1), np.float32))
 
@@ -83,5 +115,6 @@ def view_npz(npz_path: str, quat_order="wxyz", align_to="+z", scale_multiplier=1
     except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
-    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/woven-energy-17_2owmwlvm/model_canonical.npz"
+    # path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/woven-energy-17_2owmwlvm/model_canonical.npz"
+    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/likely-flower-26_tum6fois/model_canonical.npz"
     view_npz(path, quat_order="wxyz", align_to=None, scale_multiplier=1.0)

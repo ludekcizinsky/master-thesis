@@ -19,14 +19,19 @@ import numpy as np
 
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, project_points, save_loss_visualization, lbs_apply
+from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
 from training.helpers.render import gsplat_render
 from gsplat.strategy import DefaultStrategy
-from training.helpers.models import CanonicalGaussians
 from training.helpers.dataset import HumanOnlyDataset
+
 
 from utils.smpl_deformer.smpl_server import SMPLServer
 
+
+
+def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
+    C0 = 0.28209479177387814
+    return (rgb - 0.5) / C0
 
 def create_splats_with_optimizers(device, cfg):
 
@@ -49,11 +54,10 @@ def create_splats_with_optimizers(device, cfg):
     quats_init = torch.zeros(M, 4, device=device)
     quats_init[:, 0] = 1.0
 
-    # colors and opacities
+    # opacities
     colors = torch.rand(M, 3, device=device)      # [M,3]
     init_opacity = 0.1
     opacity_logit = torch.full((M,), torch.logit(torch.tensor(init_opacity, device=device)))
-
 
     params = [
         # name, value, lr
@@ -61,8 +65,14 @@ def create_splats_with_optimizers(device, cfg):
         ("scales", torch.nn.Parameter(log_scales), cfg.lrs.scale),
         ("quats", torch.nn.Parameter(quats_init), cfg.lrs.quats),
         ("opacities", torch.nn.Parameter(opacity_logit), cfg.lrs.opacity),
-        ("colors", torch.nn.Parameter(colors), cfg.lrs.color), # TODO: understand better how they represent color in gsplat
     ]
+
+
+    # color is SH coefficients
+    colors = torch.zeros((M, (cfg.sh_degree + 1) ** 2, 3))  # [M, K, 3]
+    colors[:, 0, :] = rgb_to_sh(torch.rand(M, 3))  # [M,3]
+    params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), cfg.sh0_lr))
+    params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), cfg.shN_lr))
 
     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
 
@@ -83,6 +93,7 @@ def create_splats_with_optimizers(device, cfg):
 
 class Trainer:
     def __init__(self, cfg: DictConfig):
+        self.sh_degree = cfg.sh_degree
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
@@ -107,15 +118,83 @@ class Trainer:
         # Adaptive densification strategy
         self.strategy = DefaultStrategy(verbose=True)
         self.strategy.check_sanity(self.splats, self.optimizers)
+        self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 
-        # Warm-start colors from first available frame (project once)
-        self._init_colors()
+    def _update_skinning_weights(self, current_weights_c, k: int = 4, eps: float = 1e-6):
+        """
+        Update / extend skinning weights when #splats (Gaussians) changes.
+
+        Args:
+            current_weights_c: torch.Tensor [M_old, 24]
+                Existing per-Gaussian LBS weights.
+            k: int
+                # of nearest SMPL vertices to use for interpolation.
+            eps: float
+                Small epsilon for numerical stability.
+
+        Requires (on self):
+            self.splats["means"]          -> [M_new_total, 3] canonical positions of Gaussians
+            self.smpl_verts_c             -> [N_smpl, 3] canonical SMPL vertex positions
+            self.smpl_weights_c           -> [N_smpl, 24] SMPL skinning weight matrix (rows sum ~1)
+
+        Returns:
+            updated_weights_c: torch.Tensor [M_new_total, 24]
+        """
+        device = current_weights_c.device
+        dtype  = current_weights_c.dtype
+
+        means_all = self.splats["means"].to(device=device, dtype=dtype)                # [M_total, 3]
+        smpl_V    = self.smpl_server.verts_c[0].to(device=device, dtype=dtype)                   # [N_smpl, 3]
+        smpl_W    = self.smpl_server.weights_c[0].to(device=device, dtype=dtype)                 # [N_smpl, 24]
+
+        M_old = current_weights_c.shape[0]
+        M_tot = means_all.shape[0]
+
+        # Case 1: fewer/equal splats than weights -> truncate (common when pruning)
+        if M_tot <= M_old:
+            return current_weights_c[:M_tot].clone()
+
+        # Case 2: we added new splats -> extend
+        M_new = M_tot - M_old
+        means_new = means_all[M_old:]                                                  # [M_new, 3]
+
+        # k-NN in canonical space to SMPL vertices
+        k_eff = min(k, smpl_V.shape[0])
+        # distances: [M_new, N_smpl]
+        dists = torch.cdist(means_new, smpl_V)                                         
+        # take k nearest
+        topk_d, topk_idx = torch.topk(dists, k=k_eff, dim=1, largest=False)            # [M_new, k], [M_new, k]
+
+        # inverse-distance weights (safer than 1/d with eps)
+        inv = 1.0 / (topk_d + eps)                                                     # [M_new, k]
+        w_geo = inv / (inv.sum(dim=1, keepdim=True) + eps)                             # row-normalize
+
+        # gather SMPL skinning weights for those neighbors
+        # smpl_W[topk_idx]: [M_new, k, 24]
+        smpl_W_knn = smpl_W[topk_idx]
+
+        # distance-weighted mix -> [M_new, 24]
+        new_W = (w_geo.unsqueeze(-1) * smpl_W_knn).sum(dim=1)
+
+        # final safety renorm (keep convex comb)
+        new_W = torch.clamp(new_W, min=0)
+        new_W = new_W / (new_W.sum(dim=1, keepdim=True) + eps)
+
+        # stitch: keep old rows, append new rows
+        updated = torch.empty((M_tot, smpl_W.shape[1]), device=device, dtype=dtype)
+        updated[:M_old] = current_weights_c
+        updated[M_old:] = new_W
+        return updated
 
     def means_can_to_cam(self, smpl_param: torch.Tensor) -> torch.Tensor:
-
         out = self.smpl_server(smpl_param, absolute=False)
-        T_rel = out["smpl_tfs"][0].to(self.device)       # [24,4,4]
-        means_cam = lbs_apply(self.splats["means"], self.weights_c, T_rel)  # [M,3]
+        T_rel = out["smpl_tfs"][0].to(self.device)  # [24,4,4]
+
+        with torch.no_grad():
+            self.weights_c = self._update_skinning_weights(self.weights_c, k=4, eps=1e-6)
+            self.weights_c = self.weights_c.detach()  # redundant but explicit
+
+        means_cam = lbs_apply(self.splats["means"], self.weights_c, T_rel)
         return means_cam
 
     def opacity(self) -> torch.Tensor:
@@ -124,7 +203,8 @@ class Trainer:
 
     def get_colors(self) -> torch.Tensor:
         """[M,3] in [0,1]"""
-        return self.splats["colors"].clamp(0, 1)
+        colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
+        return colors
 
     def scales(self) -> torch.Tensor:
         """Per-axis std devs [M,3], clamped."""
@@ -135,35 +215,11 @@ class Trainer:
 
     def rotations(self) -> torch.Tensor:
         """
-        Return unit quaternions [w, x, y, z] with shape [M,4],
-        which matches your rasteriser's expected format.
+        Return unit quaternions [w, x, y, z] with shape [M,4]
         """
         q = self.splats["quats"]
         return q / (q.norm(dim=-1, keepdim=True) + 1e-8)
     
-
-    @torch.no_grad()
-    def _init_colors(self):
-        # Use first frame in dataset to initialize colors by sampling image at projections
-        sample = self.dataset[0]
-        image = sample["image"].to(self.device)  # [3,H,W]
-        K = sample["K"].to(self.device)
-        smpl_param = sample["smpl_param"].unsqueeze(0).to(self.device)  # [1,86]
-
-        means_cam = self.means_can_to_cam(smpl_param)  # [M,3]
-        uv, _ = project_points(means_cam, K)  # [M,2]
-
-        # Bilinear sample colors (ignore out-of-bounds)
-        H, W = image.shape[-2:]
-        u = uv[:, 0].clamp(0, W - 1 - 1e-3)
-        v = uv[:, 1].clamp(0, H - 1 - 1e-3)
-        grid = torch.stack([(u / (W - 1)) * 2 - 1, (v / (H - 1)) * 2 - 1], dim=-1).view(1, -1, 1, 2)  # [1,M,1,2]
-        # grid_sample expects [N,C,H,W] and grid [N,H_out,W_out,2]
-        sampled = F.grid_sample(image.unsqueeze(0), grid, align_corners=True, mode="bilinear")  # [1,3,M,1]
-        colors = sampled.squeeze(0).squeeze(-1).permute(1, 0)  # [M,3]
-        self.splats["colors"].data.copy_(colors.clamp(0, 1))
-
-
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         image = batch["image"].squeeze(0).to(self.device)  # [3,H,W]
         mask  = batch["mask"].squeeze(0).to(self.device)   # [H,W]
@@ -171,12 +227,23 @@ class Trainer:
         smpl_param = batch["smpl_param"].to(self.device)  # [1,86]
         H, W = image.shape[-2:]
 
-        rgb_pred = gsplat_render(
+        # Forward pass: render
+        rgb_pred, _, info = gsplat_render(
             trainer=self,
             smpl_param=smpl_param,
             K=K,
-            img_wh=(W, H)
+            img_wh=(W, H),
+            sh_degree=self.sh_degree
         )  # [3,H,W]
+
+        with torch.no_grad():
+            self.strategy.step_pre_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=it_number,
+                info=info,
+            )
 
         # Losses
         # - RGB L1 (masked)
@@ -189,21 +256,25 @@ class Trainer:
 
         # Total loss
         loss = l_rgb + l_scale_reg + l_opacity_reg
+        loss.backward()
 
         # Update weights step
-        # self.opt.zero_grad(set_to_none=True)
-        for opt in self.optimizers.values():
-            opt.zero_grad(set_to_none=True)
-        loss.backward()
-        if self.grad_clip > 0:
-            parameters = [p for p in self.splats.values() if p.requires_grad]
-            torch.nn.utils.clip_grad_norm_(parameters, self.grad_clip)
-        # self.opt.step()
         for opt in self.optimizers.values():
             opt.step()
+            opt.zero_grad(set_to_none=True)
+
+        with torch.no_grad():
+            self.strategy.step_post_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=it_number,
+                info=info,
+                packed=True,
+            )
 
         # Periodic debug visualization
-        if it_number % 50 == 0 and self.visualise_cam_preds:
+        if it_number % 1000 == 0 and self.visualise_cam_preds:
             save_loss_visualization(
                 image=image,
                 mask=mask,
@@ -236,6 +307,7 @@ class Trainer:
                         "loss": logs["loss"],
                         "l_rgb": logs["l_rgb"],
                         "iteration": it,
+                        "num_splats": len(self.splats["means"]),
                     })
 
                     if it >= iters:

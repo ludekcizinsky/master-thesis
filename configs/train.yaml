@@ -1,13 +1,16 @@
 scene_name: ???
 debug: False # if true -> disable wandb logging
-visualise_cam_preds: False
+visualise_cam_preds: True
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 preprocess_dir: ${output_dir}/preprocess
 train_dir: ${output_dir}/training
 tid: 1 # track ID of the person to train the 3DGS on
 device: cuda
 downscale: 2 # downscale factor for the input video frames (1 = no down scaling)
-iters: 2000 # number of training iterations
+iters: 30000 # number of training iterations
+sh_degree: 3 # spherical harmonics degree for splat colors
+sh0_lr: 2.5e-3 # learning rate for the 0-th SH coefficient (diffuse color)
+shN_lr: 1.25e-4 # learning rate for the higher order SH coefficients (
 
 logger:
   project: master-thesis
@@ -16,11 +19,10 @@ logger:
   run_id: null # this is for resuming
 
 lrs:
-  mean: 1e-4 # learning rate for gaussian means and scales
-  scale: 1e-4 # learning rate for background color
-  quats: 1e-4 # learning rate for gaussian rotations
-  opacity: 1e-4 # learning rate for feature MLP
-  color: 2e-3 # learning rate for color MLP
+  mean: 1.6e-4 # learning rate for gaussian means and scales
+  scale: 5e-3 # learning rate for background color
+  quats: 1e-3 # learning rate for gaussian rotations
+  opacity: 5e-2 # learning rate for feature MLP
 
 grad_clip: 1.0 # gradient clipping value (0 = no clipping)
 
