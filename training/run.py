@@ -60,10 +60,10 @@ def create_splats_with_optimizers(device, cfg):
 
     params = [
         # name, value, lr
-        ("means", torch.nn.Parameter(smpl_vertices), cfg.lrs.mean),
-        ("scales", torch.nn.Parameter(log_scales), cfg.lrs.scale),
-        ("quats", torch.nn.Parameter(quats_init), cfg.lrs.quats),
-        ("opacities", torch.nn.Parameter(opacity_logit), cfg.lrs.opacity),
+        ("means", torch.nn.Parameter(smpl_vertices), cfg.means_lr),
+        ("scales", torch.nn.Parameter(log_scales), cfg.scales_lr),
+        ("quats", torch.nn.Parameter(quats_init), cfg.quats_lr),
+        ("opacities", torch.nn.Parameter(opacity_logit), cfg.opacities_lr),
     ]
 
 
@@ -109,7 +109,6 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Define model and optimizers
-        self.grad_clip = cfg.grad_clip
         out = create_splats_with_optimizers(self.device, cfg)
         self.splats, self.optimizers, self.weights_c, self.smpl_server = out
         print("--- FYI: Model initialized. Number of GS:", len(self.splats["means"]))
@@ -233,6 +232,7 @@ class Trainer:
             K=K,
             img_wh=(W, H),
             sh_degree=self.cfg.sh_degree,
+            packed=self.cfg.packed,
             masks=masks
         ) # renders of shape [1,H,W,3]
 
@@ -260,10 +260,10 @@ class Trainer:
         loss = l1_loss * (1.0 - self.cfg.ssim_lambda) + ssim_loss * self.cfg.ssim_lambda
 
         # Add Regularizers
-        reg_scales = self.scales().mean() * 1e-3
-        loss += reg_scales
-        reg_opacity = (self.opacity() ** 2).mean() * 1e-4
-        loss += reg_opacity
+        if self.cfg.opacity_reg > 0.0:
+            loss += self.cfg.opacity_reg * torch.sigmoid(self.splats["opacities"]).mean()
+        if self.cfg.scale_reg > 0.0:
+            loss += self.cfg.scale_reg * torch.exp(self.splats["scales"]).mean()
 
         # --- Backprop
         loss.backward()
@@ -280,7 +280,7 @@ class Trainer:
                 state=self.strategy_state,
                 step=it_number,
                 info=info,
-                packed=True,
+                packed=self.cfg.packed,
             )
 
         # Periodic debug visualization
@@ -296,8 +296,6 @@ class Trainer:
             "loss/combined": float(loss.item()),
             "loss/masked_l1": float(l1_loss.item()),
             "loss/masked_ssim": float(ssim_loss.item()),
-            "loss/reg_scales": float(reg_scales.item()),
-            "loss/reg_opacity": float(reg_opacity.item()),
             "splats/num": len(self.splats["means"]),
         }
 

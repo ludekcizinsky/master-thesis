@@ -2,7 +2,7 @@ import torch
 from gsplat import rasterization
 
 
-def rasterize_splats(trainer, smpl_param, K, img_wh, sh_degree, masks=None):
+def rasterize_splats(trainer, smpl_param, K, img_wh, sh_degree, packed, masks=None):
 
     device, dtype = trainer.device, torch.float32
     dev_width, dev_height = img_wh
@@ -25,7 +25,7 @@ def rasterize_splats(trainer, smpl_param, K, img_wh, sh_degree, masks=None):
 
     # Render
     render_colors, render_alphas, info = rasterization(
-        dev_means, dev_quats, dev_scales, dev_opacity, dev_colors, dev_viewmats, dev_Ks, dev_width, dev_height, sh_degree=sh_degree
+        dev_means, dev_quats, dev_scales, dev_opacity, dev_colors, dev_viewmats, dev_Ks, dev_width, dev_height, sh_degree=sh_degree, packed=packed
     )
 
     if masks is not None:
