@@ -91,7 +91,7 @@ def create_splats_with_optimizers(device, cfg):
 
 
 class Trainer:
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, internal_run_id: str = None):
         self.cfg = cfg
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -101,9 +101,15 @@ class Trainer:
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
-        self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
+        if internal_run_id is not None:
+            run_name, run_id = internal_run_id.split("_")
+            self.experiment_dir = Path(cfg.train_dir) / f"{run_name}_{run_id}"
+        else:
+            self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_canon_dir = self.experiment_dir / "visualizations" / "canonical"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
+        self.model_dir = self.experiment_dir / "model"
+        os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.trn_viz_canon_dir, exist_ok=True)
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
@@ -155,6 +161,7 @@ class Trainer:
         # Case 2: we added new splats -> extend
         M_new = M_tot - M_old
         means_new = means_all[M_old:]                                                  # [M_new, 3]
+        print(f"--- FYI: extending skinning weights: {M_old} -> {M_tot} splats")
 
         # k-NN in canonical space to SMPL vertices
         k_eff = min(k, smpl_V.shape[0])
@@ -317,11 +324,14 @@ class Trainer:
                     logs["iteration"] = it
                     wandb.log(logs)
 
+                    if it % self.cfg.save_freq == 0:
+                        self.export_canonical_npz(self.model_dir / f"model_canonical_it{it:05d}.npz")
+
                     if it >= iters:
                         break
         
         # End of training: save model and canonical viz
-        self.export_canonical_npz(self.experiment_dir / "model_canonical.npz")
+        self.export_canonical_npz(self.model_dir / "model_canonical_final.npz")
 
     @torch.no_grad()
     def export_canonical_npz(self, path: Path):
@@ -331,8 +341,22 @@ class Trainer:
             "quats": self.rotations().detach().cpu().numpy(),        # [M,4] unit quats [w,x,y,z]
             "colors": self.get_colors().detach().cpu().numpy(),      # [M,3], [0,1]
             "opacity": self.opacity().detach().cpu().numpy(),        # [M]
+            "weights_c": self.weights_c.detach().cpu().numpy(),  # [M,24]
         }
         np.savez(path, **data)
+
+    @torch.no_grad()
+    def load_canonical_npz(self, path: Path):
+        data = np.load(path)
+        self.splats["means"].data = torch.from_numpy(data["means_c"]).to(self.device)
+        self.splats["scales"].data = torch.from_numpy(data["log_scales"]).to(self.device)
+        self.splats["quats"].data = torch.from_numpy(data["quats"]).to(self.device)
+        self.splats["opacities"].data = torch.logit(torch.from_numpy(data["opacity"]).to(self.device))
+        colors = torch.from_numpy(data["colors"]).to(self.device)
+        self.splats["sh0"].data = colors[:, :1, :]
+        self.splats["shN"].data = colors[:, 1:, :]
+        self.weights_c = torch.from_numpy(data["weights_c"]).to(self.device)
+        print(f"--- FYI: loaded canonical model from {path}, #GS={len(self.splats['means'])}")
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
 def main(cfg: DictConfig):
