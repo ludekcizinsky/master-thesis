@@ -17,6 +17,39 @@ import hydra
 
 from omegaconf import OmegaConf
 
+import subprocess
+
+def stack_videos_with_titles(top_path: str, bottom_path: str, 
+                             top_title: str, bottom_title: str, 
+                             output_path: str):
+    """
+    Stack two videos vertically with titles overlaid.
+
+    Args:
+        top_path (str): Path to the top video.
+        bottom_path (str): Path to the bottom video.
+        top_title (str): Title text for the top video.
+        bottom_title (str): Title text for the bottom video.
+        output_path (str): Path where the output video will be saved.
+    """
+    filter_complex = (
+        f"[0:v]drawtext=text='{top_title}':fontcolor=white:fontsize=36:x=10:y=10[v0]; "
+        f"[1:v]drawtext=text='{bottom_title}':fontcolor=white:fontsize=36:x=10:y=10[v1]; "
+        f"[v0][v1]vstack=inputs=2[out]"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",  # overwrite output if exists
+        "-i", top_path,
+        "-i", bottom_path,
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+        output_path
+    ]
+
+    subprocess.run(cmd, check=True)
+
 
 @hydra.main(config_path="../configs", config_name="show2d.yaml", version_base=None)
 def main(cfg):
@@ -48,6 +81,8 @@ def main(cfg):
     output_dir = Path(trainer.experiment_dir) / "renders_2d"
     frames_dir = output_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    masked_images_dir = output_dir / "masked_images"
+    masked_images_dir.mkdir(parents=True, exist_ok=True)
 
     for i in tqdm(range(len(trainer.dataset)), desc="Rendering"):
         batch = trainer.dataset[i]  # batch of size 1
@@ -69,13 +104,27 @@ def main(cfg):
                 masks=masks
             ) # renders of shape [1,H,W,3]
 
-        # Save the render only
+        # Save the render
         render_np = (renders[0].cpu().numpy() * 255).astype(np.uint8)
         Image.fromarray(render_np).save(frames_dir / f"frame_{i:05d}.png")
 
-    print(f"--- FYI: Save the frames to {frames_dir}")
-    frames_to_video(frames_dir, output_dir / "render.mp4", framerate=12)
-    print(f"✅ Done. Video saved to {output_dir / 'render.mp4'}\n")
+        # Save the masked image
+        # - first get masked image
+        masked_image = images * masks.unsqueeze(-1)  # [1,H,W,3]
+        # - then convert to PIL and save
+        masked_image_np = (masked_image[0].cpu().numpy() * 255).astype(np.uint8)
+        Image.fromarray(masked_image_np).save(masked_images_dir / f"frame_{i:05d}.png")
+
+    frames_to_video(frames_dir, output_dir / "predictions.mp4", framerate=12)
+    frames_to_video(masked_images_dir, output_dir / "masked_images.mp4", framerate=12)
+    stack_videos_with_titles(
+        top_path=str(output_dir / "predictions.mp4"),
+        bottom_path=str(output_dir / "masked_images.mp4"),
+        top_title="Prediction",
+        bottom_title="GT",
+        output_path=str(output_dir / "comparison.mp4")
+    )
+    print(f"✅ Done. Comparison video saved to {output_dir / 'comparison.mp4'}\n")
 
 if __name__ == "__main__":
     main()
