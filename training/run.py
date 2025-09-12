@@ -103,13 +103,13 @@ class Trainer:
 
         if internal_run_id is not None:
             run_name, run_id = internal_run_id.split("_")
-            self.experiment_dir = Path(cfg.train_dir) / f"{run_name}_{run_id}"
+            self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{run_name}_{run_id}"
         else:
-            self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
+            self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_canon_dir = self.experiment_dir / "visualizations" / "canonical"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
-        self.model_dir = self.experiment_dir / "model"
-        os.makedirs(self.model_dir, exist_ok=True)
+        self.checkpoint_dir = self.experiment_dir / "checkpoints"
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         os.makedirs(self.trn_viz_canon_dir, exist_ok=True)
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
@@ -325,13 +325,13 @@ class Trainer:
                     wandb.log(logs)
 
                     if it % self.cfg.save_freq == 0:
-                        self.export_canonical_npz(self.model_dir / f"model_canonical_it{it:05d}.npz")
+                        self.export_canonical_npz(self.checkpoint_dir / f"model_canonical_it{it:05d}.npz")
 
                     if it >= iters:
                         break
         
         # End of training: save model and canonical viz
-        self.export_canonical_npz(self.model_dir / "model_canonical_final.npz")
+        self.export_canonical_npz(self.checkpoint_dir / "model_canonical_final.npz")
 
     @torch.no_grad()
     def export_canonical_npz(self, path: Path):

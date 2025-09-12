@@ -66,7 +66,7 @@ def main(cfg):
     print("✅ Trainer initialized.\n")
 
     print("ℹ️ Loading model parameters from npz")
-    model_dir = trainer.experiment_dir / "model"
+    model_dir = trainer.experiment_dir / "checkpoints"
     if "model_canonical_final.npz" not in os.listdir(model_dir):
         print(f"--- FYI: 'model_canonical_final.npz' not found in {model_dir}, loading most recent model instead")
         npz_path = sorted(list(model_dir.glob("model_canonical_it*.npz")))[-1]
