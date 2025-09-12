@@ -97,7 +97,7 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, downscale=cfg.downscale)
+        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 

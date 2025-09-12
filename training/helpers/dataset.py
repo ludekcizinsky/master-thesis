@@ -18,10 +18,12 @@ class HumanOnlyDataset(Dataset):
         self,
         preprocess_dir: Path,
         tid: int,
+        split: str = "train",
         downscale: int = 2,
     ):
         self.preprocess_dir = preprocess_dir
         self.tid = int(tid)
+        self.split = split
         self.downscale = downscale
 
         # Load cam dicts (by frame_id)
@@ -39,6 +41,19 @@ class HumanOnlyDataset(Dataset):
                 self.samples.append(int(fid_str))
         self.samples.sort()
         print(f"--- FYI: found {len(self.samples)} frames for tid={self.tid}")
+
+        # Define the split
+        # 80 % train, 5 % gap, 15 % val
+        n_total = len(self.samples)
+        n_train = int(0.8 * n_total)
+        n_gap = int(0.05 * n_total)
+        if self.split == "train":
+            self.samples = self.samples[:n_train]
+        elif self.split == "val":
+            self.samples = self.samples[n_train + n_gap:]
+        else:
+            raise ValueError(f"Unknown split: {self.split}")
+        print(f"--- FYI: split '{self.split}' has {len(self.samples)} frames for tid={self.tid}")
 
         # Paths
         self.images_dir = self.preprocess_dir / "images"

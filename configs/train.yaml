@@ -8,6 +8,7 @@ visualise_cam_preds: True
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 preprocess_dir: ${output_dir}/preprocess
 train_dir: ${output_dir}/training
+split: train # dataset split to use for training (train/val)
 
 # --- Training settings
 # Track ID of the person to train the 3DGS on

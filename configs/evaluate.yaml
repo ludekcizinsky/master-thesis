@@ -1,0 +1,13 @@
+project: master-thesis
+entity: ludekcizinsky
+internal_run_id: jolly-sun-35_pzmqhjis  # what run do you want to evaluate?
+
+split: val 
+lpips_net: vgg  # which lpips network to use (vgg or alex)
+
+# --- Hydra settings
+hydra:
+  run:
+    dir: /scratch/izar/cizinsky/thesis/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
+  job:
+    chdir: False
