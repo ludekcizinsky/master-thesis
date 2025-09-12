@@ -106,11 +106,9 @@ class Trainer:
             self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{run_name}_{run_id}"
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{wandb.run.name}_{wandb.run.id}"
-        self.trn_viz_canon_dir = self.experiment_dir / "visualizations" / "canonical"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
         self.checkpoint_dir = self.experiment_dir / "checkpoints"
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        os.makedirs(self.trn_viz_canon_dir, exist_ok=True)
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
