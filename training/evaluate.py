@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from pathlib import Path
+import json
 
 import warnings
 warnings.filterwarnings(
@@ -23,7 +24,7 @@ import numpy as np
 import hydra
 
 from omegaconf import OmegaConf
-
+from matplotlib import pyplot as plt
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
@@ -72,7 +73,8 @@ def main(cfg):
         raise ValueError(f"Unknown LPIPS network: {cfg.lpips_net}")
 
     output_dir = Path(trainer.experiment_dir) / "evaluation" / cfg.split
-    output_dir.mkdir(parents=True, exist_ok=True)
+    image_dir = output_dir / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = {"psnr": [], "ssim": [], "lpips": []}
     for i in tqdm(range(len(trainer.dataset)), desc="Evaluating"):
@@ -97,19 +99,87 @@ def main(cfg):
             ) # renders of shape [1,H,W,3]
 
         # Compute metrics
-        masked_image = images * masks.unsqueeze(-1)  # [1,H,W,3]
-        masked_image_p = masked_image.permute(0, 3, 1, 2)  # [1, 3, H, W]
-        rendered_img_p = rendered_img.permute(0, 3, 1, 2)  # [1, 3, H, W]
-        metrics["psnr"].append(psnr(rendered_img_p, masked_image_p))
-        metrics["ssim"].append(ssim(rendered_img_p, masked_image_p))
-        metrics["lpips"].append(lpips(rendered_img_p, masked_image_p))
+        images = images.clamp(0, 1).float()          # [1,H,W,3]
+        rendered_img = rendered_img.clamp(0, 1).float()
+
+        # Apply the SAME mask to both pred & gt (if you want masked evaluation)
+        masks = (masks > 0.5).float()                # [1,H,W]
+        rendered_img_masked = rendered_img * masks.unsqueeze(-1)
+        masked_image       = images      * masks.unsqueeze(-1)
+
+        # Optional but recommended: bbox crop around the mask to avoid huge easy background
+        ys, xs = torch.where(masks[0] > 0.5)
+        if ys.numel() > 0:
+            pad = 8
+            y0 = max(int(ys.min().item()) - pad, 0)
+            y1 = min(int(ys.max().item()) + pad + 1, images.shape[1])
+            x0 = max(int(xs.min().item()) - pad, 0)
+            x1 = min(int(xs.max().item()) + pad + 1, images.shape[2])
+
+            gt_crop  = masked_image[:, y0:y1, x0:x1, :]
+            pr_crop  = rendered_img_masked[:, y0:y1, x0:x1, :]
+        else:
+            # fallback if mask empty
+            gt_crop, pr_crop = masked_image, rendered_img_masked
+
+        # NCHW for metrics
+        gt_p = gt_crop.permute(0, 3, 1, 2).contiguous()
+        pr_p = pr_crop.permute(0, 3, 1, 2).contiguous()
+
+        ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
+        psnr = PeakSignalNoiseRatio(data_range=1.0).to(device)
+
+        lpips = LearnedPerceptualImagePatchSimilarity(
+            net_type=("alex" if cfg.lpips_net=="alex" else "vgg"),
+            normalize=True
+        ).to(device)
+
+        metrics["psnr"].append(psnr(pr_p, gt_p))
+        metrics["ssim"].append(ssim(pr_p, gt_p))
+        metrics["lpips"].append(lpips(pr_p, gt_p))
+
+        # Save image
+        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+        axs[0].imshow((masked_image[0].cpu().numpy() * 255).astype(np.uint8))
+        axs[0].set_title("Ground truth")
+        axs[0].axis("off")
+        axs[1].imshow((rendered_img[0].cpu().numpy() * 255).astype(np.uint8))
+        axs[1].set_title(f"Rendered (PSNR ↑: {metrics['psnr'][-1]:.2f}, SSIM ↑: {metrics['ssim'][-1]:.3f}, LPIPS ↓: {metrics['lpips'][-1]:.3f})")
+        axs[1].axis("off")
+        plt.tight_layout()
+        plt.savefig(image_dir / f"{i:05d}.png")
+        plt.close(fig)
 
 
-    print("\n--- Evaluation results ---")
-    for k in metrics.keys():
-        metrics[k] = torch.stack(metrics[k]).mean().item()
-        print(f"{k}: {metrics[k]:.4f}")
-    print("--------------------------\n")
+    # Save metrics as json
+    with open(output_dir / "metrics.json", "w") as f:
+        json.dump({k: float(torch.stack(v).mean().item()) for k, v in metrics.items()}, f, indent=4)
+
+
+    # Upload the aggregate metrics to wandb
+    if cfg.log_to_wandb:
+        # resume the wandb run
+        wandb_path = Path("/scratch/izar/cizinsky/thesis/")
+        wandb.init(
+            project=cfg.project,
+            entity=cfg.entity,
+            id=wandb_run_id,
+            resume="must",
+            dir=wandb_path,
+        )
+
+        # aggregate metrics
+        # - mean
+        agg_metrics = {f"eval/{k}_{cfg.split}_mean": float(torch.stack(v).mean().item()) for k, v in metrics.items()}
+        # - std
+        agg_metrics.update({f"eval/{k}_{cfg.split}_std": float(torch.stack(v).std().item()) for k, v in metrics.items()})
+        # - num samples
+        agg_metrics["eval/val_samples"] = len(trainer.dataset)
+
+        # log as summary metrics
+        wandb.run.summary.update(agg_metrics)
+        print(f"✅ Uploaded evaluation metrics to wandb run {wandb_run_id}: {agg_metrics}")
+        wandb.finish()
 
 
 if __name__ == "__main__":
