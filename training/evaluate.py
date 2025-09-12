@@ -151,12 +151,20 @@ def main(cfg):
         plt.close(fig)
 
 
-    # Save metrics as json
+    # aggregate metrics
+    # - mean
+    agg_metrics = {f"eval/{k}_{cfg.split}_mean": float(torch.stack(v).mean().item()) for k, v in metrics.items()}
+    # - std
+    agg_metrics.update({f"eval/{k}_{cfg.split}_std": float(torch.stack(v).std().item()) for k, v in metrics.items()})
+    # - num samples
+    agg_metrics["eval/val_samples"] = len(trainer.dataset)
+
+    # save metrics as json
     with open(output_dir / "metrics.json", "w") as f:
-        json.dump({k: float(torch.stack(v).mean().item()) for k, v in metrics.items()}, f, indent=4)
+        json.dump(agg_metrics, f, indent=4)
+    print(f"✅ Saved evaluation metrics to {output_dir / 'metrics.json'}: {agg_metrics}")
 
-
-    # Upload the aggregate metrics to wandb
+    # upload the aggregate metrics to wandb
     if cfg.log_to_wandb:
         # resume the wandb run
         wandb_path = Path("/scratch/izar/cizinsky/thesis/")
@@ -167,14 +175,6 @@ def main(cfg):
             resume="must",
             dir=wandb_path,
         )
-
-        # aggregate metrics
-        # - mean
-        agg_metrics = {f"eval/{k}_{cfg.split}_mean": float(torch.stack(v).mean().item()) for k, v in metrics.items()}
-        # - std
-        agg_metrics.update({f"eval/{k}_{cfg.split}_std": float(torch.stack(v).std().item()) for k, v in metrics.items()})
-        # - num samples
-        agg_metrics["eval/val_samples"] = len(trainer.dataset)
 
         # log as summary metrics
         wandb.run.summary.update(agg_metrics)

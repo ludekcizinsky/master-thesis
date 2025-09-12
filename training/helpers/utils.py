@@ -21,6 +21,9 @@ def init_logging(cfg):
         group=cfg.scene_name,
         mode="online" if not cfg.debug else "disabled",
     )
+
+    internal_run_id = f"{wandb.run.name}_{wandb.run.id}"
+    wandb.run.summary["internal_run_id"] = internal_run_id
     if cfg.debug:
         print("--- FYI: Running in debug mode, wandb logging is disabled.")
     else:
