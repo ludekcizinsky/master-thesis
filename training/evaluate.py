@@ -15,9 +15,8 @@ from PIL import Image
 from tqdm import tqdm
 import torch
 
-from preprocess.helpers.video_utils import frames_to_video
 from training.helpers.render import rasterize_splats
-from training.run import Trainer
+from training.run import Trainer, prepare_input_for_loss
 
 import wandb
 import numpy as np
@@ -93,7 +92,6 @@ def main(cfg):
                 img_wh=(W, H),
                 sh_degree=run_cfg.sh_degree,
                 packed=run_cfg.packed,
-                masks=masks
             ) # renders of shape [1,H,W,3]
 
         # Compute metrics

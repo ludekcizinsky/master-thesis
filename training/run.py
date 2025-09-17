@@ -142,6 +142,15 @@ def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: 
 
         return gt_imgs, pr_bbox
 
+    elif kind == "tight_mask":
+        # Apply mask to the ground truth (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+
+        # Apply mask to the render (keep only target person pixels)
+        renders *= masks.unsqueeze(-1)
+
+        return gt_imgs, renders
+
     else:
         raise ValueError(f"Unknown prepare_input_for_loss kind: {kind}")
 
