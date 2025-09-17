@@ -20,6 +20,7 @@ class HumanOnlyDataset(Dataset):
         tid: int,
         split: str = "train",
         downscale: int = 2,
+        val_fids: List[int] = []  # Only used if split=='val'
     ):
         self.preprocess_dir = preprocess_dir
         self.tid = int(tid)
@@ -43,14 +44,10 @@ class HumanOnlyDataset(Dataset):
         print(f"--- FYI: found {len(self.samples)} frames for tid={self.tid}")
 
         # Define the split
-        # 80 % train, 5 % gap, 15 % val
-        n_total = len(self.samples)
-        n_train = int(0.8 * n_total)
-        n_gap = int(0.05 * n_total)
         if self.split == "train":
-            self.samples = self.samples[:n_train]
+            self.samples = self.samples  # Start with all samples
         elif self.split == "val":
-            self.samples = self.samples[n_train + n_gap:]
+            self.samples = [fid for fid in self.samples if fid in val_fids]
         else:
             raise ValueError(f"Unknown split: {self.split}")
         print(f"--- FYI: split '{self.split}' has {len(self.samples)} frames for tid={self.tid}")

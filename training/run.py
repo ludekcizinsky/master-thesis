@@ -182,7 +182,7 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale)
+        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale, val_fids=cfg.val_fids)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
@@ -415,6 +415,9 @@ class Trainer:
             "loss/masked_l1": float(l1_loss.item()),
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/anchor_means": float(ma_loss.item()),
+            "loss/opacity_penalty": float(opa_loss.item()),
+            "loss/opacity_reg": float(torch.sigmoid(self.splats["opacities"]).mean().item()),
+            "loss/scale_reg": float(torch.exp(self.splats["scales"]).mean().item()),
             "splats/num": len(self.splats["means"]),
         }
 
@@ -480,7 +483,13 @@ def main(cfg: DictConfig):
 
     print("ℹ️ Starting training")
     trainer.train_loop(iters=cfg.iters)
-    print("✅ Training completed.")
+    internal_run_id = f"{wandb.run.name}_{wandb.run.id}"
+    wandb.finish()
+    print("✅ Training completed.\n")
+
+    print("ℹ️ Starting evaluation")
+    os.system(f"python training/evaluate.py internal_run_id={internal_run_id} split=val")
+    print("✅ Evaluation completed.")
 
 if __name__ == "__main__":
     main()

@@ -37,6 +37,7 @@ def main(cfg):
     run = api.run(f"{cfg.entity}/{cfg.project}/{wandb_run_id}")
     run_cfg = OmegaConf.create(dict(run.config))
     run_cfg.split = cfg.split  # override split if specified in cfg
+    run_cfg.val_fids = cfg.val_fids  # pass the val_fids to the run config
     print("✅ Run config loaded.\n")
 
     print("ℹ️ initializing trainer")
