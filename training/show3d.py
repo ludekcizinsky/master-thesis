@@ -6,7 +6,6 @@ import numpy as np
 import viser
 import time
 
-
 _C0 = 0.28209479177387814  # Y_00 = 1/(2*sqrt(pi))
 
 def _sh_dc_to_rgb(sh_coeffs: np.ndarray) -> np.ndarray:
@@ -39,16 +38,36 @@ def _quat_to_matrix(quats: np.ndarray, order="wxyz") -> np.ndarray:
     ], axis=1).reshape(-1,3,3)
     return R.astype(np.float32)
 
-def _covariances_from_scales_quats(scales: np.ndarray, quats: np.ndarray, order="wxyz") -> np.ndarray:
-    """cov = R diag(s^2) R^T, batched."""
-    R = _quat_to_matrix(quats, order=order)              # [N,3,3]
-    S2 = (scales.astype(np.float32) ** 2)                # [N,3]
-    cov = (R * S2[:, None, :]) @ np.transpose(R, (0,2,1))
-    # symmetrize + tiny clamp
-    cov = 0.5 * (cov + np.transpose(cov, (0,2,1)))
+def _covs_for_viewer(log_scales, quats, order="wxyz",
+                     sigma_clip=(1e-4, 5e-3),   # 0.1–5 mm for viz
+                     max_anisotropy=20.0,
+                     use_precision=False):
+    # 1) build Σ = R diag(exp(2*log_scales)) R^T
+    s = np.exp(log_scales).astype(np.float32)             # [N,3]
+    R = _quat_to_matrix(quats.astype(np.float32), order)  # [N,3,3]
+    S2 = s**2
+    cov = (R * S2[:, None, :]) @ np.transpose(R, (0,2,1)) # [N,3,3]
+
+    # 2) clamp eigenvalues for visualization
     w, V = np.linalg.eigh(cov)
-    w = np.maximum(w, 1e-9)
+    w = np.clip(w, sigma_clip[0]**2, sigma_clip[1]**2)    # hard size clamp
+
+    # anisotropy cap
+    ratio = w.max(axis=1) / np.maximum(w.min(axis=1), 1e-12)
+    bad = ratio > max_anisotropy
+    if bad.any():
+        hi = w[bad].max(axis=1, keepdims=True)
+        lo = hi / max_anisotropy
+        w[bad] = np.clip(w[bad], lo, hi)
+
     cov = (V * w[:, None, :]) @ np.transpose(V, (0,2,1))
+    cov = 0.5 * (cov + np.transpose(cov, (0,2,1)))
+
+    # 3) some viewers want precision instead
+    if use_precision:
+        eye = np.eye(3, dtype=np.float32)
+        cov = np.linalg.inv(cov + 1e-9 * eye)
+
     return cov.astype(np.float32)
 
 def _Rx(theta):  # rotate about +X by theta
@@ -63,51 +82,37 @@ def _apply_global_rotation(centers, covs, R):
     return C, Cov
 
 # ---------- viewer ----------
-def view_npz(npz_path: str, quat_order="wxyz", align_to="+z", scale_multiplier=1.0):
+def view_npz(npz_path: str, quat_order="wxyz", scale_multiplier=1.0):
     data = np.load(npz_path)
-    centers = data["means"] if "means" in data else data["means_c"]
-    # --- colors ---
-    if "colors" in data:
-        cols = data["colors"].astype(np.float32)
-        if cols.ndim == 2 and cols.shape[1] == 3:
-            # Legacy: already RGB
-            rgbs = cols if cols.max() <= 1.0 else cols / 255.0
-        elif cols.ndim == 3 and cols.shape[2] == 3:
-            # Your case now: SH coeffs [N,K,3] stored in "colors"
-            rgbs = _sh_dc_to_rgb(cols)
-        else:
-            raise ValueError(f"Unexpected 'colors' shape: {cols.shape}")
-    elif "sh0" in data and "shN" in data:
-        # Alternative gsplat-style storage
-        sh_coeffs = np.concatenate([data["sh0"], data["shN"]], axis=1).astype(np.float32)  # [N,K,3]
-        rgbs = _sh_dc_to_rgb(sh_coeffs)
-    else:
-        # Fallback
-        rgbs = np.ones((centers.shape[0], 3), dtype=np.float32) * 0.5  # grey
-
-
-    opacities = (data["opacity"].astype(np.float32).reshape(-1,1)
-                 if "opacity" in data else np.ones((centers.shape[0],1), np.float32))
-
-    if "scales" in data: scales = data["scales"].astype(np.float32)
-    else:                scales = np.exp(data["log_scales"].astype(np.float32))
-    scales *= float(scale_multiplier)
-
-    quats = data["quats"].astype(np.float32) if "quats" in data else None
-    assert quats is not None, "quats are required to build anisotropic covariances."
-
-    covs = _covariances_from_scales_quats(scales, quats, order=quat_order)
+    # means
+    centers = data["means_c"]
+    # rgbs
+    colors = data["colors"]
+    sh0, shN = colors[:,:1,:], colors[:,1:,:]
+    sh_coeffs = np.concatenate([sh0, shN], axis=1).astype(np.float32)  # [N,K,3]
+    rgbs = _sh_dc_to_rgb(sh_coeffs)
+    # opacities
+    # opacities = torch.logit(torch.from_numpy(data["opacity"])).numpy().astype(np.float32) # [N,]
+    # opacities = opacities[:, None]  # [N, 1]
+    opacities = data["opacity"].astype(np.float32)[:, None]  
+    # covariances
+    covariances = _covs_for_viewer(
+        data["log_scales"], data["quats"], quat_order,
+        sigma_clip=(1e-4, 5e-3),   # feel free to tweak
+        max_anisotropy=20.0,
+        use_precision=False
+    )
 
     server = viser.ViserServer(host="127.0.0.1", port=8080)
     centers[:, 2] *= -1.0
     R = _Rx(np.pi/2)  # Y -> Z
-    centers, covs = _apply_global_rotation(centers, covs, R)
+    centers, covariances = _apply_global_rotation(centers, covariances, R)
     server.scene.add_gaussian_splats(
         name="/gaussians",
-        centers=centers.astype(np.float32),
-        rgbs=np.clip(rgbs,0,1).astype(np.float32),
-        opacities=np.clip(opacities,0,1).astype(np.float32),
-        covariances=covs.astype(np.float32),
+        centers=centers,
+        rgbs=rgbs,
+        opacities=opacities,
+        covariances=covariances
     )
     print("Viser at http://localhost:8080 (tunnel/forward this port)")
     try:
@@ -115,6 +120,5 @@ def view_npz(npz_path: str, quat_order="wxyz", align_to="+z", scale_multiplier=1
     except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
-    # path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/woven-energy-17_2owmwlvm/model_canonical.npz"
-    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/still-star-30_a0k9rev6/model_canonical.npz"
-    view_npz(path, quat_order="wxyz", align_to=None, scale_multiplier=1.0)
+    path = "/scratch/izar/cizinsky/thesis/output/modric_vs_ribberi/training/tid_1/dummy-orkus23s_orkus23s/checkpoints/model_canonical_final.npz"
+    view_npz(path, quat_order="wxyz", scale_multiplier=1.0)

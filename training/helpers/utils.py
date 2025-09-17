@@ -90,9 +90,9 @@ def debug_projection_stats(uv, Z, H, W, tag=""):
 
 @torch.no_grad()
 def save_loss_visualization(
-    images: torch.Tensor,       # [B, H,W, 3], GT image in [0,1]
-    masks: torch.Tensor,        # [B, H,W], 0–1
-    colors: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
+    image_input: torch.Tensor,       # [B, H,W, 3], GT image in [0,1]
+    gt: torch.Tensor,        # [B, H,W], 0–1
+    prediction: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
     out_path: str,
 ):
     """
@@ -101,10 +101,8 @@ def save_loss_visualization(
     - masked image (image * mask)
     - predicted image
     """
-    # Ensure all are 3×H×W tensors
-    masked_img = images * masks[..., None]
 
-    comparison = torch.cat([images, masked_img, colors], dim=2)  # [B,H,3W,3]
+    comparison = torch.cat([image_input, gt, prediction], dim=2)  # [B,H,3W,3]
     comparison = comparison[0]  # Take first in batch
 
     # Convert to uint8 for saving

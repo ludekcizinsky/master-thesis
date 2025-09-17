@@ -231,7 +231,7 @@ class Trainer:
         H, W = images.shape[1:3]
 
         # Forward pass: render
-        renders, alphas, info = rasterize_splats(
+        bbox_masked_renders, alphas, info = rasterize_splats(
             trainer=self,
             smpl_param=smpl_param,
             K=K,
@@ -241,7 +241,7 @@ class Trainer:
             masks=masks
         ) # renders of shape [1,H,W,3]
 
-        colors = renders
+        bbox_masked_colors = bbox_masked_renders
 
         with torch.no_grad():
             self.strategy.step_pre_backward(
@@ -253,12 +253,13 @@ class Trainer:
             )
 
         # --- Losses
+        gt_masked_image = masks[..., None] * images 
         # L1 (masked)
-        l1_loss = F.l1_loss(colors, images)
+        l1_loss = F.l1_loss(bbox_masked_colors, gt_masked_image)
 
         # SSIM (masked) 
         ssim_loss = 1.0 - fused_ssim(
-            colors.permute(0, 3, 1, 2), images.permute(0, 3, 1, 2), padding="valid"
+            bbox_masked_colors.permute(0, 3, 1, 2), gt_masked_image.permute(0, 3, 1, 2), padding="valid"
         )
 
         # Combined 
@@ -291,9 +292,9 @@ class Trainer:
         # Periodic debug visualization
         if it_number % 1000 == 0 and self.cfg.visualise_cam_preds:
             save_loss_visualization(
-                images=images,
-                masks=masks,
-                colors=colors,
+                image_input=images,
+                gt=gt_masked_image,
+                prediction=bbox_masked_colors,
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 

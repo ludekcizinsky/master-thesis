@@ -98,14 +98,17 @@ def main(cfg):
                 masks=masks
             ) # renders of shape [1,H,W,3]
 
+            # TODO: delete this line after debugging
+            # rendered_img[~masks] = 0.0
+
         # Compute metrics
         images = images.clamp(0, 1).float()          # [1,H,W,3]
         rendered_img = rendered_img.clamp(0, 1).float()
 
         # Apply the SAME mask to both pred & gt (if you want masked evaluation)
-        masks = (masks > 0.5).float()                # [1,H,W]
-        rendered_img_masked = rendered_img * masks.unsqueeze(-1)
-        masked_image       = images      * masks.unsqueeze(-1)
+#         masks = (masks > 0.5).float()                # [1,H,W]
+        # rendered_img_masked = rendered_img * masks.unsqueeze(-1)
+        images       = images      * masks.unsqueeze(-1)
 
         # Optional but recommended: bbox crop around the mask to avoid huge easy background
         ys, xs = torch.where(masks[0] > 0.5)
@@ -116,11 +119,11 @@ def main(cfg):
             x0 = max(int(xs.min().item()) - pad, 0)
             x1 = min(int(xs.max().item()) + pad + 1, images.shape[2])
 
-            gt_crop  = masked_image[:, y0:y1, x0:x1, :]
-            pr_crop  = rendered_img_masked[:, y0:y1, x0:x1, :]
+            gt_crop  = images[:, y0:y1, x0:x1, :]
+            pr_crop  = rendered_img[:, y0:y1, x0:x1, :]
         else:
             # fallback if mask empty
-            gt_crop, pr_crop = masked_image, rendered_img_masked
+            gt_crop, pr_crop = images, rendered_img
 
         # NCHW for metrics
         gt_p = gt_crop.permute(0, 3, 1, 2).contiguous()
@@ -140,10 +143,10 @@ def main(cfg):
 
         # Save image
         fig, axs = plt.subplots(1, 2, figsize=(12, 4))
-        axs[0].imshow((masked_image[0].cpu().numpy() * 255).astype(np.uint8))
+        axs[0].imshow((gt_crop[0].cpu().numpy() * 255).astype(np.uint8))
         axs[0].set_title("Ground truth")
         axs[0].axis("off")
-        axs[1].imshow((rendered_img[0].cpu().numpy() * 255).astype(np.uint8))
+        axs[1].imshow((pr_crop[0].cpu().numpy() * 255).astype(np.uint8))
         axs[1].set_title(f"Rendered (PSNR ↑: {metrics['psnr'][-1]:.2f}, SSIM ↑: {metrics['ssim'][-1]:.3f}, LPIPS ↓: {metrics['lpips'][-1]:.3f})")
         axs[1].axis("off")
         plt.tight_layout()

@@ -29,5 +29,15 @@ def rasterize_splats(trainer, smpl_param, K, img_wh, sh_degree, packed, masks=No
     )
 
     if masks is not None:
-        render_colors[~masks] = 0
-    return render_colors, render_alphas, info
+        pad = 8
+        ys, xs = torch.where(masks[0] > 0.5)
+        y0 = max(int(ys.min().item()) - pad, 0)
+        y1 = min(int(ys.max().item()) + pad + 1, render_colors.shape[1])
+        x0 = max(int(xs.min().item()) - pad, 0)
+        x1 = min(int(xs.max().item()) + pad + 1, render_colors.shape[2])
+
+        render_colors_crop = torch.zeros_like(render_colors)
+        render_colors_crop[:, y0:y1, x0:x1, :] = render_colors[:, y0:y1, x0:x1, :]
+
+
+    return render_colors_crop, render_alphas, info
