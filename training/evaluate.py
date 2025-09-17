@@ -96,17 +96,12 @@ def main(cfg):
                 masks=masks
             ) # renders of shape [1,H,W,3]
 
-            # TODO: delete this line after debugging
-            # rendered_img[~masks] = 0.0
-
         # Compute metrics
         images = images.clamp(0, 1).float()          # [1,H,W,3]
         rendered_img = rendered_img.clamp(0, 1).float()
 
         # Apply the SAME mask to both pred & gt (if you want masked evaluation)
-#         masks = (masks > 0.5).float()                # [1,H,W]
-        # rendered_img_masked = rendered_img * masks.unsqueeze(-1)
-        images       = images      * masks.unsqueeze(-1)
+        images *= masks.unsqueeze(-1)
 
         # Optional but recommended: bbox crop around the mask to avoid huge easy background
         ys, xs = torch.where(masks[0] > 0.5)

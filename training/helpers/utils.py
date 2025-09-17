@@ -91,7 +91,7 @@ def debug_projection_stats(uv, Z, H, W, tag=""):
 @torch.no_grad()
 def save_loss_visualization(
     image_input: torch.Tensor,       # [B, H,W, 3], GT image in [0,1]
-    gt: torch.Tensor,        # [B, H,W], 0–1
+    gt: torch.Tensor,        # [B, H,W, 3], 0–1
     prediction: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
     out_path: str,
 ):
@@ -101,6 +101,24 @@ def save_loss_visualization(
     - masked image (image * mask)
     - predicted image
     """
+
+    # it may happen that gt and prediction have different sizes due to cropping
+    # in which case, resize them to the input image size, use black background
+    if image_input.shape[1:3] != prediction.shape[1:3]:
+        B, H, W = image_input.shape[0:3]
+        gt_resized = torch.zeros((B, H, W, 3), device=gt.device)
+        pr_resized = torch.zeros((B, H, W, 3), device=prediction.device)
+
+        h0 = (H - gt.shape[1]) // 2
+        w0 = (W - gt.shape[2]) // 2
+        h1 = h0 + gt.shape[1]
+        w1 = w0 + gt.shape[2]
+
+        gt_resized[:, h0:h1, w0:w1, :] = gt
+        pr_resized[:, h0:h1, w0:w1, :] = prediction
+
+        gt = gt_resized
+        prediction = pr_resized
 
     comparison = torch.cat([image_input, gt, prediction], dim=2)  # [B,H,3W,3]
     comparison = comparison[0]  # Take first in batch

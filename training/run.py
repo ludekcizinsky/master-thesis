@@ -90,6 +90,61 @@ def create_splats_with_optimizers(device, cfg):
     return splats, optimizers, weights_c, smpl_server
 
 
+def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: torch.Tensor, kind="bbox_crop"):
+    """
+    Args:
+        gt_imgs: [B,H,W,3] in [0,1]
+        renders: [B,H,W,3] in [0,1]
+        masks:   [B,H,W] in {0,1}
+
+    Returns:
+        gt_crop: [B,h,w,3] in [0,1]
+        pr_crop: [B,h,w,3] in [0,1]
+    """
+
+    gt_imgs = gt_imgs.clamp(0, 1).float()          # [B,H,W,3]
+    renders = renders.clamp(0, 1).float()
+
+    if kind == "bbox_crop":
+        # Apply mask to the ground truth (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+
+        # bbox crop around the mask to avoid huge easy background
+        ys, xs = torch.where(masks[0] > 0.5)
+        if ys.numel() > 0:
+            pad = 8
+            y0 = max(int(ys.min().item()) - pad, 0)
+            y1 = min(int(ys.max().item()) + pad + 1, gt_imgs.shape[1])
+            x0 = max(int(xs.min().item()) - pad, 0)
+            x1 = min(int(xs.max().item()) + pad + 1, gt_imgs.shape[2])
+
+            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
+            pr_crop  = renders[:, y0:y1, x0:x1, :]
+        else:
+            # fallback if mask empty
+            gt_crop, pr_crop = gt_imgs, renders
+
+        return gt_crop, pr_crop
+    elif kind == "bbox":
+        # Apply mask to the ground truth (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+
+        # Mask out the render outside the bbox of the mask (keep full GT)
+        pad = 8
+        ys, xs = torch.where(masks[0] > 0.5)
+        y0 = max(int(ys.min().item()) - pad, 0)
+        y1 = min(int(ys.max().item()) + pad + 1, renders.shape[1])
+        x0 = max(int(xs.min().item()) - pad, 0)
+        x1 = min(int(xs.max().item()) + pad + 1, renders.shape[2])
+
+        pr_bbox = torch.zeros_like(renders)
+        pr_bbox[:, y0:y1, x0:x1, :] = renders[:, y0:y1, x0:x1, :]
+
+        return gt_imgs, pr_bbox
+
+    else:
+        raise ValueError(f"Unknown prepare_input_for_loss kind: {kind}")
+
 class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
         self.cfg = cfg
@@ -231,17 +286,15 @@ class Trainer:
         H, W = images.shape[1:3]
 
         # Forward pass: render
-        bbox_masked_renders, alphas, info = rasterize_splats(
+        renders, alphas, info = rasterize_splats(
             trainer=self,
             smpl_param=smpl_param,
             K=K,
             img_wh=(W, H),
             sh_degree=self.cfg.sh_degree,
             packed=self.cfg.packed,
-            masks=masks
         ) # renders of shape [1,H,W,3]
 
-        bbox_masked_colors = bbox_masked_renders
 
         with torch.no_grad():
             self.strategy.step_pre_backward(
@@ -253,13 +306,14 @@ class Trainer:
             )
 
         # --- Losses
-        gt_masked_image = masks[..., None] * images 
+        gt_render, pred_render = prepare_input_for_loss(images, renders, masks, kind=self.cfg.mask_type)
+
         # L1 (masked)
-        l1_loss = F.l1_loss(bbox_masked_colors, gt_masked_image)
+        l1_loss = F.l1_loss(pred_render, gt_render)
 
         # SSIM (masked) 
         ssim_loss = 1.0 - fused_ssim(
-            bbox_masked_colors.permute(0, 3, 1, 2), gt_masked_image.permute(0, 3, 1, 2), padding="valid"
+            pred_render.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
 
         # Combined 
@@ -293,8 +347,8 @@ class Trainer:
         if it_number % 1000 == 0 and self.cfg.visualise_cam_preds:
             save_loss_visualization(
                 image_input=images,
-                gt=gt_masked_image,
-                prediction=bbox_masked_colors,
+                gt=gt_render,
+                prediction=pred_render,
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
