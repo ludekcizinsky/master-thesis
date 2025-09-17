@@ -3,6 +3,7 @@ import hydra
 import os
 import sys
 from omegaconf import DictConfig
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../submodules/humans4d")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
@@ -20,6 +21,7 @@ import numpy as np
 from tqdm import tqdm
 
 from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
+from training.helpers.losses import anchor_means_loss
 from training.helpers.render import rasterize_splats
 from gsplat.strategy import DefaultStrategy
 from training.helpers.dataset import HumanOnlyDataset
@@ -87,7 +89,7 @@ def create_splats_with_optimizers(device, cfg):
         for name, _, lr in params
     }
 
-    return splats, optimizers, weights_c, smpl_server
+    return splats, optimizers, weights_c, smpl_server, verts_c
 
 
 def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: torch.Tensor, kind="bbox_crop"):
@@ -178,8 +180,12 @@ class Trainer:
 
         # Define model and optimizers
         out = create_splats_with_optimizers(self.device, cfg)
-        self.splats, self.optimizers, self.weights_c, self.smpl_server = out
+        self.splats, self.optimizers, self.weights_c, self.smpl_server, self.smpl_verts_c = out
         print("--- FYI: Model initialized. Number of GS:", len(self.splats["means"]))
+
+        # Keep a frozen copy of the initial canonical means for anchor-loss in "init" mode
+        self.init_means_c = self.splats["means"].detach().clone()  # [M0,3]
+        self.M0 = self.init_means_c.shape[0]
 
         # Adaptive densification strategy
         self.strategy = DefaultStrategy(verbose=True)
@@ -314,21 +320,32 @@ class Trainer:
                 info=info,
             )
 
-        # --- Losses
+        # Losses
         gt_render, pred_render = prepare_input_for_loss(images, renders, masks, kind=self.cfg.mask_type)
 
-        # L1 (masked)
+        # - L1
         l1_loss = F.l1_loss(pred_render, gt_render)
 
-        # SSIM (masked) 
+        # - SSIM
         ssim_loss = 1.0 - fused_ssim(
             pred_render.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
 
-        # Combined 
-        loss = l1_loss * (1.0 - self.cfg.ssim_lambda) + ssim_loss * self.cfg.ssim_lambda
+        # - Anchor loss (to keep splats close to SMPL surface)
+        if self.cfg.ma_lambda > 0.0:
+            ma_loss = anchor_means_loss(
+                canon_means_info=(self.splats["means"], self.M0, self.init_means_c),
+                smpl_verts_c=self.smpl_verts_c,
+                cfg=self.cfg,
+                log_scales=self.splats["scales"] if self.cfg.ma_scale_aware else None,
+            )
+        else:
+            ma_loss = torch.tensor(0.0, device=self.device)
 
-        # Add Regularizers
+        # - Combined 
+        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + ma_loss*self.cfg.ma_lambda
+
+        # - Add Regularizers
         if self.cfg.opacity_reg > 0.0:
             loss += self.cfg.opacity_reg * torch.sigmoid(self.splats["opacities"]).mean()
         if self.cfg.scale_reg > 0.0:
@@ -365,6 +382,7 @@ class Trainer:
             "loss/combined": float(loss.item()),
             "loss/masked_l1": float(l1_loss.item()),
             "loss/masked_ssim": float(ssim_loss.item()),
+            "loss/anchor_means": float(ma_loss.item()),
             "splats/num": len(self.splats["means"]),
         }
 
