@@ -26,6 +26,10 @@ downscale: 2
 # if true -> use packed gaussian representation (more memory efficient)
 packed: False 
 
+# --- 3DGS settings
+gs_refine_every: 100      # frequency of applying the densification strategy
+gs_refine_stop_iter: 5000 # stop applying the densification strategy after these many iterations
+
 # --- Loss and regularization weights
 # L1 loss weight
 l1_lambda: 1.0

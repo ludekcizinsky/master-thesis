@@ -208,9 +208,8 @@ class Trainer:
 
         # Adaptive densification strategy
         self.strategy = DefaultStrategy(verbose=True)
-        self.strategy.refine_stop_iter = 8000
-        # self.strategy.reset_every = 2000
-        self.strategy.refine_every = 300
+        self.strategy.refine_stop_iter = cfg.gs_refine_stop_iter
+        self.strategy.refine_every = cfg.gs_refine_every
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 

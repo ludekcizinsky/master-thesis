@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=modric_vs_ribberi
+#SBATCH --job-name=3dgs_params
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=01:00:00
+#SBATCH --time=08:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -16,14 +16,12 @@ conda activate thesis
 # Change to the directory where the script is located
 cd /home/cizinsky/master-thesis
 
-# Training
-# python training/run.py scene_name=modric_vs_ribberi
-# python training/run.py scene_name=modric_vs_ribberi mask_type=bbox
-# python training/run.py scene_name=modric_vs_ribberi mask_type=bbox_crop
-# python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask
+# Refinement frequency 100
+python training/run.py scene_name=modric_vs_ribberi gs_refine_every=100 'logger.tags=[h1, refine100]'
+python training/run.py scene_name=modric_vs_ribberi gs_refine_every=200 'logger.tags=[h1, refine200]'
+python training/run.py scene_name=modric_vs_ribberi gs_refine_every=300 'logger.tags=[h1, refine300]'
 
-# python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_mode=nn
-# python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_free_radius=0.01 
-# python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_scale_aware=true 
-
-python training/run.py scene_name=modric_vs_ribberi mask_type=tight_crop ma_scale_aware=true ma_free_radius=0.01 
+# Refinement stop iteration 5000
+python training/run.py scene_name=modric_vs_ribberi gs_refine_stop_iter=5000 'logger.tags=[h1, refstop5k]'
+python training/run.py scene_name=modric_vs_ribberi gs_refine_stop_iter=10000 'logger.tags=[h1, refstop10k]'
+python training/run.py scene_name=modric_vs_ribberi gs_refine_stop_iter=15000 'logger.tags=[h1, refstop15k]'
