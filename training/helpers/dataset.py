@@ -110,5 +110,6 @@ class HumanOnlyDataset(Dataset):
             "image": image,     # [3,H,W]
             "mask": mask,       # [H,W]
             "K": K,             # [3,3]
-            "smpl_param": smpl_param  # [86]
+            "smpl_param": smpl_param,  # [86]
+            "confidence": self.frame_map[fid][self.tid]["confidence"]  # float
         }

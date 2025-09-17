@@ -176,7 +176,8 @@ def load_human4d_results(path_to_results):
                 smpl_param=smpl_param,
                 phalp_mask=mask,
                 phalp_j3ds=v['3d_joints'][i],
-                phalp_j2ds=j2d
+                phalp_j2ds=j2d,
+                confidence=v['conf'][i],
             )
 
     return track_res

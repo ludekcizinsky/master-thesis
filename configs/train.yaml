@@ -29,12 +29,14 @@ packed: False
 # L1 loss weight
 l1_lambda: 1.0
 # SSIM loss weight 
-ssim_lambda: 0.5 
+ssim_lambda: 0.5
+# Opacity loss weight
+opa_lambda: 0.01 
 # Opacity and scale regularization weights
-opacity_reg: 0.0
-scale_reg: 0.0
+opacity_reg: 0.01
+scale_reg: 0.01
 # type of masking
-mask_type: bbox  # bbox_crop, bbox, tight_crop and tight
+mask_type: tight_crop  # bbox_crop, bbox, tight_crop and tight
 # means anchor (ma)
 ma_mode: "init"         # one of: ["init", "nn"]
 ma_lambda: 1.0          # strength

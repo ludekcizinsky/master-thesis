@@ -21,7 +21,7 @@ import numpy as np
 from tqdm import tqdm
 
 from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
-from training.helpers.losses import anchor_means_loss
+from training.helpers.losses import anchor_to_smpl_surface, opacity_distance_penalty
 from training.helpers.render import rasterize_splats
 from gsplat.strategy import DefaultStrategy
 from training.helpers.dataset import HumanOnlyDataset
@@ -208,6 +208,9 @@ class Trainer:
 
         # Adaptive densification strategy
         self.strategy = DefaultStrategy(verbose=True)
+        self.strategy.refine_stop_iter = 8000
+        # self.strategy.reset_every = 2000
+        self.strategy.refine_every = 300
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 
@@ -352,17 +355,27 @@ class Trainer:
 
         # - Anchor loss (to keep splats close to SMPL surface)
         if self.cfg.ma_lambda > 0.0:
-            ma_loss = anchor_means_loss(
-                canon_means_info=(self.splats["means"], self.M0, self.init_means_c),
+            ma_loss = anchor_to_smpl_surface(
+                means_c=self.splats["means"],
                 smpl_verts_c=self.smpl_verts_c,
-                cfg=self.cfg,
-                log_scales=self.splats["scales"] if self.cfg.ma_scale_aware else None,
+
             )
         else:
             ma_loss = torch.tensor(0.0, device=self.device)
 
+
+        # - Opacity distance penalty (to keep splats near the surface)
+        if self.cfg.opa_lambda > 0.0:
+            opa_loss = opacity_distance_penalty(
+                opa_logits=self.splats["opacities"],
+                means_c=self.splats["means"],
+                smpl_verts_c=self.smpl_verts_c,
+            )
+        else:
+            opa_loss = torch.tensor(0.0, device=self.device)
+
         # - Combined 
-        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + ma_loss*self.cfg.ma_lambda
+        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + ma_loss*self.cfg.ma_lambda + opa_loss*self.cfg.opa_lambda
 
         # - Add Regularizers
         if self.cfg.opacity_reg > 0.0:
@@ -393,7 +406,7 @@ class Trainer:
             save_loss_visualization(
                 image_input=images,
                 gt=gt_render,
-                prediction=pred_render,
+                prediction=renders,
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
