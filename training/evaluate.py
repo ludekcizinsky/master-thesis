@@ -56,8 +56,6 @@ def main(cfg):
     trainer.load_canonical_npz(npz_path)
     print("✅ Model parameters loaded.\n")
 
-
-
     ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     psnr = PeakSignalNoiseRatio(data_range=1.0).to(device)
     if cfg.lpips_net == "alex":
@@ -160,7 +158,7 @@ def main(cfg):
     # - std
     agg_metrics.update({f"eval/{k}_{cfg.split}_std": float(torch.stack(v).std().item()) for k, v in metrics.items()})
     # - num samples
-    agg_metrics["eval/val_samples"] = len(trainer.dataset)
+    agg_metrics[f"eval/{cfg.split}_n_samples"] = len(trainer.dataset)
 
     # save metrics as json
     with open(output_dir / "metrics.json", "w") as f:
