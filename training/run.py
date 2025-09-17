@@ -144,11 +144,30 @@ def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: 
 
         return gt_imgs, pr_bbox
 
-    elif kind == "tight_mask":
-        # Apply mask to the ground truth (keep only target person pixels)
+    elif kind == "tight_crop":
+        # Apply tight mask (keep only target person pixels)
         gt_imgs *= masks.unsqueeze(-1)
+        renders *= masks.unsqueeze(-1)
 
-        # Apply mask to the render (keep only target person pixels)
+        # bbox crop around the mask to avoid huge easy background
+        ys, xs = torch.where(masks[0] > 0.5)
+        if ys.numel() > 0:
+            y0 = int(ys.min().item())
+            y1 = int(ys.max().item()) + 1
+            x0 = int(xs.min().item())
+            x1 = int(xs.max().item()) + 1
+
+            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
+            pr_crop  = renders[:, y0:y1, x0:x1, :]
+        else:
+            # fallback if mask empty
+            gt_crop, pr_crop = gt_imgs, renders
+        
+        return gt_crop, pr_crop
+
+    elif kind == "tight":
+        # Apply tight mask (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
         renders *= masks.unsqueeze(-1)
 
         return gt_imgs, renders

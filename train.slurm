@@ -9,9 +9,6 @@
 #SBATCH --gres=gpu:1 
 #SBATCH --account=master 
 
-OUTPUT_ERROR="/scratch/izar/cizinsky/thesis/slurm/${SLURM_JOB_NAME}.${SLURM_JOB_ID}.err"
-OUTPUT_OUT="/scratch/izar/cizinsky/thesis/slurm/${SLURM_JOB_NAME}.${SLURM_JOB_ID}.out"
-
 # Conda init and activate
 source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 conda activate thesis
@@ -28,3 +25,5 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_mode=nn
 # python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_free_radius=0.01 
 # python training/run.py scene_name=modric_vs_ribberi mask_type=tight_mask ma_scale_aware=true 
+
+python training/run.py scene_name=modric_vs_ribberi mask_type=tight_crop ma_scale_aware=true ma_free_radius=0.01 

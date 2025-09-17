@@ -34,7 +34,7 @@ ssim_lambda: 0.5
 opacity_reg: 0.0
 scale_reg: 0.0
 # type of masking
-mask_type: bbox  # bbox_crop or bbox or none
+mask_type: bbox  # bbox_crop, bbox, tight_crop and tight
 # means anchor (ma)
 ma_mode: "init"         # one of: ["init", "nn"]
 ma_lambda: 1.0          # strength
