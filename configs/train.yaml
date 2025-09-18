@@ -37,18 +37,15 @@ l1_lambda: 1.0
 ssim_lambda: 0.5
 # Opacity loss weight
 opa_lambda: 0.01 
+opa_free_radius: 0.01  # meters tolerated w/o penalty
 # Opacity and scale regularization weights
 opacity_reg: 0.01
 scale_reg: 0.01
 # type of masking
 mask_type: tight_crop  # bbox_crop, bbox, tight_crop and tight
 # means anchor (ma)
-ma_mode: "init"         # one of: ["init", "nn"]
 ma_lambda: 1.0          # strength
-ma_free_radius: 0.005   # meters tolerated w/o penalty
-ma_robust: "huber"      # one of: ["l2","huber"]
-ma_huber_delta: 0.01    # Huber transition (meters)
-ma_scale_aware: false   # if true, weight by 1 / mean(sigma) per splat
+ma_free_radius: 0.001   # meters tolerated w/o penalty
 
 # --- Learning rates for the model parameters
 # LR for 3D point positions

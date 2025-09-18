@@ -59,6 +59,9 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=15000 downscale=1 mask_type="bbox_crop" 'logger.tags=[h1, refinestop10k, refine200, opa0005, ma1, downscale1, bboxcrop]'
 # python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=150 gs_refine_stop_iter=10000 downscale=1 mask_type="bbox_crop" 'logger.tags=[h1, refinestop10k, refine150, opa0005, ma1, downscale1, bboxcrop]'
 
-python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=15000 downscale=1 iters=40000 'logger.tags=[h1, refinestop15k, refine200, opa0005, ma1, downscale1, iters40k]'
-python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=20000 downscale=1 iters=40000 'logger.tags=[h1, refinestop20k, refine200, opa0005, ma1, downscale1, iters40k]'
-python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=25000 downscale=1 iters=40000 'logger.tags=[h1, refinestop25k, refine200, opa0005, ma1, downscale1, iters40k]'
+# python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=15000 downscale=1 iters=40000 'logger.tags=[h1, refinestop15k, refine200, opa0005, ma1, downscale1, iters40k]'
+# python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=20000 downscale=1 iters=40000 'logger.tags=[h1, refinestop20k, refine200, opa0005, ma1, downscale1, iters40k]'
+# python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=25000 downscale=1 iters=40000 'logger.tags=[h1, refinestop25k, refine200, opa0005, ma1, downscale1, iters40k]'
+
+python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=10000 downscale=1 opa_free_radius=0.005 'logger.tags=[h1, refinestop10k, refine200, opa0005, opafr0005, ma1, downscale1]'
+python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=10000 downscale=1 opa_free_radius=0.001 'logger.tags=[h1, refinestop10k, refine200, opa0005, opafr0001, ma1, downscale1]'

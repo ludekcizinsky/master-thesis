@@ -357,7 +357,7 @@ class Trainer:
             ma_loss = anchor_to_smpl_surface(
                 means_c=self.splats["means"],
                 smpl_verts_c=self.smpl_verts_c,
-
+                free_radius=self.cfg.ma_free_radius,
             )
         else:
             ma_loss = torch.tensor(0.0, device=self.device)
@@ -369,6 +369,7 @@ class Trainer:
                 opa_logits=self.splats["opacities"],
                 means_c=self.splats["means"],
                 smpl_verts_c=self.smpl_verts_c,
+                free_radius=self.cfg.opa_free_radius,
             )
         else:
             opa_loss = torch.tensor(0.0, device=self.device)
