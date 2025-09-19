@@ -130,7 +130,7 @@ class ImplicitNetwork(nn.Module):
 
             if weight_norm:
                 if not ((l == self.num_layers - 2) and zero_conv):
-                    lin = nn.utils.weight_norm(lin)
+                    lin = nn.utils.parametrizations.weight_norm(lin)
                 
             setattr(self, "lin" + str(l), lin)
         self.softplus = nn.Softplus(beta=100)
