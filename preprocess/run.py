@@ -24,7 +24,6 @@ def main(cfg: DictConfig):
     extract_frames(cfg)
     print("✅ Frame extraction completed.\n")
 
-
     # Step 2 / Human Tracking
     print("ℹ️  Start of human tracking")
     run_human4d(cfg)

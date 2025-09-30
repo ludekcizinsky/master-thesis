@@ -213,81 +213,84 @@ class Trainer:
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.strategy.initialize_state(scene_scale=1.0)
 
-    def _update_skinning_weights(self, current_weights_c, k: int = 4, eps: float = 1e-6):
+    def _update_skinning_weights(self, current_weights_c, k: int = 4, eps: float = 1e-6, p: float = 1.0):
         """
-        Update / extend skinning weights when #splats (Gaussians) changes.
+        Recompute ALL per-Gaussian LBS weights using inverse-distance weighting over k-NN SMPL verts.
+
+        For each Gaussian center g, find its k nearest SMPL vertices v_j with distances d_j.
+        If any d_j == 0 (within eps), assign equal weight among those zero-distance neighbors.
+        Otherwise, use weights proportional to 1 / d_j^p (row-normalized).
 
         Args:
-            current_weights_c: torch.Tensor [M_old, 24]
-                Existing per-Gaussian LBS weights.
+            current_weights_c: torch.Tensor [M_old, 24] or None
+                Only used for device/dtype fallback; values are ignored.
             k: int
-                # of nearest SMPL vertices to use for interpolation.
+                Number of nearest SMPL vertices.
             eps: float
-                Small epsilon for numerical stability.
+                Numerical stability & zero-distance threshold.
+            p: float
+                Power for inverse-distance weighting (p=1 => 1/d, p=2 => 1/d^2, ...).
 
         Requires (on self):
-            self.splats["means"]          -> [M_new_total, 3] canonical positions of Gaussians
-            self.smpl_verts_c             -> [N_smpl, 3] canonical SMPL vertex positions
-            self.smpl_weights_c           -> [N_smpl, 24] SMPL skinning weight matrix (rows sum ~1)
+            self.splats["means"]         -> [M_total, 3]
+            self.smpl_server.verts_c     -> [1, N_smpl, 3]
+            self.smpl_server.weights_c   -> [1, N_smpl, 24]
 
         Returns:
-            updated_weights_c: torch.Tensor [M_new_total, 24]
+            new_W: torch.Tensor [M_total, 24]
         """
-        device = current_weights_c.device
-        dtype  = current_weights_c.dtype
+        # Device / dtype
+        if current_weights_c is not None:
+            device = current_weights_c.device
+            dtype  = current_weights_c.dtype
+        else:
+            device = self.splats["means"].device
+            dtype  = self.splats["means"].dtype
 
-        means_all = self.splats["means"].to(device=device, dtype=dtype)                # [M_total, 3]
-        smpl_V    = self.smpl_server.verts_c[0].to(device=device, dtype=dtype)                   # [N_smpl, 3]
-        smpl_W    = self.smpl_server.weights_c[0].to(device=device, dtype=dtype)                 # [N_smpl, 24]
+        means_all = self.splats["means"].to(device=device, dtype=dtype)            # [M, 3]
+        smpl_V    = self.smpl_server.verts_c[0].to(device=device, dtype=dtype)     # [N, 3]
+        smpl_W    = self.smpl_server.weights_c[0].to(device=device, dtype=dtype)   # [N, 24]
 
-        M_old = current_weights_c.shape[0]
-        M_tot = means_all.shape[0]
+        M = means_all.shape[0]
+        N = smpl_V.shape[0]
+        k_eff = min(max(int(k), 1), N)
 
-        # Case 1: fewer/equal splats than weights -> truncate (common when pruning)
-        if M_tot <= M_old:
-            return current_weights_c[:M_tot].clone()
+        # Distances: [M, N]
+        dists = torch.cdist(means_all, smpl_V)  # O(M*N)
 
-        # Case 2: we added new splats -> extend
-        M_new = M_tot - M_old
-        means_new = means_all[M_old:]                                                  # [M_new, 3]
-        print(f"--- FYI: extending skinning weights: {M_old} -> {M_tot} splats")
+        # k-NN: [M, k]
+        topk_d, topk_idx = torch.topk(dists, k=k_eff, dim=1, largest=False)
 
-        # k-NN in canonical space to SMPL vertices
-        k_eff = min(k, smpl_V.shape[0])
-        # distances: [M_new, N_smpl]
-        dists = torch.cdist(means_new, smpl_V)                                         
-        # take k nearest
-        topk_d, topk_idx = torch.topk(dists, k=k_eff, dim=1, largest=False)            # [M_new, k], [M_new, k]
-
-        # inverse-distance weights (safer than 1/d with eps)
-        inv = 1.0 / (topk_d + eps)                                                     # [M_new, k]
-        w_geo = inv / (inv.sum(dim=1, keepdim=True) + eps)                             # row-normalize
-
-        # gather SMPL skinning weights for those neighbors
-        # smpl_W[topk_idx]: [M_new, k, 24]
+        # Gather neighbor weights: [M, k, 24]
         smpl_W_knn = smpl_W[topk_idx]
 
-        # distance-weighted mix -> [M_new, 24]
-        new_W = (w_geo.unsqueeze(-1) * smpl_W_knn).sum(dim=1)
+        # Handle zero-distance rows robustly
+        zero_mask = topk_d <= eps                         # [M, k]
+        any_zero  = zero_mask.any(dim=1, keepdim=True)    # [M, 1]
 
-        # final safety renorm (keep convex comb)
+        # Inverse-distance weights for non-zero case: w_j ∝ 1 / d_j^p
+        inv = 1.0 / torch.clamp(topk_d, min=eps).pow(p)   # [M, k]
+        w_geo = inv / (inv.sum(dim=1, keepdim=True) + eps)
+
+        # If any zero distances: distribute uniformly across zero-distance neighbors
+        zcount = zero_mask.sum(dim=1, keepdim=True).clamp(min=1)   # [M,1]
+        w_zero = zero_mask.float() / zcount                        # [M, k]
+
+        # Select per-row: use zero-based uniform weights if any zero exists, else inverse-distance
+        w_final = torch.where(any_zero, w_zero, w_geo)             # [M, k]
+
+        # Blend neighbor SMPL weights: [M, 24]
+        new_W = (w_final.unsqueeze(-1) * smpl_W_knn).sum(dim=1)
+
+        # Safety renorm
         new_W = torch.clamp(new_W, min=0)
         new_W = new_W / (new_W.sum(dim=1, keepdim=True) + eps)
 
-        # stitch: keep old rows, append new rows
-        updated = torch.empty((M_tot, smpl_W.shape[1]), device=device, dtype=dtype)
-        updated[:M_old] = current_weights_c
-        updated[M_old:] = new_W
-        return updated
+        return new_W
 
     def means_can_to_cam(self, smpl_param: torch.Tensor) -> torch.Tensor:
         out = self.smpl_server(smpl_param, absolute=False)
         T_rel = out["smpl_tfs"][0].to(self.device)  # [24,4,4]
-
-        with torch.no_grad():
-            self.weights_c = self._update_skinning_weights(self.weights_c, k=4, eps=1e-6)
-            self.weights_c = self.weights_c.detach()  # redundant but explicit
-
         means_cam = lbs_apply(self.splats["means"], self.weights_c, T_rel)
         return means_cam
 
@@ -400,6 +403,11 @@ class Trainer:
                 info=info,
                 packed=self.cfg.packed,
             )
+
+        # Update skinning weights
+        with torch.no_grad():
+            self.weights_c = self._update_skinning_weights(self.weights_c, k=self.cfg.lbs_knn, eps=1e-6)
+            self.weights_c = self.weights_c.detach()  # redundant but explicit
 
         # Periodic debug visualization
         if it_number % 1000 == 0 and self.cfg.visualise_cam_preds:

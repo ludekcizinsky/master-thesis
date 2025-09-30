@@ -65,3 +65,5 @@ cd /home/cizinsky/master-thesis
 
 python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=10000 downscale=1 opa_free_radius=0.005 'logger.tags=[h1, refinestop10k, refine200, opa0005, opafr0005, ma1, downscale1]'
 python training/run.py scene_name=modric_vs_ribberi ma_lambda=1.0 opa_lambda=0.005 gs_refine_every=200 gs_refine_stop_iter=10000 downscale=1 opa_free_radius=0.001 'logger.tags=[h1, refinestop10k, refine200, opa0005, opafr0001, ma1, downscale1]'
+
+python training/run.py scene_name=modric_vs_ribberi opa_lambda=0.05 gs_refine_every=500 gs_refine_stop_iter=10000 opa_free_radius=0.0001 lbs_knn=30 'logger.tags=[h1, refinestop10k, refine500, opa005, lbs, opafr00001, knn30]'

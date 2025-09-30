@@ -46,6 +46,8 @@ mask_type: tight_crop  # bbox_crop, bbox, tight_crop and tight
 # means anchor (ma)
 ma_lambda: 1.0          # strength
 ma_free_radius: 0.001   # meters tolerated w/o penalty
+# k-nearest neighbors for skinning weights computation
+lbs_knn: 4
 
 # --- Learning rates for the model parameters
 # LR for 3D point positions
