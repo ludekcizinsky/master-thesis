@@ -22,12 +22,13 @@ from tqdm import tqdm
 
 from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
 from training.helpers.losses import anchor_to_smpl_surface, opacity_distance_penalty
-from training.helpers.render import rasterize_splats
 from gsplat.strategy import DefaultStrategy
 from training.helpers.dataset import HumanOnlyDataset, TraceDataset
 
 from utils.smpl_deformer.smpl_server import SMPLServer
 from fused_ssim import fused_ssim
+
+from gsplat import rasterization
 
 
 def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
@@ -182,7 +183,7 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = TraceDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale, val_fids=cfg.val_fids)
+        self.dataset = TraceDataset(Path(cfg.preprocess_dir), cfg.tid, downscale=cfg.downscale)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
@@ -288,11 +289,49 @@ class Trainer:
 
         return new_W
 
+    def _rasterize_splats(self, smpl_param, w2c, K, H, W):
+
+        device, dtype = self.device, torch.float32
+
+        # Prepare gaussians
+        # - Means
+        means = self.means_can_to_cam(smpl_param)  # [M,3]
+        # - Quats
+        quats = self.rotations()  # [M,4]
+        # - Scales
+        scales = self.scales() # [M,3]
+        # - Colours
+        colors = self.get_colors()
+        # - Opacity
+        opacity = self.opacity()
+
+        # Define cameras
+        viewmats = torch.eye(4, device=device, dtype=dtype).unsqueeze(0)   # [1,4,4]
+        Ks = K.to(device, dtype).contiguous()                  # [1,3,3]
+
+        # Define cameras
+        dtype = torch.float32
+        viewmats = w2c.to(device, dtype).contiguous()  # [1,4,4]
+        Ks = K.to(device, dtype).contiguous()                  # [1,3,3]
+
+        # Render
+        colors, alphas, info = rasterization(
+            means, quats, scales, opacity, colors, viewmats, Ks, W, H, 
+            sh_degree=self.cfg.sh_degree, packed=self.cfg.packed
+        )
+
+        return colors, alphas, info
+
+
     def means_can_to_cam(self, smpl_param: torch.Tensor) -> torch.Tensor:
-        out = self.smpl_server(smpl_param, absolute=False)
-        T_rel = out["smpl_tfs"][0].to(self.device)  # [24,4,4]
-        means_cam = lbs_apply(self.splats["means"], self.weights_c, T_rel)
-        return means_cam
+
+        tsf = self.smpl_server(smpl_param, absolute=False)["smpl_tfs"][0].to(self.device)  # [24,4,4]
+        x_c = self.splats["means"]
+        x_c_h = F.pad(x_c, (0, 1), value=1.0)
+        w = self.weights_c
+        x_p_h = torch.einsum("pn,nij,pj->pi", w, tsf, x_c_h)
+        means = x_p_h[:, :3] / x_p_h[:, 3:4]
+        return means
 
     def opacity(self) -> torch.Tensor:
         """[M] in (0,1)"""
@@ -321,19 +360,12 @@ class Trainer:
         images = batch["image"].to(self.device)  # [B,H,W,3]
         masks  = batch["mask"].to(self.device)   # [B,H,W]
         K  = batch["K"].to(self.device)      # [B, 3,3]
+        w2c = batch["M_ext"].to(self.device)  # [B,4,4]
         smpl_param = batch["smpl_param"].to(self.device)  # [B,86]
         H, W = images.shape[1:3]
 
         # Forward pass: render
-        renders, alphas, info = rasterize_splats(
-            trainer=self,
-            smpl_param=smpl_param,
-            K=K,
-            img_wh=(W, H),
-            sh_degree=self.cfg.sh_degree,
-            packed=self.cfg.packed,
-        ) # renders of shape [1,H,W,3]
-
+        renders, alphas, info = self._rasterize_splats(smpl_param, w2c, K, H, W)
 
         with torch.no_grad():
             self.strategy.step_pre_backward(
@@ -410,7 +442,7 @@ class Trainer:
             self.weights_c = self.weights_c.detach()  # redundant but explicit
 
         # Periodic debug visualization
-        if it_number % 1000 == 0 and self.cfg.visualise_cam_preds:
+        if it_number % 500 == 0 and self.cfg.visualise_cam_preds:
             save_loss_visualization(
                 image_input=images,
                 gt=gt_render,
@@ -495,9 +527,9 @@ def main(cfg: DictConfig):
     wandb.finish()
     print("✅ Training completed.\n")
 
-    print("ℹ️ Starting evaluation")
-    os.system(f"python training/evaluate.py internal_run_id={internal_run_id} split=val")
-    print("✅ Evaluation completed.")
+    # print("ℹ️ Starting evaluation")
+    # os.system(f"python training/evaluate.py internal_run_id={internal_run_id} split=val")
+    # print("✅ Evaluation completed.")
 
 if __name__ == "__main__":
     main()
