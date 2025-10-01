@@ -24,7 +24,7 @@ from training.helpers.utils import init_logging, save_loss_visualization, lbs_ap
 from training.helpers.losses import anchor_to_smpl_surface, opacity_distance_penalty
 from training.helpers.render import rasterize_splats
 from gsplat.strategy import DefaultStrategy
-from training.helpers.dataset import HumanOnlyDataset
+from training.helpers.dataset import HumanOnlyDataset, TraceDataset
 
 from utils.smpl_deformer.smpl_server import SMPLServer
 from fused_ssim import fused_ssim
@@ -182,7 +182,7 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = HumanOnlyDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale, val_fids=cfg.val_fids)
+        self.dataset = TraceDataset(Path(cfg.preprocess_dir), cfg.tid, split=cfg.split, downscale=cfg.downscale, val_fids=cfg.val_fids)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 

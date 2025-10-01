@@ -6,7 +6,7 @@ visualise_cam_preds: True
 
 # --- Input / output paths
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
-preprocess_dir: ${output_dir}/preprocess
+preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/football_high_res
 train_dir: ${output_dir}/training
 split: train # dataset split to use for training (train/val)
 
@@ -22,7 +22,7 @@ val_fids: [] # list of frame ids to use for validation (only if split=='val')
 # Device to use for training
 device: cuda
 # Resolution of the input video frames (width, height)
-downscale: 2 
+downscale: 1 
 # if true -> use packed gaussian representation (more memory efficient)
 packed: False 
 
