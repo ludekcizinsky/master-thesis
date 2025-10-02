@@ -4,6 +4,9 @@ from typing import List
 import torch
 from torch.utils.data import Dataset
 import numpy as np
+from typing import Optional, Tuple, Dict, Any, Iterable
+from dataclasses import dataclass
+from scipy.spatial import cKDTree
 
 from utils.io import load_frame_map_jsonl_restore
 from preprocess.helpers.cameras import load_camdicts_json
@@ -236,3 +239,266 @@ class TraceDataset(Dataset):
             "M_ext": M_ext,         # [4,4]
             "P": self.Ps[idx],     # [3,4]
         }
+    
+
+@dataclass
+class MegaSAMFrame:
+    """Convenient container for a single frame."""
+    image: torch.Tensor        # [H, W, 3], uint8 or float32 in [0,1] (see normalize)
+    depth: Optional[torch.Tensor]   # [H, W], float32 (meters or MegaSaM units); may be None
+    K: torch.Tensor            # [3, 3], float32
+    c2w: torch.Tensor          # [4, 4], float32
+    w2c: torch.Tensor          # [4, 4], float32
+    H: int
+    W: int
+    static_mask: Optional[torch.Tensor]  # [H, W] bool, True=STATIC (kept), False=DYNAMIC (ignored)
+
+
+class MegaSAMDataset(Dataset):
+    """
+    Torch dataset for MegaSaM NPZ outputs:
+        required keys:  images[N,H,W,3], depths[N,H,W], intrinsic[3,3], cam_c2w[N,4,4]
+        optional keys:  static_mask[N,H,W] (bool or uint8), motion_prob[N,H,W] (float32)
+
+    It also provides a helper to aggregate a static 3D point cloud across frames for 3DGS init.
+    """
+    def __init__(
+        self,
+        npz_path_or_data: str | Dict[str, np.ndarray],
+        *,
+        normalize_images: bool = True,
+        center_pixels: bool = True,
+        static_mask_key: Optional[str] = None,   # e.g., "enlarged_dynamic_mask" (will invert) or "static_mask"
+        motion_prob_key: Optional[str] = None,   # e.g., "motion_prob"; threshold used if provided
+        motion_static_threshold: float = 0.2,    # pixels with prob < thr treated as static
+        align_poses_to: str = "median",          # "none" | "first" | "median"
+        device: torch.device | str = "cpu",
+    ):
+        if isinstance(npz_path_or_data, str):
+            data = np.load(npz_path_or_data, allow_pickle=True)
+        else:
+            data = npz_path_or_data
+
+        # Required arrays
+        images = data["images"]                  # (N,H,W,3) uint8
+        depths = data.get("depths", None)        # (N,H,W) float32 (optional for pure color training)
+        K = data["intrinsic"]                    # (3,3)
+        c2w = data["cam_c2w"]                    # (N,4,4)
+
+        assert images.ndim == 4 and images.shape[-1] in (3, 4)
+        N, H, W, _ = images.shape
+        if images.shape[-1] == 4:
+            images = images[..., :3]  # drop alpha if present
+
+        # Broadcast K to all frames if needed
+        if K.ndim == 2:
+            K = np.broadcast_to(K[None, ...], (N, 3, 3))
+        elif K.ndim == 3:
+            assert K.shape[0] == N
+        else:
+            raise ValueError("intrinsic must be shape (3,3) or (N,3,3)")
+
+        # Optional masks
+        static_mask = None
+        if static_mask_key is not None and static_mask_key in data:
+            # If provided mask is 'dynamic', invert it to get static=True
+            m = data[static_mask_key]
+            # heuristics: if it's named like dynamic -> invert
+            if "dynamic" in static_mask_key.lower():
+                static_mask = (m == 0) if m.dtype != bool else (~m)
+            else:
+                static_mask = (m > 0) if m.dtype != bool else m
+        elif motion_prob_key is not None and motion_prob_key in data:
+            mp = data[motion_prob_key].astype(np.float32)
+            static_mask = (mp < motion_static_threshold)
+        else:
+            # default: everything static
+            static_mask = np.ones((N, H, W), dtype=bool)
+
+        # Pose alignment (optional but handy for numerics / visualization)
+        if align_poses_to != "none":
+            if align_poses_to == "first":
+                anchor = c2w[0]
+            elif align_poses_to == "median":
+                anchor = c2w[len(c2w)//2]
+            else:
+                raise ValueError("align_poses_to must be 'none' | 'first' | 'median'")
+            T_inv = np.linalg.inv(anchor)
+            c2w = (T_inv[None, ...] @ c2w)
+
+        # Cache tensors
+        self.N = N
+        self.H = H
+        self.W = W
+        self.center_pixels = center_pixels
+        self.device = torch.device(device)
+
+        self.images = torch.from_numpy(images.copy())  # uint8
+        if normalize_images:
+            self.images = self.images.float() / 255.0  # [0,1]
+        self.depths = None if depths is None else torch.from_numpy(depths.astype(np.float32))
+        self.K = torch.from_numpy(K.astype(np.float32))
+        self.c2w = torch.from_numpy(c2w.astype(np.float32))
+        self.w2c = torch.inverse(self.c2w)
+
+        self.static_mask = torch.from_numpy(static_mask.astype(bool))
+
+    def __len__(self) -> int:
+        return self.N
+
+    def __getitem__(self, idx: int) -> MegaSAMFrame:
+        img = self.images[idx]                        # [H,W,3]
+        dep = None if self.depths is None else self.depths[idx]  # [H,W]
+        K = self.K[idx]
+        c2w = self.c2w[idx]
+        w2c = self.w2c[idx]
+        sm = self.static_mask[idx]                    # [H,W] bool
+
+        return MegaSAMFrame(
+            image=img,
+            depth=dep,
+            K=K,
+            c2w=c2w,
+            w2c=w2c,
+            H=self.H,
+            W=self.W,
+            static_mask=sm
+        )
+
+    # --------- Helpers for 3DGS ---------
+
+    @torch.no_grad()
+    def sample_pixels(
+        self,
+        idx: int,
+        num: int,
+        static_only: bool = False,
+        return_uv: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Randomly sample pixels from a frame (optionally only static).
+        Returns colors (and optional depths) for photometric / depth supervision.
+        """
+        frame = self[idx]
+        H, W = frame.H, frame.W
+        if static_only and frame.static_mask is not None:
+            valid = frame.static_mask.view(-1)
+        else:
+            valid = torch.ones(H*W, dtype=torch.bool, device=self.images.device)
+
+        valid_idx = torch.nonzero(valid, as_tuple=False).squeeze(-1)
+        if valid_idx.numel() == 0:
+            raise RuntimeError("No valid pixels to sample (check your masks).")
+
+        choice = valid_idx[torch.randint(0, valid_idx.numel(), (num,), device=valid_idx.device)]
+        v = choice // W
+        u = choice % W
+
+        colors = frame.image[v, u, :]  # [num, 3], uint8 or float
+        depths = None
+        if frame.depth is not None:
+            depths = frame.depth[v, u]  # [num]
+
+        out = {
+            "rgb": colors,             # [num,3]
+            "K": frame.K,              # [3,3]
+            "c2w": frame.c2w,          # [4,4]
+            "w2c": frame.w2c,          # [4,4]
+            "H": torch.tensor(H),
+            "W": torch.tensor(W),
+        }
+        if depths is not None:
+            out["depth"] = depths
+        if return_uv:
+            out["uv"] = torch.stack([u, v], dim=-1)  # [num,2]
+        return out
+
+    @torch.no_grad()
+    def build_static_point_cloud(
+        self,
+        *,
+        every_k: int = 1,                  # use every k-th frame
+        downsample: int = 2,               # pixel stride
+        min_depth: float = 1e-6,
+        max_depth: float = float("inf"),
+        return_colors: bool = True,
+        use_depth_conf_mask: Optional[torch.Tensor] = None,  # [N,H,W] bool; ANDed with static mask
+        device: str | torch.device = "cpu",
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Back-project static pixels across frames into a single 3D point cloud in world coords.
+        Returns:
+          points: [M,3] float32
+          colors: [M,3] float32 in [0,1] if dataset images normalized, else uint8 scaled later
+        """
+        assert self.depths is not None, "Depths are required to build a point cloud."
+
+        pts_all = []
+        cols_all = [] if return_colors else None
+
+        K_np = self.K.cpu().numpy()
+        for i in range(0, self.N, every_k):
+            frame = self[i]
+            K = K_np[i]
+            K_inv = np.linalg.inv(K)
+
+            dep = frame.depth.cpu().numpy()  # [H,W]
+            sm = frame.static_mask.cpu().numpy() if frame.static_mask is not None else np.ones_like(dep, dtype=bool)
+            if use_depth_conf_mask is not None:
+                sm = sm & use_depth_conf_mask[i].cpu().numpy()
+
+            # downsample grid
+            yy = np.arange(0, frame.H, downsample)
+            xx = np.arange(0, frame.W, downsample)
+            u, v = np.meshgrid(xx, yy)  # u:cols (x), v:rows (y)
+            if self.center_pixels:
+                u = u + 0.5
+                v = v + 0.5
+            
+            v, u = v.astype(np.int32), u.astype(np.int32)  # [H',W']
+            d = dep[v, u]  # [H',W']
+            keep = (sm[v, u]) & np.isfinite(d) & (d > min_depth) & (d < max_depth)
+
+            if keep.sum() == 0:
+                continue
+
+            u_keep = u[keep].reshape(-1)
+            v_keep = v[keep].reshape(-1)
+            d_keep = d[keep].reshape(-1)
+
+            # backproject to camera coords: x_cam = d * K^{-1} [u, v, 1]^T
+            homo = np.stack([u_keep, v_keep, np.ones_like(u_keep)], axis=-1)  # [M,3]
+            local_dirs = (K_inv @ homo.T).T                                     # [M,3]
+            x_cam = local_dirs * d_keep[:, None]                                # [M,3]
+
+            # to world: X_w = R * x_cam + t
+            R = frame.c2w[:3, :3].cpu().numpy()
+            t = frame.c2w[:3, 3].cpu().numpy()
+            Xw = (R @ x_cam.T).T + t[None, :]                                   # [M,3]
+            pts_all.append(torch.from_numpy(Xw).to(device=device, dtype=torch.float32))
+
+            if return_colors:
+                col = frame.image.cpu().numpy()[v[keep], u[keep], :]  # [M,3]
+                cols_all.append(torch.from_numpy(col).to(device=device, dtype=torch.float32))
+
+        points = torch.cat(pts_all, dim=0) if pts_all else torch.empty(0, 3, device=device)
+        colors = torch.cat(cols_all, dim=0) if (return_colors and cols_all) else None
+        return points, colors
+
+    @staticmethod
+    @torch.no_grad()
+    def estimate_scales_from_knn(pts: torch.Tensor, k: int = 16, percentile: float = 50.0) -> torch.Tensor:
+        """
+        Heuristic to set initial Gaussian scales from local point spacing.
+        Returns per-point isotropic scale sigma: [N,1] (float32).
+        """
+        if pts.numel() == 0:
+            return torch.empty(0, 1, dtype=torch.float32, device=pts.device)
+
+        pts_np = pts.detach().cpu().numpy()
+        tree = cKDTree(pts_np)
+        dists, _ = tree.query(pts_np, k=min(k+1, max(2, pts_np.shape[0])))  # first neighbor is itself (0)
+        # ignore the zero self-distance
+        local = dists[:, 1:]  # [N,k]
+        sigma = np.percentile(local, percentile, axis=1)  # [N]
+        return torch.from_numpy(sigma.astype(np.float32)).unsqueeze(1).to(pts.device)
