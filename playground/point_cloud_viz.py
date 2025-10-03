@@ -17,17 +17,11 @@ ds = MegaSAMDataset(
     device="cpu",
 )
 
-
-
 # 2) Build static world point cloud (+ colors)
 pixel_downsample = 10  # downsample image by this factor when building point cloud
 pts_world, colors = ds.build_static_point_cloud(every_k=1, downsample=pixel_downsample, device="cpu")
 pts_world, colors = pts_world.numpy().astype(np.float32), (colors.numpy() * 255).astype(np.uint8)  # to [0,255]
 
-diag = np.linalg.norm(pts_world.max(0) - pts_world.min(0))
-target_diag = 100.0  # pick something comfy for navigation
-s = target_diag / max(diag, 1e-6)
-pts_vis_world = pts_world * s
 
 # 3) Visualize interactively with Viser
 # Add point cloud (points in camera coords, camera at origin)
@@ -43,7 +37,6 @@ server.scene.add_frame(
 )
 
 # Add point cloud
-
 server.scene.add_point_cloud(
     "/scene/point_cloud", 
     points=pts_world,

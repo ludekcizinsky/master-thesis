@@ -32,6 +32,7 @@ class SMPLServer(torch.nn.Module):
         self.weights_c = output['smpl_weights']
         self.joints_c = output['smpl_jnts']
         self.tfs_c_inv = output['smpl_tfs'].squeeze(0).inverse()
+        self.faces = output['smpl_faces']
 
 
     def forward(self, smpl_params, absolute=False):
@@ -75,5 +76,6 @@ class SMPLServer(torch.nn.Module):
         output['smpl_tfs'] = tf_mats
 
         output['smpl_weights'] = smpl_output.weights
+        output['smpl_faces'] = smpl_output.faces
         
         return output
