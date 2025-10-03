@@ -247,8 +247,8 @@ class MegaSAMFrame:
     image: torch.Tensor        # [H, W, 3], uint8 or float32 in [0,1] (see normalize)
     depth: Optional[torch.Tensor]   # [H, W], float32 (meters or MegaSaM units); may be None
     K: torch.Tensor            # [3, 3], float32
-    c2w: torch.Tensor          # [4, 4], float32
     w2c: torch.Tensor          # [4, 4], float32
+    c2w: torch.Tensor 
     H: int
     W: int
     static_mask: Optional[torch.Tensor]  # [H, W] bool, True=STATIC (kept), False=DYNAMIC (ignored)
@@ -268,14 +268,11 @@ class MegaSAMDataset(Dataset):
         *,
         normalize_images: bool = True,
         center_pixels: bool = True,
-        static_mask_key: Optional[str] = None,   # e.g., "enlarged_dynamic_mask" (will invert) or "static_mask"
-        motion_prob_key: Optional[str] = None,   # e.g., "motion_prob"; threshold used if provided
-        motion_static_threshold: float = 0.2,    # pixels with prob < thr treated as static
-        align_poses_to: str = "median",          # "none" | "first" | "median"
         device: torch.device | str = "cpu",
     ):
         if isinstance(npz_path_or_data, str):
             data = np.load(npz_path_or_data, allow_pickle=True)
+            print(f"--- FYI: loaded MegaSaM NPZ and the following keys found: {list(data.keys())}")
         else:
             data = npz_path_or_data
 
@@ -287,44 +284,29 @@ class MegaSAMDataset(Dataset):
 
         assert images.ndim == 4 and images.shape[-1] in (3, 4)
         N, H, W, _ = images.shape
+        print(f"--- FYI: MegaSaM dataset with {N} frames of size {W}x{H} found in {npz_path_or_data if isinstance(npz_path_or_data, str) else 'dict'}")
         if images.shape[-1] == 4:
             images = images[..., :3]  # drop alpha if present
 
         # Broadcast K to all frames if needed
         if K.ndim == 2:
             K = np.broadcast_to(K[None, ...], (N, 3, 3))
+            print(f"--- FYI: broadcasting single intrinsic matrix to all {N} frames")
         elif K.ndim == 3:
             assert K.shape[0] == N
         else:
             raise ValueError("intrinsic must be shape (3,3) or (N,3,3)")
 
-        # Optional masks
-        static_mask = None
-        if static_mask_key is not None and static_mask_key in data:
-            # If provided mask is 'dynamic', invert it to get static=True
-            m = data[static_mask_key]
-            # heuristics: if it's named like dynamic -> invert
-            if "dynamic" in static_mask_key.lower():
-                static_mask = (m == 0) if m.dtype != bool else (~m)
-            else:
-                static_mask = (m > 0) if m.dtype != bool else m
-        elif motion_prob_key is not None and motion_prob_key in data:
-            mp = data[motion_prob_key].astype(np.float32)
-            static_mask = (mp < motion_static_threshold)
-        else:
-            # default: everything static
-            static_mask = np.ones((N, H, W), dtype=bool)
+        # default: everything static
+        static_mask = np.ones((N, H, W), dtype=bool)
 
-        # Pose alignment (optional but handy for numerics / visualization)
-        if align_poses_to != "none":
-            if align_poses_to == "first":
-                anchor = c2w[0]
-            elif align_poses_to == "median":
-                anchor = c2w[len(c2w)//2]
-            else:
-                raise ValueError("align_poses_to must be 'none' | 'first' | 'median'")
-            T_inv = np.linalg.inv(anchor)
-            c2w = (T_inv[None, ...] @ c2w)
+        # Pose alignment 
+        T0 = c2w[len(c2w) // 2]  
+        T0_inv = np.linalg.inv(T0)  # Inverse of the first camera pose
+
+        # Apply T0_inv to all camera poses
+        self.w2c = np.matmul(T0_inv[np.newaxis, :, :], c2w)
+        self.c2w = np.linalg.inv(self.w2c)
 
         # Cache tensors
         self.N = N
@@ -332,16 +314,14 @@ class MegaSAMDataset(Dataset):
         self.W = W
         self.center_pixels = center_pixels
         self.device = torch.device(device)
-
         self.images = torch.from_numpy(images.copy())  # uint8
         if normalize_images:
             self.images = self.images.float() / 255.0  # [0,1]
         self.depths = None if depths is None else torch.from_numpy(depths.astype(np.float32))
         self.K = torch.from_numpy(K.astype(np.float32))
-        self.c2w = torch.from_numpy(c2w.astype(np.float32))
-        self.w2c = torch.inverse(self.c2w)
-
         self.static_mask = torch.from_numpy(static_mask.astype(bool))
+        self.w2c = torch.from_numpy(self.w2c.astype(np.float32))
+        self.c2w = torch.from_numpy(self.c2w.astype(np.float32))
 
     def __len__(self) -> int:
         return self.N
@@ -350,16 +330,16 @@ class MegaSAMDataset(Dataset):
         img = self.images[idx]                        # [H,W,3]
         dep = None if self.depths is None else self.depths[idx]  # [H,W]
         K = self.K[idx]
-        c2w = self.c2w[idx]
         w2c = self.w2c[idx]
+        c2w = self.c2w[idx]
         sm = self.static_mask[idx]                    # [H,W] bool
 
         return MegaSAMFrame(
             image=img,
             depth=dep,
             K=K,
-            c2w=c2w,
             w2c=w2c,
+            c2w=c2w,
             H=self.H,
             W=self.W,
             static_mask=sm
