@@ -123,7 +123,7 @@ server.scene.add_point_cloud(
     "/scene/point_cloud_scaled", 
     points=pts_world_scaled,
     colors=colors_scaled,
-    point_size=0.05,
+    point_size=0.03,
     point_shape="rounded"
 )
 
