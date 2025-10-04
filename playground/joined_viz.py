@@ -5,7 +5,7 @@ import torch
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pathlib import Path
-from training.helpers.dataset import MegaSAMDataset, TraceDataset
+from training.helpers.dataset import FullSceneDataset
 import viser.transforms as tf
 import viser
 import numpy as np
@@ -27,13 +27,13 @@ def canon_to_posed(smpl_server, smpl_params, verts_c, weights_c):
         weights_c: Skinning weights for canonical vertices. Shape: [M, 24].
     """
 
-    smpl_params = smpl_params.unsqueeze(0)  # [1, 86]
-    tsf = smpl_server(smpl_params.to(device), absolute=False)["smpl_tfs"][0]
+    # smpl_params = smpl_params.unsqueeze(0)  # [1, 86]
+    tsf = smpl_server(smpl_params.to(device), absolute=False)["smpl_tfs"]
     x_c = verts_c
     x_c_h = F.pad(x_c, (0, 1), value=1.0)
     w = weights_c
-    x_p_h = torch.einsum("pn,nij,pj->pi", w, tsf, x_c_h)
-    x_p = x_p_h[:, :3] / x_p_h[:, 3:4]
+    x_p_h = torch.einsum("pn,bnij,pj->bpi", w, tsf, x_c_h)
+    x_p = x_p_h[:, :, :3] / x_p_h[:, :, 3:4]
     verts_p = x_p.cpu().numpy()
 
     return verts_p
@@ -62,11 +62,9 @@ def load_unidepth_pointcloud(npz_path, downsample: int = 1):
 
 # -------- Dataset loading
 preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/football_high_res")
-# -- Trace
 # Load Trace dataset
-tid = 0
-downscale = 1
-ds = TraceDataset(preprocess_dir, tid=tid, downscale=downscale)
+tids = [0, 1]  # List of tids to include
+ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids)
 
 # load canonical
 smpl_server = SMPLServer().eval()
@@ -80,32 +78,9 @@ sample = ds[37]
 smpl_params = sample["smpl_param"]
 verts_p = canon_to_posed(smpl_server, smpl_params, verts_c, weights_c)
 
-
 # -- UniDepth
 path_to_cloud_scaled = preprocess_dir / "unidepth_cloud_static_scaled.npz"
-pts_world_scaled, colors_scaled = load_unidepth_pointcloud(
-    path_to_cloud_scaled,
-    downsample=10, 
-)
-print(f"Loaded {pts_world_scaled.shape[0]} points from {path_to_cloud_scaled}")
-
-# # -- MegaSAM
-# npz_path = str(preprocess_dir / "megasam" / "sgd_cvd_hr.npz")
-# ds_ms = MegaSAMDataset(
-    # npz_path,
-    # normalize_images=True,                # images in [0,1]
-    # device="cpu",
-# )
-
-# # Build static world point cloud (+ colors)
-# pixel_downsample = 10  # downsample image by this factor when building point cloud
-# pts_world, colors = ds_ms.build_static_point_cloud(every_k=1, downsample=pixel_downsample, device="cpu")
-# pts_world, colors = pts_world.numpy().astype(np.float32), (colors.numpy() * 255).astype(np.uint8)  # to [0,255]
-
-# # ---- Alignment
-# ms_w2c = ds_ms.w2c
-# tr_w2c = torch.stack(ds.pose_all, dim=0).to(torch.float32)
-# pts_aligned, s, R, T = align_megasam_to_trace(ms_w2c, tr_w2c, pts_world)
+pts_world_scaled, colors_scaled = ds.point_cloud
 
 # --------- Visualize interactively with Viser
 server = viser.ViserServer()
@@ -129,12 +104,13 @@ server.scene.add_point_cloud(
 
 # --- Dynamic
 # Add posed mesh
-server.scene.add_mesh_simple(
-    "/scene/mesh_p", 
-    vertices=verts_p.astype(np.float32),
-    faces=face_indices.astype(np.int32),
-    color=(100, 100, 100),
-)
+for tid in tids:
+    server.scene.add_mesh_simple(
+        f"/scene/mesh_p_{tid}", 
+        vertices=verts_p[tid],
+        faces=face_indices,
+        color=(100, 100, 100),
+    )
 
 # Add camera frustum
 image = sample["image"].numpy()
@@ -145,7 +121,7 @@ aspect = image.shape[1] / image.shape[0]
 fov = (2 * np.arctan2(image.shape[0] / 2, sample["K"][0, 0])).item()
 
 server.scene.add_camera_frustum(
-    f"/scene/frustum_dynamic",
+    f"/scene/frustum",
     fov=fov,
     aspect=aspect,
     scale=0.2,
