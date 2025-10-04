@@ -38,6 +38,27 @@ def canon_to_posed(smpl_server, smpl_params, verts_c, weights_c):
 
     return verts_p
 
+def load_unidepth_pointcloud(npz_path, downsample: int = 1):
+    """
+    Load UniDepth fused point cloud saved as .npz.
+
+    Args:
+        npz_path (str or Path): Path to .npz file (must contain 'points' and 'colors').
+        downsample (int): Keep every k-th point. Default=1 (no downsampling).
+
+    Returns:
+        pts_world (N,3) float32: 3D points in Trace world coordinates
+        colors    (N,3) uint8 : Corresponding RGB values
+    """
+    data = np.load(npz_path)
+    pts = data["points"].astype(np.float32)
+    cols = data["colors"].astype(np.uint8)
+
+    if downsample > 1:
+        pts = pts[::downsample]
+        cols = cols[::downsample]
+
+    return pts, cols
 
 # -------- Dataset loading
 preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/football_high_res")
@@ -60,23 +81,31 @@ smpl_params = sample["smpl_param"]
 verts_p = canon_to_posed(smpl_server, smpl_params, verts_c, weights_c)
 
 
-# -- MegaSAM
-npz_path = str(preprocess_dir / "megasam" / "sgd_cvd_hr.npz")
-ds_ms = MegaSAMDataset(
-    npz_path,
-    normalize_images=True,                # images in [0,1]
-    device="cpu",
+# -- UniDepth
+path_to_cloud_scaled = preprocess_dir / "unidepth_cloud_static_scaled.npz"
+pts_world_scaled, colors_scaled = load_unidepth_pointcloud(
+    path_to_cloud_scaled,
+    downsample=10, 
 )
+print(f"Loaded {pts_world_scaled.shape[0]} points from {path_to_cloud_scaled}")
 
-# Build static world point cloud (+ colors)
-pixel_downsample = 10  # downsample image by this factor when building point cloud
-pts_world, colors = ds_ms.build_static_point_cloud(every_k=1, downsample=pixel_downsample, device="cpu")
-pts_world, colors = pts_world.numpy().astype(np.float32), (colors.numpy() * 255).astype(np.uint8)  # to [0,255]
+# # -- MegaSAM
+# npz_path = str(preprocess_dir / "megasam" / "sgd_cvd_hr.npz")
+# ds_ms = MegaSAMDataset(
+    # npz_path,
+    # normalize_images=True,                # images in [0,1]
+    # device="cpu",
+# )
 
-# ---- Alignment
-ms_w2c = ds_ms.w2c
-tr_w2c = torch.stack(ds.pose_all, dim=0).to(torch.float32)
-pts_aligned, s, R, T = align_megasam_to_trace(ms_w2c, tr_w2c, pts_world)
+# # Build static world point cloud (+ colors)
+# pixel_downsample = 10  # downsample image by this factor when building point cloud
+# pts_world, colors = ds_ms.build_static_point_cloud(every_k=1, downsample=pixel_downsample, device="cpu")
+# pts_world, colors = pts_world.numpy().astype(np.float32), (colors.numpy() * 255).astype(np.uint8)  # to [0,255]
+
+# # ---- Alignment
+# ms_w2c = ds_ms.w2c
+# tr_w2c = torch.stack(ds.pose_all, dim=0).to(torch.float32)
+# pts_aligned, s, R, T = align_megasam_to_trace(ms_w2c, tr_w2c, pts_world)
 
 # --------- Visualize interactively with Viser
 server = viser.ViserServer()
@@ -90,41 +119,12 @@ server.scene.add_frame(
 )
 
 # --- Static
-# Add point cloud
 server.scene.add_point_cloud(
-    "/scene/point_cloud", 
-    points=pts_world,
-    colors=colors,
-    point_size=0.001,
+    "/scene/point_cloud_scaled", 
+    points=pts_world_scaled,
+    colors=colors_scaled,
+    point_size=0.05,
     point_shape="rounded"
-)
-
-pts_aligned = pts_aligned.numpy().astype(np.float32)
-server.scene.add_point_cloud(
-    "/scene/point_cloud_aligned", 
-    points=pts_aligned,
-    colors=colors,
-    point_size=0.01,
-    point_shape="rounded"
-)
-
-# Add camera frustum
-middle_frame_idx = len(ds_ms) // 2
-frame = ds_ms[middle_frame_idx]
-fov = (2 * np.arctan2(frame.H / 2, frame.K[0, 0])).item()
-aspect = frame.W / frame.H
-image = frame.image.numpy()
-wxyz = tf.SO3.from_matrix(frame.w2c[:3, :3].numpy()).wxyz
-position = frame.w2c[:3, 3].numpy()
-
-server.scene.add_camera_frustum(
-    f"/scene/frustum_static",
-    fov=fov,
-    aspect=aspect,
-    scale=0.08,
-    image=image,
-    wxyz=wxyz,
-    position=position,
 )
 
 # --- Dynamic
