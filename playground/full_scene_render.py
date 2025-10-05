@@ -303,7 +303,7 @@ extrinsics = sample["M_ext"].to(device).unsqueeze(0)
 H, W = sample["H"], sample["W"]
 
 # Render
-kind = "dynamic"   # try "static" or "all" too
+kind = "all"   # try "static" or "all" too
 p = packs[kind]   # try "static" or "dynamic" too
 print(f"Input shapes: means {p['means'].shape}, scales {p['scales'].shape}, quats {p['quats'].shape}, opacity {p['opacity'].shape}, colors {p['colors'].shape}")
 colors, alphas, info = rasterization(

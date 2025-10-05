@@ -1,4 +1,3 @@
-import math
 import hydra
 import os
 import sys
@@ -15,166 +14,22 @@ from typing import Dict, Any
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
 import wandb
 import numpy as np
 
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, save_loss_visualization, lbs_apply
+from training.helpers.utils import init_logging, save_loss_visualization
 from training.helpers.losses import anchor_to_smpl_surface, opacity_distance_penalty
-from gsplat.strategy import DefaultStrategy
-from training.helpers.dataset import HumanOnlyDataset, TraceDataset
+from training.helpers.dataset import FullSceneDataset
+from training.helpers.model_init import create_splats_with_optimizers
 
-from utils.smpl_deformer.smpl_server import SMPLServer
 from fused_ssim import fused_ssim
 
+from gsplat.strategy import DefaultStrategy
 from gsplat import rasterization
 
-
-def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
-    C0 = 0.28209479177387814
-    return (rgb - 0.5) / C0
-
-def create_splats_with_optimizers(device, cfg):
-
-    smpl_server = SMPLServer().to(device).eval()
-    with torch.no_grad():
-        verts_c = smpl_server.verts_c[0].to(device)      # [6890,3]
-        weights_c = smpl_server.weights_c[0].to(device)  # [6890,24]
-
-    M = verts_c.shape[0]
-
-    # --- Splats (the model)
-    # means 
-    smpl_vertices = verts_c.clone()                     # [M,3]
-
-    # anisotropic per-axis log-scales
-    init_sigma = 0.02
-    log_scales = torch.full((M, 3), math.log(init_sigma), device=device) # [M,3]
-
-    # rotations as quaternions [w,x,y,z], init to identity
-    quats_init = torch.zeros(M, 4, device=device)
-    quats_init[:, 0] = 1.0
-
-    # opacities
-    colors = torch.rand(M, 3, device=device)      # [M,3]
-    init_opacity = 0.1
-    opacity_logit = torch.full((M,), torch.logit(torch.tensor(init_opacity, device=device)))
-
-    params = [
-        # name, value, lr
-        ("means", torch.nn.Parameter(smpl_vertices), cfg.means_lr),
-        ("scales", torch.nn.Parameter(log_scales), cfg.scales_lr),
-        ("quats", torch.nn.Parameter(quats_init), cfg.quats_lr),
-        ("opacities", torch.nn.Parameter(opacity_logit), cfg.opacities_lr),
-    ]
-
-
-    # color is SH coefficients
-    colors = torch.zeros((M, (cfg.sh_degree + 1) ** 2, 3))  # [M, K, 3]
-    colors[:, 0, :] = rgb_to_sh(torch.rand(M, 3))  # [M,3]
-    params.append(("sh0", torch.nn.Parameter(colors[:, :1, :]), cfg.sh0_lr))
-    params.append(("shN", torch.nn.Parameter(colors[:, 1:, :]), cfg.shN_lr))
-
-    splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(device)
-
-    # --- Optimizers
-    BS = 1
-    optimizers = {
-        name: torch.optim.Adam(
-            [{"params": splats[name], "lr": lr * math.sqrt(BS), "name": name}],
-            eps=1e-15 / math.sqrt(BS),
-            # TODO: check betas logic when BS is larger than 10 betas[0] will be zero.
-            betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
-        )
-        for name, _, lr in params
-    }
-
-    return splats, optimizers, weights_c, smpl_server, verts_c
-
-
-def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: torch.Tensor, kind="bbox_crop"):
-    """
-    Args:
-        gt_imgs: [B,H,W,3] in [0,1]
-        renders: [B,H,W,3] in [0,1]
-        masks:   [B,H,W] in {0,1}
-
-    Returns:
-        gt_crop: [B,h,w,3] in [0,1]
-        pr_crop: [B,h,w,3] in [0,1]
-    """
-
-    gt_imgs = gt_imgs.clamp(0, 1).float()          # [B,H,W,3]
-    renders = renders.clamp(0, 1).float()
-
-    if kind == "bbox_crop":
-        # Apply mask to the ground truth (keep only target person pixels)
-        gt_imgs *= masks.unsqueeze(-1)
-
-        # bbox crop around the mask to avoid huge easy background
-        ys, xs = torch.where(masks[0] > 0.5)
-        if ys.numel() > 0:
-            pad = 8
-            y0 = max(int(ys.min().item()) - pad, 0)
-            y1 = min(int(ys.max().item()) + pad + 1, gt_imgs.shape[1])
-            x0 = max(int(xs.min().item()) - pad, 0)
-            x1 = min(int(xs.max().item()) + pad + 1, gt_imgs.shape[2])
-
-            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
-            pr_crop  = renders[:, y0:y1, x0:x1, :]
-        else:
-            # fallback if mask empty
-            gt_crop, pr_crop = gt_imgs, renders
-
-        return gt_crop, pr_crop
-    elif kind == "bbox":
-        # Apply mask to the ground truth (keep only target person pixels)
-        gt_imgs *= masks.unsqueeze(-1)
-
-        # Mask out the render outside the bbox of the mask (keep full GT)
-        pad = 8
-        ys, xs = torch.where(masks[0] > 0.5)
-        y0 = max(int(ys.min().item()) - pad, 0)
-        y1 = min(int(ys.max().item()) + pad + 1, renders.shape[1])
-        x0 = max(int(xs.min().item()) - pad, 0)
-        x1 = min(int(xs.max().item()) + pad + 1, renders.shape[2])
-
-        pr_bbox = torch.zeros_like(renders)
-        pr_bbox[:, y0:y1, x0:x1, :] = renders[:, y0:y1, x0:x1, :]
-
-        return gt_imgs, pr_bbox
-
-    elif kind == "tight_crop":
-        # Apply tight mask (keep only target person pixels)
-        gt_imgs *= masks.unsqueeze(-1)
-        renders *= masks.unsqueeze(-1)
-
-        # bbox crop around the mask to avoid huge easy background
-        ys, xs = torch.where(masks[0] > 0.5)
-        if ys.numel() > 0:
-            y0 = int(ys.min().item())
-            y1 = int(ys.max().item()) + 1
-            x0 = int(xs.min().item())
-            x1 = int(xs.max().item()) + 1
-
-            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
-            pr_crop  = renders[:, y0:y1, x0:x1, :]
-        else:
-            # fallback if mask empty
-            gt_crop, pr_crop = gt_imgs, renders
-        
-        return gt_crop, pr_crop
-
-    elif kind == "tight":
-        # Apply tight mask (keep only target person pixels)
-        gt_imgs *= masks.unsqueeze(-1)
-        renders *= masks.unsqueeze(-1)
-
-        return gt_imgs, renders
-
-    else:
-        raise ValueError(f"Unknown prepare_input_for_loss kind: {kind}")
 
 class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
@@ -183,15 +38,19 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = TraceDataset(Path(cfg.preprocess_dir), cfg.tid, downscale=cfg.downscale)
+        self.dataset = FullSceneDataset(
+            Path(cfg.preprocess_dir),
+            cfg.tids,  # list of tids to train on
+            cloud_downsample=cfg.cloud_downsample,
+        )
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
         if internal_run_id is not None:
             run_name, run_id = internal_run_id.split("_")
-            self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{run_name}_{run_id}"
+            self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
         else:
-            self.experiment_dir = Path(cfg.train_dir) / f"tid_{cfg.tid}" / f"{wandb.run.name}_{wandb.run.id}"
+            self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
         self.checkpoint_dir = self.experiment_dir / "checkpoints"
         os.makedirs(self.checkpoint_dir, exist_ok=True)
@@ -199,12 +58,13 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Define model and optimizers
-        out = create_splats_with_optimizers(self.device, cfg)
-        self.splats, self.optimizers, self.weights_c, self.smpl_server, self.smpl_verts_c = out
-        print("--- FYI: Model initialized. Number of GS:", len(self.splats["means"]))
+        self.splats, self.optimizers, smpl_c_info = create_splats_with_optimizers(self.device, cfg, self.dataset)
+        self.smpl_verts_c = smpl_c_info["verts_c"]
+        self.weights_c = smpl_c_info["weights_c"]  # [M,24]
+        self.smpl_server = smpl_c_info["smpl_server"]
 
         # Keep a frozen copy of the initial canonical means for anchor-loss in "init" mode
-        self.init_means_c = self.splats["means"].detach().clone()  # [M0,3]
+        self.init_means_c = self.smpl_verts_c.clone()
         self.M0 = self.init_means_c.shape[0]
 
         # Adaptive densification strategy
@@ -322,39 +182,6 @@ class Trainer:
 
         return colors, alphas, info
 
-
-    def means_can_to_cam(self, smpl_param: torch.Tensor) -> torch.Tensor:
-
-        tsf = self.smpl_server(smpl_param, absolute=False)["smpl_tfs"][0].to(self.device)  # [24,4,4]
-        x_c = self.splats["means"]
-        x_c_h = F.pad(x_c, (0, 1), value=1.0)
-        w = self.weights_c
-        x_p_h = torch.einsum("pn,nij,pj->pi", w, tsf, x_c_h)
-        means = x_p_h[:, :3] / x_p_h[:, 3:4]
-        return means
-
-    def opacity(self) -> torch.Tensor:
-        """[M] in (0,1)"""
-        return torch.sigmoid(self.splats["opacities"])
-
-    def get_colors(self) -> torch.Tensor:
-        """[M,3] in [0,1]"""
-        colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
-        return colors
-
-    def scales(self) -> torch.Tensor:
-        """Per-axis std devs [M,3], clamped."""
-        s = torch.exp(self.splats["scales"])
-        min_sigma = 1e-4
-        max_sigma = 1.0
-        return s.clamp(min_sigma, max_sigma)
-
-    def rotations(self) -> torch.Tensor:
-        """
-        Return unit quaternions [w, x, y, z] with shape [M,4]
-        """
-        q = self.splats["quats"]
-        return q / (q.norm(dim=-1, keepdim=True) + 1e-8)
     
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
@@ -520,6 +347,7 @@ def main(cfg: DictConfig):
     init_logging(cfg)
     trainer = Trainer(cfg)
     print("✅ Trainer initialized.\n")
+    quit()
 
     print("ℹ️ Starting training")
     trainer.train_loop(iters=cfg.iters)
