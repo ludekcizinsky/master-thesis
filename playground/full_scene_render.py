@@ -168,7 +168,16 @@ def init_3dgs_humans(
     # Load dataset
     splats = list()
     for _ in range(n_humans):
-        splats.append(make_paramdict(means, log_scales, quats, opacity_logits, colors_sh, sh_degree))
+        splats.append(
+            make_paramdict(
+                means.clone(),
+                log_scales.clone(),
+                quats.clone(),
+                opacity_logits.clone(),
+                colors_sh.clone(),
+                sh_degree,
+            )
+        )
     aux = {"verts_c": verts_c, "weights_c": weights_c, "smpl_server": smpl_server}
     return splats, aux
             
@@ -179,7 +188,7 @@ def init_3dgs_background(
     *,
     device: str = "cuda",
     sh_degree: int = 3,
-    k_for_scale: int = 16,
+    k_for_scale: int = 10,
     scale_percentile: float = 50.0,
     init_opacity: float = 0.05,
 ) -> Tuple[nn.ParameterDict, Dict]:
@@ -194,6 +203,8 @@ def init_3dgs_background(
     sigmas = init_isotropic_scales_from_knn(pts, k_for_scale=k_for_scale, scale_percentile=scale_percentile, device=device)
     sigmas = sigmas.clamp(1e-4, 1.0)
     log_scales = torch.log(sigmas.unsqueeze(1).expand(-1, 3)).to(device)   # [N,3]
+    # M = pts.shape[0]
+    # log_scales = torch.full((M, 3), math.log(0.02), device=device)
 
     # quats (identity)
     quats = torch.zeros(pts.shape[0], 4, device=device)
@@ -201,7 +212,10 @@ def init_3dgs_background(
 
     # SH colors 
     col_mode = "given" if cols is not None else "random"
-    sh_colors = init_sh_colors(col_mode, pts.shape[0], sh_degree, given_colors=torch.from_numpy(cols), device=device)
+    given_colors = None
+    if cols is not None:
+        given_colors = torch.from_numpy(cols).to(device=device, dtype=torch.float32) / 255.0
+    sh_colors = init_sh_colors(col_mode, pts.shape[0], sh_degree, given_colors=given_colors, device=device)
  
     # opacity logits
     opacity_logits = torch.full((pts.shape[0],), torch.logit(torch.tensor(init_opacity, device=device)))
