@@ -124,7 +124,7 @@ class FullSceneDataset(Dataset):
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int]):
+    def __init__(self, preprocess_dir: Path, tids: List[int], cloud_downsample: int = 10):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
 
@@ -147,7 +147,7 @@ class FullSceneDataset(Dataset):
         self._load_smpl_params()
 
         # Point cloud (for static background)
-        self.load_unidepth_pointcloud(downsample=10)
+        self.load_unidepth_pointcloud(downsample=cloud_downsample)
 
 
     def _load_cameras(self):
@@ -253,6 +253,8 @@ class FullSceneDataset(Dataset):
             "K": K,             # [3,3]
             "smpl_param": smpl_params,  # [P,86]
             "M_ext": M_ext,         # [4,4]
+            "W": self.W,
+            "H": self.H,
         }
     
 
