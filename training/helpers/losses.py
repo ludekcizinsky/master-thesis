@@ -43,3 +43,87 @@ def opacity_distance_penalty(
     loss = (w * alpha).mean()
 
     return loss
+
+
+def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: torch.Tensor, kind="bbox_crop"):
+    """
+    Args:
+        gt_imgs: [B,H,W,3] in [0,1]
+        renders: [B,H,W,3] in [0,1]
+        masks:   [B,H,W] in {0,1}
+
+    Returns:
+        gt_crop: [B,h,w,3] in [0,1]
+        pr_crop: [B,h,w,3] in [0,1]
+    """
+
+    gt_imgs = gt_imgs.clamp(0, 1).float()          # [B,H,W,3]
+    renders = renders.clamp(0, 1).float()
+
+    if kind == "bbox_crop":
+        # Apply mask to the ground truth (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+
+        # bbox crop around the mask to avoid huge easy background
+        ys, xs = torch.where(masks[0] > 0.5)
+        if ys.numel() > 0:
+            pad = 8
+            y0 = max(int(ys.min().item()) - pad, 0)
+            y1 = min(int(ys.max().item()) + pad + 1, gt_imgs.shape[1])
+            x0 = max(int(xs.min().item()) - pad, 0)
+            x1 = min(int(xs.max().item()) + pad + 1, gt_imgs.shape[2])
+
+            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
+            pr_crop  = renders[:, y0:y1, x0:x1, :]
+        else:
+            # fallback if mask empty
+            gt_crop, pr_crop = gt_imgs, renders
+
+        return gt_crop, pr_crop
+    elif kind == "bbox":
+        # Apply mask to the ground truth (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+
+        # Mask out the render outside the bbox of the mask (keep full GT)
+        pad = 8
+        ys, xs = torch.where(masks[0] > 0.5)
+        y0 = max(int(ys.min().item()) - pad, 0)
+        y1 = min(int(ys.max().item()) + pad + 1, renders.shape[1])
+        x0 = max(int(xs.min().item()) - pad, 0)
+        x1 = min(int(xs.max().item()) + pad + 1, renders.shape[2])
+
+        pr_bbox = torch.zeros_like(renders)
+        pr_bbox[:, y0:y1, x0:x1, :] = renders[:, y0:y1, x0:x1, :]
+
+        return gt_imgs, pr_bbox
+
+    elif kind == "tight_crop":
+        # Apply tight mask (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+        renders *= masks.unsqueeze(-1)
+
+        # bbox crop around the mask to avoid huge easy background
+        ys, xs = torch.where(masks[0] > 0.5)
+        if ys.numel() > 0:
+            y0 = int(ys.min().item())
+            y1 = int(ys.max().item()) + 1
+            x0 = int(xs.min().item())
+            x1 = int(xs.max().item()) + 1
+
+            gt_crop  = gt_imgs[:, y0:y1, x0:x1, :]
+            pr_crop  = renders[:, y0:y1, x0:x1, :]
+        else:
+            # fallback if mask empty
+            gt_crop, pr_crop = gt_imgs, renders
+        
+        return gt_crop, pr_crop
+
+    elif kind == "tight":
+        # Apply tight mask (keep only target person pixels)
+        gt_imgs *= masks.unsqueeze(-1)
+        renders *= masks.unsqueeze(-1)
+
+        return gt_imgs, renders
+
+    else:
+        raise ValueError(f"Unknown prepare_input_for_loss kind: {kind}")

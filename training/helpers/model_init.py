@@ -19,17 +19,18 @@ def srgb_to_linear(x: torch.Tensor) -> torch.Tensor:
 def unit_quat(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return q / (q.norm(dim=-1, keepdim=True) + eps)
 
-def make_dict(means, log_scales, quats, opacity_logits, colors_sh, sh_degree) -> Dict[str, torch.Tensor]:
+
+def make_paramdict(means, log_scales, quats, opacity_logits, colors_sh, sh_degree) -> nn.ParameterDict:
     K = (sh_degree + 1) ** 2
     assert colors_sh.shape[1] == K and colors_sh.shape[2] == 3
-    return {
-        "means":     means.contiguous(),
-        "scales":    log_scales.contiguous(),   # log-scales
-        "quats":     quats.contiguous(),
-        "opacities": opacity_logits.contiguous(),
-        "sh0":       colors_sh[:, :1, :].contiguous(),
-        "shN":       colors_sh[:, 1:, :].contiguous(),
-    }
+    return nn.ParameterDict({
+        "means":     nn.Parameter(means.contiguous()),
+        "scales":    nn.Parameter(log_scales.contiguous()),   # log-scales
+        "quats":     nn.Parameter(quats.contiguous()),
+        "opacities": nn.Parameter(opacity_logits.contiguous()),
+        "sh0":       nn.Parameter(colors_sh[:, :1, :].contiguous()),
+        "shN":       nn.Parameter(colors_sh[:, 1:, :].contiguous()),
+    })
 
 
 def init_sh_colors(color_mode: str, M: int, sh_degree: int = 3, given_colors: Optional[torch.Tensor] = None, device: str = "cuda") -> torch.Tensor:
@@ -82,7 +83,6 @@ def init_3dgs_humans(
 ) -> Tuple[nn.ParameterDict, Dict]:
 
     smpl_server = SMPLServer().to(device).eval()
-    smpl_server = smpl_server.to(device).eval()
     verts_c = smpl_server.verts_c[0].to(device)    
     weights_c = smpl_server.weights_c[0].to(device)
     M = verts_c.shape[0]
@@ -97,7 +97,7 @@ def init_3dgs_humans(
     quats = torch.zeros(M, 4, device=device); quats[:, 0] = 1.0
 
     # opacity logits
-    opacity_logits = torch.full((M,), torch.logit(torch.tensor(init_opacity, device=device)))
+    opacity_logits = torch.full((M,), torch.logit(torch.tensor(init_opacity))).to(device)
 
     # SH colors
     colors_sh = init_sh_colors(color_mode, M, sh_degree, given_colors, device)
@@ -106,7 +106,7 @@ def init_3dgs_humans(
     splats = list()
     for _ in range(n_humans):
         splats.append(
-            make_dict(
+            make_paramdict(
                 means.clone(),
                 log_scales.clone(),
                 quats.clone(),
@@ -153,53 +153,30 @@ def init_3dgs_background(
     sh_colors = init_sh_colors(col_mode, pts.shape[0], sh_degree, given_colors=given_colors, device=device)
  
     # opacity logits
-    opacity_logits = torch.full((pts.shape[0],), torch.logit(torch.tensor(init_opacity, device=device)))
+    opacity_logits = torch.full((pts.shape[0],), torch.logit(torch.tensor(init_opacity))).to(device)
 
-    splats = make_dict(means, log_scales, quats, opacity_logits, sh_colors, sh_degree)
+    splats = make_paramdict(means, log_scales, quats, opacity_logits, sh_colors, sh_degree)
 
     return splats
 
 
-def init_optimizers(splats, cfg):
-    BS = cfg.batch_size
-    optimizers = {
-        name: torch.optim.Adam(
-            [{"params": params, "lr": cfg.get(f"{name}_lr", 1e-3) * math.sqrt(BS), "name": name}],
-            eps=1e-15 / math.sqrt(BS),
-            # TODO: check betas logic when BS is larger than 10 betas[0] will be zero.
-            betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
-        )
-        for name, params in splats.items()
-    }
+def init_optimizers(all_gs, cfg):
 
-    return optimizers
+    all_optimizers = list()
+    for splats in all_gs:
+        BS = cfg.batch_size
+        optimizers = {
+            name: torch.optim.Adam(
+                [{"params": params, "lr": cfg.get(f"{name}_lr", 1e-3) * math.sqrt(BS), "name": name}],
+                eps=1e-15 / math.sqrt(BS),
+                # TODO: check betas logic when BS is larger than 10 betas[0] will be zero.
+                betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
+            )
+            for name, params in splats.items()
+        }
+        all_optimizers.append(optimizers)
 
-
-def merge_splats(splats_list):
-
-    # Static (background)
-    static_pack = splats_list[0]
-
-    # Dynamic (humans)
-    dynamic_pack_all = dict()
-    for i in range(len(splats_list) - 1):
-
-        if i == 0:
-            dynamic_pack_all = {k: v for k, v in splats_list[i + 1].items()}
-        else:
-            for k, v in splats_list[i + 1].items():
-                dynamic_pack_all[k] = torch.cat([dynamic_pack_all[k], v], dim=0)
- 
-    # Both
-    all_pack = dict()
-    for k in static_pack.keys():
-        all_pack[k] = torch.cat([static_pack[k], dynamic_pack_all[k]], dim=0)
-
-    # turn into paramdict
-    all_pack = nn.ParameterDict({k: nn.Parameter(v) for k, v in all_pack.items()})
-
-    return all_pack
-
+    return all_optimizers
 
 def create_splats_with_optimizers(device, cfg, ds):
 
@@ -216,12 +193,11 @@ def create_splats_with_optimizers(device, cfg, ds):
     )
     n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
     print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
-    splats = merge_splats([static_gs] + dynamic_gs_per_human)
+
+    # Combined
+    all_gs = [static_gs] + dynamic_gs_per_human 
 
     # Optimizers
-    optimizers = init_optimizers(splats, cfg)
+    all_optimizers = init_optimizers(all_gs, cfg)
 
-    total_splats = splats["means"].shape[0]
-    print(f"--- FYI: Total splats: {total_splats}.")
-
-    return splats, optimizers, smpl_c_info 
+    return all_gs, all_optimizers, smpl_c_info
