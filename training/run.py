@@ -27,9 +27,6 @@ from training.helpers.render import render_splats
 
 from fused_ssim import fused_ssim
 
-from gsplat.strategy import DefaultStrategy
-
-
 
 class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
@@ -59,33 +56,23 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Define model and optimizers
-        self.all_gs, self.all_optimisers, self.smpl_c_info = create_splats_with_optimizers(self.device, cfg, self.dataset)
+        self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(self.device, cfg, self.dataset)
         if len(cfg.tids) > 0:
-            self.lbs_weights = [self.smpl_c_info["weights_c"].clone() for _ in self.all_gs[1:]]  # [M,24]
-
-        # Adaptive densification strategy
-        self.all_strategies = list()
-        for i, (splats, optimizers) in enumerate(zip(self.all_gs, self.all_optimisers)): 
-            strategy = DefaultStrategy(verbose=True)
-            strategy.refine_stop_iter = cfg.gs_refine_stop_iter
-            strategy.refine_every = cfg.gs_refine_every
-            strategy.refine_start_iter = cfg.gs_refine_start_iter
-            strategy.check_sanity(splats, optimizers)
-            strategy_state = strategy.initialize_state(scene_scale=1.0)
-            self.all_strategies.append((strategy, strategy_state))
-
+            self.lbs_weights = [self.all_gs.smpl_c_info["weights_c"].clone() for _ in self.all_gs.dynamic]  # [M,24]
     
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
-        masks  = batch["mask"].to(self.device)   # [B,H,W]
         K  = batch["K"].to(self.device)      # [B,3,3]
         w2c = batch["M_ext"].to(self.device)  # [B,4,4]
-        smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
+        masks  = batch["mask"].to(self.device)   # [B,P,H,W]
         H, W = batch["image"].shape[1:3] 
+        smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
 
         # Forward pass: render
         colors, alphas, info_per_gs = render_splats(
-            self.all_gs, self.smpl_c_info, smpl_param, self.lbs_weights, w2c, K, H, W, sh_degree=self.cfg.sh_degree, kind="all"
+            self.all_gs, self.smpl_c_info, smpl_param, 
+            self.lbs_weights, w2c, K, H, W, 
+            sh_degree=self.cfg.sh_degree, kind="all"
         )
 
         with torch.no_grad():

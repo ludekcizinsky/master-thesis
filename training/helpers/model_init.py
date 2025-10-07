@@ -4,11 +4,30 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 from utils.smpl_deformer.smpl_server import SMPLServer
+from gsplat.strategy import DefaultStrategy
+
+from dataclasses import dataclass, field
+
+@dataclass
+class SceneSplats:
+    static: Optional[nn.ParameterDict] = None
+    dynamic: list[nn.ParameterDict] = field(default_factory=list)
+    smpl_c_info: Optional[Dict] = None
+
+@dataclass
+class SceneSplatsOptimizers:
+    static: Optional[Dict[str, torch.optim.Optimizer]] = None
+    dynamic: list[Dict[str, torch.optim.Optimizer]] = field(default_factory=list)
+
+@dataclass
+class SceneSplatsStrategies:
+    static: Optional[Dict[str, DefaultStrategy]] = None
+    dynamic: list[Dict[str, DefaultStrategy]] = field(default_factory=list)
+
 
 C0 = 0.28209479177387814
 
@@ -160,10 +179,9 @@ def init_3dgs_background(
     return splats
 
 
-def init_optimizers(all_gs, cfg):
+def init_optimizers(scene_splats, cfg):
 
-    all_optimizers = list()
-    for splats in all_gs:
+    def _init_optimizers_for_splats(splats):
         BS = cfg.batch_size
         optimizers = {
             name: torch.optim.Adam(
@@ -174,9 +192,40 @@ def init_optimizers(all_gs, cfg):
             )
             for name, params in splats.items()
         }
-        all_optimizers.append(optimizers)
+        return optimizers
+
+
+    static_optimizers = _init_optimizers_for_splats(scene_splats.static) if scene_splats.static is not None else None
+    dynamic_optimizers = [_init_optimizers_for_splats(splats) for splats in scene_splats.dynamic] if len(scene_splats.dynamic) > 0 else []
+    all_optimizers = SceneSplatsOptimizers(static=static_optimizers, dynamic=dynamic_optimizers)
 
     return all_optimizers
+
+
+def init_densification_strategy(scene_splats: SceneSplats, scene_optimisers: SceneSplatsOptimizers, cfg) -> SceneSplatsStrategies:
+
+    def _init_single_strategy(splats, optimizers):
+        strategy = DefaultStrategy(verbose=True)
+        strategy.refine_stop_iter = cfg.gs_refine_stop_iter
+        strategy.refine_every = cfg.gs_refine_every
+        strategy.refine_start_iter = cfg.gs_refine_start_iter
+        strategy.check_sanity(splats, optimizers)
+        strategy_state = strategy.initialize_state(scene_scale=1.0)
+        return strategy, strategy_state
+
+
+    # Static splats
+    static_strategy = _init_single_strategy(scene_splats.static, scene_optimisers.static) if scene_splats.static is not None else None
+
+    # Dynamic splats
+    if len(scene_splats.dynamic) > 0:
+        dynamic_strategies = [_init_single_strategy(splats, optimizers) for splats, optimizers in zip(scene_splats.dynamic, scene_optimisers.dynamic)]
+    else:
+        dynamic_strategies = []
+
+    all_strategies = SceneSplatsStrategies(static=static_strategy, dynamic=dynamic_strategies)
+
+    return all_strategies
 
 def create_splats_with_optimizers(device, cfg, ds):
 
@@ -198,18 +247,20 @@ def create_splats_with_optimizers(device, cfg, ds):
         n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
         print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
     else:
-        dynamic_gs_per_human = None
+        dynamic_gs_per_human = list()
         smpl_c_info = None
 
     # Combined
-    if static_gs is None:
-        all_gs = dynamic_gs_per_human
-    elif dynamic_gs_per_human is None:
-        all_gs = [static_gs]
-    else:
-        all_gs = [static_gs] + dynamic_gs_per_human
+    scene_splats = SceneSplats(
+        static=static_gs,
+        dynamic=dynamic_gs_per_human,
+        smpl_c_info=smpl_c_info
+    )
 
     # Optimizers
-    all_optimizers = init_optimizers(all_gs, cfg)
+    all_optimizers = init_optimizers(scene_splats, cfg)
 
-    return all_gs, all_optimizers, smpl_c_info
+    # Densification strategies
+    all_strategies = init_densification_strategy(scene_splats, all_optimizers, cfg)
+
+    return scene_splats, all_optimizers, all_strategies

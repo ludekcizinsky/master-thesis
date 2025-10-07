@@ -97,6 +97,19 @@ class FullSceneDataset(Dataset):
         self.point_cloud = (pts, cols)
         print(f"--- FYI: loaded POINT CLOUD from {npz_path} with {pts.shape[0]} points (downsample={downsample}).")
 
+    def _load_masks(self, tids: List[int], idx: int):
+        masks = []
+        for tid in tids:
+            mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
+            if mask_path.exists():
+                mask = load_mask(mask_path)  # [H,W]
+            else:
+                raise FileNotFoundError(f"Mask not found: {mask_path}")
+            masks.append(mask)
+        mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
+        assert mask.shape[0] == len(tids), f"Mask shape {mask.shape} does not match number of tids {len(tids)}"
+        return mask
+
     def __len__(self):
         return len(self.pose_all)
 
@@ -108,19 +121,13 @@ class FullSceneDataset(Dataset):
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
         # Masks for each tid
+        # - load masks only for selected tids
         if len(self.tids) > 0:
-            masks = []
-            for tid in self.tids:
-                mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
-                if mask_path.exists():
-                    mask = load_mask(mask_path)  # [H,W]
-                else:
-                    raise FileNotFoundError(f"Mask not found: {mask_path}")
-                masks.append(mask)
-            mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
-            assert mask.shape[0] == len(self.tids), f"Mask shape {mask.shape} does not match number of tids {len(self.tids)}"
+            mask = self._load_masks(self.tids, idx)  # [P,H,W]
+        # - if no tids -> static background training -> load all masks and combine
         else:
-            mask = None
+            tids = os.listdir(self.mask_dir)
+            mask = self._load_masks(tids, idx)  # [P,H,W]
 
         # Camera 
         # - Extrinsics
