@@ -208,3 +208,6 @@ __marimo__/
 
 # Ignore jupyter notebooks
 *.ipynb
+
+# Ignore outputs in playground
+playground/outputs/
