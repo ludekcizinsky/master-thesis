@@ -63,7 +63,7 @@ class Trainer:
 
         # Adaptive densification strategy
         self.all_strategies = list()
-        for splats, optimizers in zip(self.all_gs, self.all_optimisers): 
+        for i, (splats, optimizers) in enumerate(zip(self.all_gs, self.all_optimisers)): 
             strategy = DefaultStrategy(verbose=True)
             strategy.refine_stop_iter = cfg.gs_refine_stop_iter
             strategy.refine_every = cfg.gs_refine_every
