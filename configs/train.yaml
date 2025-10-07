@@ -10,12 +10,12 @@ preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/footb
 train_dir: ${output_dir}/training
 
 # --- Training settings
-# Number of training iterations
 iters: 30000
 save_freq: 5000 # frequency of saving the canonical model
 tids: [0, 1]
 cloud_downsample: 30
 batch_size: 1  # number of images per batch
+train_bg: false
 
 # --- General system settings to control memory usage and speed
 # Device to use for training

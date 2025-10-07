@@ -42,6 +42,7 @@ class Trainer:
             Path(cfg.preprocess_dir),
             cfg.tids,  # list of tids to train on
             cloud_downsample=cfg.cloud_downsample,
+            train_bg=cfg.train_bg,
         )
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
@@ -59,7 +60,8 @@ class Trainer:
 
         # Define model and optimizers
         self.all_gs, self.all_optimisers, self.smpl_c_info = create_splats_with_optimizers(self.device, cfg, self.dataset)
-        self.lbs_weights = [self.smpl_c_info["weights_c"].clone() for _ in self.all_gs[1:]]  # [M,24]
+        if len(cfg.tids) > 0:
+            self.lbs_weights = [self.smpl_c_info["weights_c"].clone() for _ in self.all_gs[1:]]  # [M,24]
 
         # Adaptive densification strategy
         self.all_strategies = list()
@@ -214,6 +216,7 @@ def main(cfg: DictConfig):
     init_logging(cfg)
     trainer = Trainer(cfg)
     print("✅ Trainer initialized.\n")
+    quit()
 
     print("ℹ️ Starting training")
     trainer.train_loop(iters=cfg.iters)

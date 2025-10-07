@@ -4,12 +4,7 @@ from typing import List
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-from typing import Optional, Tuple, Dict, Any, Iterable
-from dataclasses import dataclass
-from scipy.spatial import cKDTree
 
-from utils.io import load_frame_map_jsonl_restore
-from preprocess.helpers.cameras import load_camdicts_json
 from training.helpers.utils import load_image, load_mask
 from training.helpers.geom_utils import load_K_Rt_from_P
 
@@ -22,9 +17,10 @@ class FullSceneDataset(Dataset):
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int], cloud_downsample: int = 10):
+    def __init__(self, preprocess_dir: Path, tids: List[int], cloud_downsample: int = 10, train_bg: bool = False):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
+        self.train_bg = train_bg
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
@@ -45,7 +41,8 @@ class FullSceneDataset(Dataset):
         self._load_smpl_params()
 
         # Point cloud (for static background)
-        self.load_unidepth_pointcloud(downsample=cloud_downsample)
+        if self.train_bg:
+            self.load_unidepth_pointcloud(downsample=cloud_downsample)
 
 
     def _load_cameras(self):
@@ -98,6 +95,7 @@ class FullSceneDataset(Dataset):
             cols = cols[::downsample]
 
         self.point_cloud = (pts, cols)
+        print(f"--- FYI: loaded POINT CLOUD from {npz_path} with {pts.shape[0]} points (downsample={downsample}).")
 
     def __len__(self):
         return len(self.pose_all)
@@ -110,17 +108,19 @@ class FullSceneDataset(Dataset):
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
         # Masks for each tid
-        masks = []
-        for tid in self.tids:
-            mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
-            if mask_path.exists():
-                mask = load_mask(mask_path)  # [H,W]
-            else:
-                raise FileNotFoundError(f"Mask not found: {mask_path}")
-            masks.append(mask)
-        mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
-        assert mask.shape[0] == len(self.tids), f"Mask shape {mask.shape} does not match number of tids {len(self.tids)}"
-
+        if len(self.tids) > 0:
+            masks = []
+            for tid in self.tids:
+                mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
+                if mask_path.exists():
+                    mask = load_mask(mask_path)  # [H,W]
+                else:
+                    raise FileNotFoundError(f"Mask not found: {mask_path}")
+                masks.append(mask)
+            mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
+            assert mask.shape[0] == len(self.tids), f"Mask shape {mask.shape} does not match number of tids {len(self.tids)}"
+        else:
+            mask = None
 
         # Camera 
         # - Extrinsics
@@ -133,16 +133,19 @@ class FullSceneDataset(Dataset):
         assert K.shape == (3, 3), f"K shape mismatch: {K.shape} vs {(3, 3)}"
 
         # SMPL params (86D)
-        all_smpl_params = []
-        for tid in self.tids:
-            smpl_params = torch.zeros([86]).float()
-            smpl_params[0] = torch.from_numpy(np.asarray(self.scale)).float()
-            smpl_params[1:4] = torch.from_numpy(self.trans[idx][tid]*self.scale).float()
-            smpl_params[4:76] = torch.from_numpy(self.poses[idx][tid]).float()
-            smpl_params[76:] = torch.from_numpy(self.shape[tid]).float()
-            all_smpl_params.append(smpl_params)
-        smpl_params = torch.stack(all_smpl_params, dim=0)  # [P,86]
-        assert smpl_params.shape[0] == len(self.tids) and smpl_params.shape[1] == 86, f"SMPL params shape mismatch: {smpl_params.shape} vs ({len(self.tids)}, 86)"
+        if len(self.tids) > 0:
+            all_smpl_params = []
+            for tid in self.tids:
+                smpl_params = torch.zeros([86]).float()
+                smpl_params[0] = torch.from_numpy(np.asarray(self.scale)).float()
+                smpl_params[1:4] = torch.from_numpy(self.trans[idx][tid]*self.scale).float()
+                smpl_params[4:76] = torch.from_numpy(self.poses[idx][tid]).float()
+                smpl_params[76:] = torch.from_numpy(self.shape[tid]).float()
+                all_smpl_params.append(smpl_params)
+            smpl_params = torch.stack(all_smpl_params, dim=0)  # [P,86]
+            assert smpl_params.shape[0] == len(self.tids) and smpl_params.shape[1] == 86, f"SMPL params shape mismatch: {smpl_params.shape} vs ({len(self.tids)}, 86)"
+        else:
+            smpl_params = None
 
         return {
             "fid": idx,

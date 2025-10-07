@@ -181,21 +181,33 @@ def init_optimizers(all_gs, cfg):
 def create_splats_with_optimizers(device, cfg, ds):
 
     # Static
-    static_gs = init_3dgs_background(
-        ds, device=device, sh_degree=cfg.sh_degree
-    )
-    print(f"--- FYI: Initialized {static_gs['means'].shape[0]} static splats from point cloud.")
+    if cfg.train_bg:
+        static_gs = init_3dgs_background(
+            ds, device=device, sh_degree=cfg.sh_degree
+        )
+        print(f"--- FYI: Initialized {static_gs['means'].shape[0]} static splats from point cloud.")
+    else:
+        static_gs = None
 
     # Dynamic
-    dynamic_gs_per_human, smpl_c_info = init_3dgs_humans(
-        n_humans=len(cfg.tids), device=device, sh_degree=cfg.sh_degree,
-        color_mode="random"
-    )
-    n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
-    print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
+    if len(cfg.tids) > 0:
+        dynamic_gs_per_human, smpl_c_info = init_3dgs_humans(
+            n_humans=len(cfg.tids), device=device, sh_degree=cfg.sh_degree,
+            color_mode="random"
+        )
+        n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
+        print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
+    else:
+        dynamic_gs_per_human = None
+        smpl_c_info = None
 
     # Combined
-    all_gs = [static_gs] + dynamic_gs_per_human 
+    if static_gs is None:
+        all_gs = dynamic_gs_per_human
+    elif dynamic_gs_per_human is None:
+        all_gs = [static_gs]
+    else:
+        all_gs = [static_gs] + dynamic_gs_per_human
 
     # Optimizers
     all_optimizers = init_optimizers(all_gs, cfg)
