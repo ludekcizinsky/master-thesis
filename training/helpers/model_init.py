@@ -284,14 +284,26 @@ def init_densification_strategy(scene_splats: SceneSplats, scene_optimisers: Sce
 
     return all_strategies
 
-def create_splats_with_optimizers(device, cfg, ds):
+def create_splats_with_optimizers(device, cfg, ds, checkpoint_manager=None):
+
+    resume_enabled = bool(getattr(cfg, "resume", False)) and checkpoint_manager is not None
 
     # Static
     if cfg.train_bg:
-        static_gs = init_3dgs_background(
-            ds, device=device, sh_degree=cfg.sh_degree
-        )
-        print(f"--- FYI: Initialized {static_gs['means'].shape[0]} static splats from point cloud.")
+        static_gs = None
+        if resume_enabled:
+            static_gs, static_iter = checkpoint_manager.load_static(device=device)
+            if static_gs is not None:
+                if static_iter is not None and static_iter >= 0:
+                    print(f"--- FYI: Loaded static splats from iteration {static_iter}.")
+                else:
+                    print(f"--- FYI: Loaded static splats from checkpoint with unknown iteration.")
+
+        if static_gs is None:
+            static_gs = init_3dgs_background(
+                ds, device=device, sh_degree=cfg.sh_degree
+            )
+            print(f"--- FYI: Initialized {static_gs['means'].shape[0]} static splats from point cloud.")
     else:
         static_gs = None
 
@@ -301,8 +313,30 @@ def create_splats_with_optimizers(device, cfg, ds):
             n_humans=len(cfg.tids), device=device, sh_degree=cfg.sh_degree,
             color_mode="random"
         )
+        loaded_summary = []
+        if resume_enabled:
+            for idx, tid in enumerate(cfg.tids):
+                loaded_pdict, loaded_iter = checkpoint_manager.load_human(tid, device=device)
+                if loaded_pdict is not None:
+                    dynamic_gs_per_human[idx] = loaded_pdict
+                    loaded_summary.append((tid, loaded_iter, loaded_pdict["means"].shape[0]))
+
         n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
-        print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
+        if loaded_summary:
+            loaded_ids = {tid for tid, _, _ in loaded_summary}
+            for tid, iteration, count in loaded_summary:
+                if iteration is not None and iteration >= 0:
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from iteration {iteration}.")
+                else:
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from checkpoint with unknown iteration.")
+            remaining = [(idx, tid) for idx, tid in enumerate(cfg.tids) if tid not in loaded_ids]
+            if remaining:
+                total_initialized = sum(dynamic_gs_per_human[idx]["means"].shape[0] for idx, _ in remaining)
+                remaining_tids = [tid for _, tid in remaining]
+                print(f"--- FYI: Initialized {total_initialized} splats from scratch for humans {remaining_tids}.")
+        else:
+            print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
+        print(f"--- FYI: Active dynamic splats total {sum(n_human_gs)} across {len(cfg.tids)} humans.")
     else:
         dynamic_gs_per_human = list()
         smpl_c_info = None

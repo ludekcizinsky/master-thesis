@@ -13,6 +13,7 @@ train_dir: ${output_dir}/training
 # --- Training settings
 iters: 30000
 save_freq: 1000 # frequency of saving the canonical model
+resume: false
 tids: [0, 1]
 cloud_downsample: 30
 batch_size: 1  # number of images per batch

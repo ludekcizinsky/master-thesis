@@ -58,9 +58,18 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Define model and optimizers
-        self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(self.device, cfg, self.dataset)
+        self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
+            self.device, cfg, self.dataset, checkpoint_manager=self.ckpt_manager
+        )
         if len(cfg.tids) > 0:
-            self.lbs_weights = [self.all_gs.smpl_c_info["weights_c"].clone() for _ in self.all_gs.dynamic]  # [M,24]
+            with torch.no_grad():
+                updated_weights = update_skinning_weights(
+                    self.all_gs,
+                    k=self.cfg.lbs_knn,
+                    eps=1e-6,
+                    device=self.device,
+                )
+            self.lbs_weights = [w.detach() for w in updated_weights]
             print(f"--- FYI: in total have {len(self.lbs_weights)} sets of skinning weights (one per dynamic splat set)")
         else:
             self.lbs_weights = None
