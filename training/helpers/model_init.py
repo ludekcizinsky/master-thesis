@@ -1,6 +1,5 @@
 import math
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -25,8 +24,66 @@ class SceneSplatsOptimizers:
 
 @dataclass
 class SceneSplatsStrategies:
-    static: Optional[Dict[str, DefaultStrategy]] = None
-    dynamic: list[Dict[str, DefaultStrategy]] = field(default_factory=list)
+    static: Optional[Tuple[DefaultStrategy, Dict]] = None
+    dynamic: list[Tuple[DefaultStrategy, Dict]] = field(default_factory=list)
+
+    @torch.no_grad()
+    def pre_backward_step(self, scene_splats: SceneSplats, optimizers: SceneSplatsOptimizers, it_number: int, info: Tuple[Optional[Dict], List[Dict]]):
+
+        # Static
+        if self.static is not None:
+            strategy, state = self.static
+            info_static, _ = info
+            strategy.step_pre_backward(
+                params=scene_splats.static,
+                optimizers=optimizers.static,
+                state=state,
+                step=it_number,
+                info=info_static,
+            )
+
+        # Dynamic
+        if len(self.dynamic) > 0:
+            for i in range(len(self.dynamic)):
+                strategy, state = self.dynamic[i]
+                _, info_dynamic = info
+                strategy.step_pre_backward(
+                    params=scene_splats.dynamic[i],
+                    optimizers=optimizers.dynamic[i],
+                    state=state,
+                    step=it_number,
+                    info=info_dynamic[i],
+                )
+
+    @torch.no_grad()
+    def post_backward_step(self, scene_splats: SceneSplats, optimizers: SceneSplatsOptimizers, it_number: int, info: Tuple[Optional[Dict], List[Dict]], packed: bool = False):
+
+        # Static
+        if self.static is not None:
+            strategy, state = self.static
+            info_static, _ = info
+            strategy.step_post_backward(
+                params=scene_splats.static,
+                optimizers=optimizers.static,
+                state=state,
+                step=it_number,
+                info=info_static,
+                packed=packed,
+            )
+
+        # Dynamic
+        if len(self.dynamic) > 0:
+            for i in range(len(self.dynamic)):
+                strategy, state = self.dynamic[i]
+                _, info_dynamic = info
+                strategy.step_post_backward(
+                    params=scene_splats.dynamic[i],
+                    optimizers=optimizers.dynamic[i],
+                    state=state,
+                    step=it_number,
+                    info=info_dynamic[i],
+                    packed=packed,
+                )
 
 
 C0 = 0.28209479177387814

@@ -152,7 +152,7 @@ class FullSceneDataset(Dataset):
             smpl_params = torch.stack(all_smpl_params, dim=0)  # [P,86]
             assert smpl_params.shape[0] == len(self.tids) and smpl_params.shape[1] == 86, f"SMPL params shape mismatch: {smpl_params.shape} vs ({len(self.tids)}, 86)"
         else:
-            smpl_params = None
+            smpl_params = torch.zeros([1, 86]).float()  # dummy
 
         return {
             "fid": idx,

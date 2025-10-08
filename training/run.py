@@ -24,6 +24,7 @@ from training.helpers.smpl_utils import update_skinning_weights
 from training.helpers.dataset import FullSceneDataset
 from training.helpers.model_init import create_splats_with_optimizers
 from training.helpers.render import render_splats
+from training.helpers.losses import prepare_input_for_loss
 
 from fused_ssim import fused_ssim
 
@@ -59,6 +60,9 @@ class Trainer:
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(self.device, cfg, self.dataset)
         if len(cfg.tids) > 0:
             self.lbs_weights = [self.all_gs.smpl_c_info["weights_c"].clone() for _ in self.all_gs.dynamic]  # [M,24]
+            print(f"--- FYI: in total have {len(self.lbs_weights)} sets of skinning weights (one per dynamic splat set)")
+        else:
+            self.lbs_weights = None
     
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
@@ -69,28 +73,27 @@ class Trainer:
         smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
 
         # Forward pass: render
-        colors, alphas, info_per_gs = render_splats(
-            self.all_gs, self.smpl_c_info, smpl_param, 
+        colors, alphas, info = render_splats(
+            self.all_gs, smpl_param, 
             self.lbs_weights, w2c, K, H, W, 
-            sh_degree=self.cfg.sh_degree, kind="all"
+            sh_degree=self.cfg.sh_degree
         )
 
-        with torch.no_grad():
-            for i in range(len(self.all_gs)):
-                splats = self.all_gs[i]
-                optimizers = self.all_optimisers[i]
-                strategy, strategy_state = self.all_strategies[i]
-                info = info_per_gs[i]
-                strategy.step_pre_backward(
-                    params=splats,
-                    optimizers=optimizers,
-                    state=strategy_state,
-                    step=it_number,
-                    info=info,
-                )
+        # Neccessary step for later adaptive densification
+        self.all_strategies.pre_backward_step(
+            scene_splats=self.all_gs,
+            optimizers=self.all_optimisers,
+            it_number=it_number,
+            info=info
+        )
 
         # Losses
-        gt_render, pred_render = images, colors  # full image supervision
+        gt_render, pred_render = prepare_input_for_loss(
+            gt_imgs=images, 
+            renders=colors, 
+            human_masks=masks, 
+            cfg=self.cfg
+        )  # [B,h,w,3], [B,h,w,3] (cropped if needed)
 
         # - L1
         l1_loss = F.l1_loss(pred_render, gt_render)
@@ -104,16 +107,19 @@ class Trainer:
         loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
 
         # - Add Regularizers
+        static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
+        all_splats = static_splats + self.all_gs.dynamic
+        op_reg_loss = torch.tensor(0.0, device=self.device)
         if self.cfg.opacity_reg > 0.0:
-            op_reg_loss = 0.0
-            for splats in self.all_gs:
+            for splats in all_splats:
                 if len(splats["opacities"]) == 0:
                     continue
                 op_reg_loss += self.cfg.opacity_reg * torch.sigmoid(splats["opacities"]).mean()
             loss += op_reg_loss
+
+        scale_reg_loss = torch.tensor(0.0, device=self.device)
         if self.cfg.scale_reg > 0.0:
-            scale_reg_loss = 0.0
-            for splats in self.all_gs:
+            for splats in all_splats:
                 if len(splats["scales"]) == 0:
                     continue
                 scale_reg_loss += self.cfg.scale_reg * torch.exp(splats["scales"]).mean()
@@ -123,36 +129,32 @@ class Trainer:
         loss.backward()
 
         # Update weights step
-        for optimizers in self.all_optimisers:
+        static_optims = [self.all_optimisers.static] if self.all_gs.static is not None else []
+        all_optims = static_optims + self.all_optimisers.dynamic
+        for optimizers in all_optims:
             for opt in optimizers.values():
                 opt.step()
                 opt.zero_grad(set_to_none=True)
 
 
         # Adaptive densification step
-        with torch.no_grad():
-            for i in range(len(self.all_gs)):
-                splats = self.all_gs[i]
-                optimizers = self.all_optimisers[i]
-                strategy, strategy_state = self.all_strategies[i]
-                info = info_per_gs[i]
-                strategy.step_post_backward(
-                    params=splats,
-                    optimizers=optimizers,
-                    state=strategy_state,
-                    step=it_number,
-                    info=info,
-                    packed=self.cfg.packed,
-                )
+        self.all_strategies.post_backward_step(
+            scene_splats=self.all_gs,
+            optimizers=self.all_optimisers,
+            it_number=it_number,
+            info=info,
+            packed=self.cfg.packed
+        )
+
 
         # Update skinning weights
-        with torch.no_grad():
-            dynamic_gs = self.all_gs[1:]
-            new_lbs_weights_list = update_skinning_weights(dynamic_gs, self.smpl_c_info, k=self.cfg.lbs_knn, eps=1e-6)
-            self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
+        if len(self.cfg.tids) > 0:
+            with torch.no_grad():
+                new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
+                self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
 
         # Periodic debug visualization
-        if it_number % 500 == 0 and self.cfg.visualise_cam_preds:
+        if (it_number % 100 == 0 and self.cfg.visualise_cam_preds) or (it_number == 1):
             save_loss_visualization(
                 image_input=images,
                 gt=gt_render,
@@ -160,17 +162,23 @@ class Trainer:
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
+        # Log values
         log_values = {
             "loss/combined": float(loss.item()),
             "loss/masked_l1": float(l1_loss.item()),
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
-            "splats/num_gs_total": sum([g["means"].shape[0] for g in self.all_gs])
         }
-        for i, gs in enumerate(self.all_gs):
-            name = "static" if i == 0 else f"dynamic_{i}"
-            log_values[f"splats/num_gs_{name}"] = gs["means"].shape[0]
+        total_n_gs = 0
+        for i, gs in enumerate(self.all_gs.dynamic):
+            log_values[f"splats/num_gs_dynamic_{i}"] = gs["means"].shape[0]
+            total_n_gs += gs["means"].shape[0]
+
+        if self.all_gs.static is not None:
+            log_values[f"splats/num_gs_static"] = self.all_gs.static["means"].shape[0]
+            total_n_gs += self.all_gs.static["means"].shape[0]
+        log_values["splats/num_gs_total"] = total_n_gs
 
         return log_values
 
@@ -203,7 +211,6 @@ def main(cfg: DictConfig):
     init_logging(cfg)
     trainer = Trainer(cfg)
     print("✅ Trainer initialized.\n")
-    quit()
 
     print("ℹ️ Starting training")
     trainer.train_loop(iters=cfg.iters)

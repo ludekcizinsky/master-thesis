@@ -2,6 +2,7 @@ from typing import Tuple, List
 from gsplat import rasterization
 import torch
 from training.helpers.smpl_utils import canon_to_posed
+from training.helpers.model_init import SceneSplats
 
 def _unit_quat(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return q / (q.norm(dim=-1, keepdim=True) + eps)
@@ -20,42 +21,51 @@ def _prep_splats(splats: torch.nn.ParameterDict, clamp_sigma: tuple = (1e-4, 1.0
 
 def _prep_splats_for_render(
     *,
-    all_gs: List[torch.nn.ParameterDict],
-    smpl_c_info: dict,         
+    all_gs: SceneSplats,
     smpl_param: torch.Tensor = None, # [P, 86] 
     lbs_weights: torch.Tensor = None, # [P, M, 24]
     clamp_sigma: tuple = (1e-4, 1.0),
     dtype: torch.dtype = torch.float32,
     device: torch.device | str | None = None,
 ):
-    # Unpack splats
-    static_splats = all_gs[0]
-    dynamic_splats_per_human = all_gs[1:]
 
     # Static (background)
-    static_pack = _prep_splats(static_splats, clamp_sigma, dtype, device)
+    if all_gs.static is not None:
+        static_pack = _prep_splats(all_gs.static, clamp_sigma, dtype, device)
+    else:
+        static_pack = None
 
     # Dynamic (humans)
-    smpl_server = smpl_c_info["smpl_server"]
-    dynamic_pack_all = dict()
-    for i in range(len(dynamic_splats_per_human)):
-        dynamic_splats = dynamic_splats_per_human[i]
-        means_p = canon_to_posed(smpl_server, smpl_param[i:i+1], dynamic_splats["means"], lbs_weights[i], device=device)
-        dynamic_splats["means"].data.copy_(means_p.squeeze(0))
-        new_pack = _prep_splats(dynamic_splats, clamp_sigma, dtype, device)
-        if i == 0:
-            dynamic_pack_all = {k: v for k, v in new_pack.items()}
-        else:
-            for k, v in new_pack.items():
-                dynamic_pack_all[k] = torch.cat([dynamic_pack_all[k], v], dim=0)
+    if len(all_gs.dynamic) > 0:
+        smpl_server = all_gs.smpl_c_info["smpl_server"]
+        dynamic_pack_all = dict()
+        for i in range(len(all_gs.dynamic)):
+            dynamic_splats = all_gs.dynamic[i]
+            means_p = canon_to_posed(smpl_server, smpl_param[i:i+1], dynamic_splats["means"], lbs_weights[i], device=device)
+            dynamic_splats["means"].data.copy_(means_p.squeeze(0))
+            new_pack = _prep_splats(dynamic_splats, clamp_sigma, dtype, device)
+            if i == 0:
+                dynamic_pack_all = {k: v for k, v in new_pack.items()}
+            else:
+                for k, v in new_pack.items():
+                    dynamic_pack_all[k] = torch.cat([dynamic_pack_all[k], v], dim=0)
+    else:
+        dynamic_pack_all = None
 
-    
-    # Both
+    # Assert at least one of static or dynamic splats is present
+    assert static_pack is not None or dynamic_pack_all is not None, "No splats to render."
+ 
+    # Merge static and dynamic packs
     all_pack = dict()
-    for k in static_pack.keys():
-        all_pack[k] = torch.cat([static_pack[k], dynamic_pack_all[k]], dim=0)
+    if static_pack is not None and dynamic_pack_all is not None:
+        for k in static_pack.keys():
+            all_pack[k] = torch.cat([static_pack[k], dynamic_pack_all[k]], dim=0)
+    elif static_pack is not None:
+        all_pack = static_pack
+    elif dynamic_pack_all is not None:
+        all_pack = dynamic_pack_all
 
-    return {"static": static_pack, "dynamic": dynamic_pack_all, "all": all_pack}
+    return all_pack
 
 def _register_subset_grad_hook(parent: torch.Tensor, child: torch.Tensor, start: int, end: int) -> None:
     """Mirror gradients from `parent` into the derived `child` slice.
@@ -84,12 +94,24 @@ def _register_subset_grad_hook(parent: torch.Tensor, child: torch.Tensor, start:
 
     parent.register_hook(_hook)
 
-def _parse_info(info: dict, n_gaussians_per_model) -> List[dict]:
+def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
+    # TODO: polish this function, currently a bit hacky
+
+    # Get number of gaussians per model
+    n_gaussians_per_model = []
+    includes_static = False
+    if all_gs.static is not None:
+        n_gaussians_per_model.append(all_gs.static["means"].shape[0])
+        includes_static = True
+    if len(all_gs.dynamic) > 0:
+        for splats in all_gs.dynamic:
+            n_gaussians_per_model.append(splats["means"].shape[0])
+
     selected_keys_tensors = ["radii", "gaussian_ids", "means2d", "gradient_2dgs"]
     selected_keys_ints = ["width", "height", "n_cameras"]
     prev_n_gs = 0
     parsed = []
-    for i, curr_n_gs in enumerate(n_gaussians_per_model):
+    for curr_n_gs in n_gaussians_per_model:
         new_info = {}
         for key in selected_keys_tensors:
             value = info.get(key, None)
@@ -105,15 +127,23 @@ def _parse_info(info: dict, n_gaussians_per_model) -> List[dict]:
             new_info[key] = info.get(key, None)
         parsed.append(new_info)
         prev_n_gs += curr_n_gs
-    return parsed
 
-def render_splats(all_gs, smpl_info, smpl_param, lbs_weights, w2c, K, H, W, sh_degree, kind="all"):
+    # static is always first if present
+    if includes_static:
+        static_info = parsed[0]
+        dynamic_info = parsed[1:]
+    else:
+        static_info = None
+        dynamic_info = parsed
+
+    return static_info, dynamic_info
+
+def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree):
 
     # Prep splats
-    packs = _prep_splats_for_render(
+    p = _prep_splats_for_render(
         all_gs=all_gs,
-        smpl_c_info=smpl_info,
-        smpl_param=smpl_param[0], # assume batch size 1 for now
+        smpl_param=smpl_param[0], # assume batch size 1 for now, TODO: future work
         lbs_weights=lbs_weights,
         clamp_sigma=(1e-4, 1.0),
         dtype=torch.float32,
@@ -121,12 +151,12 @@ def render_splats(all_gs, smpl_info, smpl_param, lbs_weights, w2c, K, H, W, sh_d
     )
 
     # Render
-    p = packs[kind]
     colors, alphas, info = rasterization(
         p["means"], p["quats"], p["scales"], p["opacity"], p["colors"],
         w2c, K, W, H, sh_degree=sh_degree, packed=False
     )
-    n_gs = [g["means"].shape[0] for g in all_gs]
-    new_info = _parse_info(info, n_gs)
+
+    # Parse info per model
+    new_info = _parse_info(info, all_gs)
 
     return colors, alphas, new_info

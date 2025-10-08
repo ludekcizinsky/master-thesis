@@ -1,8 +1,13 @@
 import torch
 from torch.nn import functional as F
+from training.helpers.model_init import SceneSplats
 
-def update_skinning_weights(dynamic_gs, smpl_c_info, k: int = 4, eps: float = 1e-6, p: float = 1.0, device="cuda", dtype=torch.float32) -> torch.Tensor:
 
+
+def update_skinning_weights(all_gs: SceneSplats, k: int = 4, eps: float = 1e-6, p: float = 1.0, device="cuda", dtype=torch.float32) -> torch.Tensor:
+
+    dynamic_gs = all_gs.dynamic
+    smpl_c_info = all_gs.smpl_c_info
 
     smpl_V = smpl_c_info["verts_c"].to(device=device, dtype=dtype)     # [N, 3]
     smpl_W = smpl_c_info["weights_c"].to(device=device, dtype=dtype)   # [N, 24]
