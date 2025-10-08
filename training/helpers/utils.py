@@ -18,7 +18,7 @@ def init_logging(cfg):
         config=OmegaConf.to_container(cfg, resolve=True),
         tags=cfg.logger.tags,
         dir=wandb_path,
-        group=cfg.scene_name,
+        group=cfg.group_name,
         mode="online" if not cfg.debug else "disabled",
     )
 
@@ -27,7 +27,7 @@ def init_logging(cfg):
     if cfg.debug:
         print("--- FYI: Running in debug mode, wandb logging is disabled.")
     else:
-        print(f"--- FYI: Logging to wandb project {cfg.logger.project}, entity {cfg.logger.entity}, group {cfg.scene_name}.")
+        print(f"--- FYI: Logging to wandb project {cfg.logger.project}, entity {cfg.logger.entity}, group {cfg.group_name}.")
 
 def project_points(
     X_cam: torch.Tensor,

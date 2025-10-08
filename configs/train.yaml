@@ -28,26 +28,26 @@ downscale: 1
 packed: False 
 
 # --- 3DGS settings
-gs_refine_every: 200      # frequency of applying the densification strategy
-gs_refine_stop_iter: 15000 # stop applying the densification strategy after these many iterations
+gs_refine_every: 300      # frequency of applying the densification strategy
+gs_refine_stop_iter: 10000 # stop applying the densification strategy after these many iterations
 gs_refine_start_iter: 500 # default is normally 500
 
 # --- Loss and regularization weights
 # L1 loss weight
-l1_lambda: 1.0
+l1_lambda: 0.8
 # SSIM loss weight 
-ssim_lambda: 0.5
+ssim_lambda: 0.2
 # Opacity loss weight
 opa_lambda: 0.01 
 opa_free_radius: 0.01  # meters tolerated w/o penalty
 # Opacity and scale regularization weights
-opacity_reg: 0.000
-scale_reg: 0.000
+opacity_reg: 0.05
+scale_reg: 0.1
 # means anchor (ma)
 ma_lambda: 1.0          # strength
 ma_free_radius: 0.001   # meters tolerated w/o penalty
 # k-nearest neighbors for skinning weights computation
-lbs_knn: 4
+lbs_knn: 30
 
 # --- Learning rates for the model parameters
 # LR for 3D point positions
