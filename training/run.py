@@ -25,6 +25,7 @@ from training.helpers.dataset import FullSceneDataset
 from training.helpers.model_init import create_splats_with_optimizers
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
+from training.helpers.checkpointing import GaussianCheckpointManager
 
 from fused_ssim import fused_ssim
 
@@ -51,8 +52,8 @@ class Trainer:
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
-        self.checkpoint_dir = self.experiment_dir / "checkpoints"
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.ckpt_manager = GaussianCheckpointManager(Path(cfg.output_dir), cfg.group_name, cfg.tids)
+        self.checkpoint_dir = self.ckpt_manager.root
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
@@ -154,7 +155,7 @@ class Trainer:
                 self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
 
         # Periodic debug visualization
-        if (it_number % 100 == 0 and self.cfg.visualise_cam_preds) or (it_number == 1):
+        if (it_number % 500 == 0 and self.cfg.visualise_cam_preds) or (it_number == 1):
             save_loss_visualization(
                 image_input=images,
                 gt=gt_render,
@@ -200,8 +201,14 @@ class Trainer:
                     logs["iteration"] = it
                     wandb.log(logs)
 
+                    if self.cfg.save_freq > 0 and (it % self.cfg.save_freq == 0):
+                        self.ckpt_manager.save(self.all_gs, it)
+
                     if it >= iters:
                         break
+
+        if self.cfg.save_freq > 0 and it % self.cfg.save_freq != 0:
+            self.ckpt_manager.save(self.all_gs, it)
         
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
