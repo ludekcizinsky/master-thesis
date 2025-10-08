@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -12,7 +10,12 @@ from training.helpers.model_init import SceneSplats
 class GaussianCheckpointManager:
     """Handles persistence of static and human 3DGS parameter sets."""
 
-    def __init__(self, scene_output_dir: Path, group_name: str, tids: Iterable[int]):
+    def __init__(
+        self,
+        scene_output_dir: Path,
+        group_name: str,
+        tids: Iterable[int],
+    ):
         self.scene_output_dir = Path(scene_output_dir)
         self.group_name = group_name
         self.root = self.scene_output_dir / "checkpoints" / group_name
@@ -153,3 +156,22 @@ class GaussianCheckpointManager:
         if not candidates:
             return None
         return candidates[-1]
+
+    @staticmethod
+    def _clear_directory(target_dir: Path) -> None:
+        if not target_dir.exists():
+            return
+        for item in target_dir.glob("*"):
+            if item.is_file():
+                item.unlink()
+
+    def reset(self, reset_static: bool, reset_tids: Iterable[int]) -> None:
+        if reset_static:
+            self._clear_directory(self.static_dir)
+            self.base_iterations["static"] = 0
+
+        for tid in reset_tids:
+            directory = self.human_dirs.get(tid, self.root / f"human_{tid}")
+            directory.mkdir(parents=True, exist_ok=True)
+            self._clear_directory(directory)
+            self.base_iterations[("human", tid)] = 0

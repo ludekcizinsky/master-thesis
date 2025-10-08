@@ -52,9 +52,18 @@ class Trainer:
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
-        self.ckpt_manager = GaussianCheckpointManager(Path(cfg.output_dir), cfg.group_name, cfg.tids)
+        self.ckpt_manager = GaussianCheckpointManager(
+            Path(cfg.output_dir),
+            cfg.group_name,
+            cfg.tids,
+        )
         self.checkpoint_dir = self.ckpt_manager.root
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
+
+        if not getattr(cfg, "resume", False):
+            reset_static = bool(cfg.train_bg)
+            reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
+            self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Define model and optimizers
