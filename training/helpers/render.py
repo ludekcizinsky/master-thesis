@@ -7,8 +7,15 @@ from training.helpers.model_init import SceneSplats
 def _unit_quat(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return q / (q.norm(dim=-1, keepdim=True) + eps)
 
-def _prep_splats(splats: torch.nn.ParameterDict, clamp_sigma: tuple = (1e-4, 1.0), dtype: torch.dtype = torch.float32, device: str = "cuda") -> Tuple[torch.Tensor]:
-    means = splats["means"].to(device, dtype)
+def _prep_splats(
+    splats: torch.nn.ParameterDict,
+    clamp_sigma: tuple = (1e-4, 1.0),
+    dtype: torch.dtype = torch.float32,
+    device: str = "cuda",
+    means_override: torch.Tensor | None = None,
+) -> Tuple[torch.Tensor]:
+    means_src = means_override if means_override is not None else splats["means"]
+    means = means_src.to(device, dtype)
     quats = _unit_quat(splats["quats"].to(device, dtype))
     scales = torch.exp(splats["scales"].to(device, dtype)).clamp(*clamp_sigma)
     opacity = torch.sigmoid(splats["opacities"].to(device, dtype))
@@ -41,9 +48,20 @@ def _prep_splats_for_render(
         dynamic_pack_all = dict()
         for i in range(len(all_gs.dynamic)):
             dynamic_splats = all_gs.dynamic[i]
-            means_p = canon_to_posed(smpl_server, smpl_param[i:i+1], dynamic_splats["means"], lbs_weights[i], device=device)
-            dynamic_splats["means"].data.copy_(means_p.squeeze(0))
-            new_pack = _prep_splats(dynamic_splats, clamp_sigma, dtype, device)
+            means_p = canon_to_posed(
+                smpl_server,
+                smpl_param[i:i+1],
+                dynamic_splats["means"],
+                lbs_weights[i],
+                device=device,
+            ).squeeze(0)
+            new_pack = _prep_splats(
+                dynamic_splats,
+                clamp_sigma,
+                dtype,
+                device,
+                means_override=means_p,
+            )
             if i == 0:
                 dynamic_pack_all = {k: v for k, v in new_pack.items()}
             else:
