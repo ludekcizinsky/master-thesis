@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+import tempfile
 import warnings
 from pathlib import Path
 from typing import List
@@ -16,7 +18,7 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 
 from training.helpers.checkpointing import GaussianCheckpointManager
@@ -50,6 +52,89 @@ def _select_available_tids(
 
     return available_tids, dynamic_splats
 
+
+def _create_video_from_frame(cfg: DictConfig, group_dir: Path, image_dir: Path, render_dir: Path) -> None:
+
+    image_frames = sorted(image_dir.glob("*.png"))
+    render_frames = sorted(render_dir.glob("*.png"))
+    if not image_frames or not render_frames:
+        print("--- FYI: No frames written; skipping video generation.")
+        print("✅ Rendering complete.")
+        return
+    if len(image_frames) != len(render_frames):
+        raise RuntimeError(
+            f"Mismatched frame counts for video generation: {len(image_frames)} originals vs {len(render_frames)} renders."
+        )
+
+    def _annotate_and_save(src_path: Path, dst_path: Path, label: str) -> None:
+        with Image.open(src_path) as img:
+            img = img.convert("RGB")
+            draw = ImageDraw.Draw(img)
+            font = ImageFont.load_default()
+            text = label
+
+            text_w: int
+            text_h: int
+            if hasattr(draw, "textbbox"):
+                x0, y0, x1, y1 = draw.textbbox((0, 0), text, font=font)
+                text_w = x1 - x0
+                text_h = y1 - y0
+            elif hasattr(font, "getbbox"):
+                x0, y0, x1, y1 = font.getbbox(text)
+                text_w = x1 - x0
+                text_h = y1 - y0
+            else:
+                text_w, text_h = font.getsize(text)
+
+            padding = 6
+            rect_w = text_w + 2 * padding
+            rect_h = text_h + 2 * padding
+            draw.rectangle([(0, 0), (rect_w, rect_h)], fill=(0, 0, 0))
+            draw.text((padding, padding), text, fill=(255, 255, 255), font=font)
+            img.save(dst_path)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        tmp_image_dir = tmp_dir / "image"
+        tmp_render_dir = tmp_dir / "render"
+        tmp_image_dir.mkdir()
+        tmp_render_dir.mkdir()
+
+        for idx, src in enumerate(image_frames):
+            dst = tmp_image_dir / f"{idx:04d}.png"
+            _annotate_and_save(src, dst, "image")
+
+        for idx, src in enumerate(render_frames):
+            dst = tmp_render_dir / f"{idx:04d}.png"
+            _annotate_and_save(src, dst, "full render")
+
+        video_path = group_dir / f"{cfg.group_name}.mp4"
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-framerate",
+            str(cfg.video_fps),
+            "-i",
+            str(tmp_image_dir / "%04d.png"),
+            "-framerate",
+            str(cfg.video_fps),
+            "-i",
+            str(tmp_render_dir / "%04d.png"),
+            "-filter_complex",
+            "[0:v][1:v]hstack=inputs=2[out]",
+            "-map",
+            "[out]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            str(video_path),
+        ]
+
+        print(f"--- FYI: Creating comparison video at {video_path}")
+        subprocess.run(ffmpeg_cmd, check=True)
 
 @hydra.main(config_path="../configs", config_name="visualize_scene.yaml", version_base=None)
 def main(cfg: DictConfig) -> None:
@@ -156,6 +241,7 @@ def main(cfg: DictConfig) -> None:
         img_np = (image.cpu().numpy() * 255).astype(np.uint8)
         Image.fromarray(img_np).save(image_dir / f"{fid:04d}.png")
 
+    _create_video_from_frame(cfg, group_dir, image_dir, render_dir)
     print("✅ Rendering complete.")
 
 

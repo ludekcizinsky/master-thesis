@@ -7,13 +7,14 @@ preprocess_dir: /scratch/izar/cizinsky/multiply-output/preprocessing/data/${scen
 
 # --- Rendering options
 render_bg: true
-render_tids: [0]
+render_tids: [0, 1]
 
 # --- Rendering settings
 device: cuda
 sh_degree: 3
 cloud_downsample: 10
 lbs_knn: 30
+video_fps: 12
 
 # --- Hydra settings
 hydra:
