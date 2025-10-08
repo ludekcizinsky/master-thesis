@@ -53,8 +53,14 @@ def _select_available_tids(
     return available_tids, dynamic_splats
 
 
-def _create_video_from_frame(cfg: DictConfig, group_dir: Path, image_dir: Path, render_dir: Path) -> None:
-
+def _create_video_from_frame(
+    cfg: DictConfig,
+    group_dir: Path,
+    image_dir: Path,
+    render_dir: Path,
+    render_label: str,
+    video_basename: str,
+) -> None:
     image_frames = sorted(image_dir.glob("*.png"))
     render_frames = sorted(render_dir.glob("*.png"))
     if not image_frames or not render_frames:
@@ -70,8 +76,11 @@ def _create_video_from_frame(cfg: DictConfig, group_dir: Path, image_dir: Path, 
         with Image.open(src_path) as img:
             img = img.convert("RGB")
             draw = ImageDraw.Draw(img)
-            font = ImageFont.load_default()
-            text = label
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", size=20)
+            except OSError:
+                font = ImageFont.load_default()
+            text = label.upper()
 
             text_w: int
             text_h: int
@@ -86,7 +95,7 @@ def _create_video_from_frame(cfg: DictConfig, group_dir: Path, image_dir: Path, 
             else:
                 text_w, text_h = font.getsize(text)
 
-            padding = 6
+            padding = 10
             rect_w = text_w + 2 * padding
             rect_h = text_h + 2 * padding
             draw.rectangle([(0, 0), (rect_w, rect_h)], fill=(0, 0, 0))
@@ -100,15 +109,15 @@ def _create_video_from_frame(cfg: DictConfig, group_dir: Path, image_dir: Path, 
         tmp_image_dir.mkdir()
         tmp_render_dir.mkdir()
 
-        for idx, src in enumerate(image_frames):
+        for idx, src in enumerate(tqdm(image_frames, desc="Annotating images")):
             dst = tmp_image_dir / f"{idx:04d}.png"
             _annotate_and_save(src, dst, "image")
 
-        for idx, src in enumerate(render_frames):
+        for idx, src in enumerate(tqdm(render_frames, desc="Annotating renders")):
             dst = tmp_render_dir / f"{idx:04d}.png"
-            _annotate_and_save(src, dst, "full render")
+            _annotate_and_save(src, dst, render_label)
 
-        video_path = group_dir / f"{cfg.group_name}.mp4"
+        video_path = group_dir / f"{video_basename}.mp4"
         ffmpeg_cmd = [
             "ffmpeg",
             "-y",
@@ -208,7 +217,20 @@ def main(cfg: DictConfig) -> None:
 
     group_dir = Path(cfg.output_dir) / "visualisations" / cfg.group_name 
     image_dir = group_dir / "images"
-    render_dir = group_dir / "full_render"
+    if has_static and has_dynamic:
+        render_dir_name = "full_render"
+        render_label = "full render"
+        video_basename = "full_render"
+    elif has_static:
+        render_dir_name = "static_render"
+        render_label = "static render"
+        video_basename = "static_render"
+    else:
+        render_dir_name = "fg_render"
+        render_label = "fg render"
+        video_basename = "fg_render"
+
+    render_dir = group_dir / render_dir_name
     image_dir.mkdir(parents=True, exist_ok=True)
     render_dir.mkdir(parents=True, exist_ok=True)
     print(f"--- FYI: Saving originals to {image_dir}")
@@ -241,7 +263,14 @@ def main(cfg: DictConfig) -> None:
         img_np = (image.cpu().numpy() * 255).astype(np.uint8)
         Image.fromarray(img_np).save(image_dir / f"{fid:04d}.png")
 
-    _create_video_from_frame(cfg, group_dir, image_dir, render_dir)
+    _create_video_from_frame(
+        cfg,
+        group_dir,
+        image_dir,
+        render_dir,
+        render_label,
+        video_basename,
+    )
     print("✅ Rendering complete.")
 
 

@@ -22,3 +22,6 @@ python training/run.py scene_name=football_high_res tids=[0] train_bg=false resu
 python training/run.py scene_name=football_high_res tids=[1] train_bg=false resume=false logger.tags=[v1] group_name=v1_default
 # - static
 python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=false logger.tags=[v1] opacity_reg=0.001 scale_reg=0.01 cloud_downsample=10 gs_refine_every=100 gs_refine_stop_iter=15000 group_name=v1_default
+
+# - joint  dynamic+static
+python training/run.py scene_name=football_high_res tids=[0,1] train_bg=true resume=true logger.tags=[v1] opacity_reg=0.001 scale_reg=0.01 cloud_downsample=10 gs_refine_every=500 gs_refine_start_iter=5000 gs_refine_stop_iter=7000 group_name=v1_default
