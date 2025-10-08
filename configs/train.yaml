@@ -29,7 +29,7 @@ packed: False
 
 # --- 3DGS settings
 gs_refine_every: 300      # frequency of applying the densification strategy
-gs_refine_stop_iter: 10000 # stop applying the densification strategy after these many iterations
+gs_refine_stop_iter: 7500 # stop applying the densification strategy after these many iterations
 gs_refine_start_iter: 500 # default is normally 500
 
 # --- Loss and regularization weights
