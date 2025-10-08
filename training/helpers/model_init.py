@@ -144,6 +144,13 @@ def init_isotropic_scales_from_knn(pts: np.array, k_for_scale: int = 16, scale_p
     sigmas = torch.full((pts.shape[0],), sigma_init, device=device)
     return sigmas
 
+def init_smpl_server(device):
+    smpl_server = SMPLServer().to(device).eval()
+    verts_c = smpl_server.verts_c[0].to(device)    
+    weights_c = smpl_server.weights_c[0].to(device)
+    smpl_c_info = {"verts_c": verts_c, "weights_c": weights_c, "smpl_server": smpl_server}
+    return smpl_c_info
+
 
 @torch.no_grad()
 def init_3dgs_humans(
@@ -158,9 +165,11 @@ def init_3dgs_humans(
     seed: Optional[int] = 1000,
 ) -> Tuple[nn.ParameterDict, Dict]:
 
-    smpl_server = SMPLServer().to(device).eval()
-    verts_c = smpl_server.verts_c[0].to(device)    
-    weights_c = smpl_server.weights_c[0].to(device)
+    smpl_c_info = init_smpl_server(device)
+    smpl_server = smpl_c_info["smpl_server"]
+    verts_c = smpl_c_info["verts_c"]
+    weights_c = smpl_c_info["weights_c"]
+
     M = verts_c.shape[0]
 
     # means (canonical)
@@ -192,7 +201,7 @@ def init_3dgs_humans(
             )
         )
     
-    smpl_c_info = {"verts_c": verts_c, "weights_c": weights_c, "smpl_server": smpl_server}
+
     return splats, smpl_c_info 
 
 @torch.no_grad()
