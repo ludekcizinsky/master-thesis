@@ -36,7 +36,7 @@ def _merge_with_defaults(cfg: DictConfig) -> DictConfig:
                 "model_id": "facebook/sam2.1-hiera-large",
                 "mask_threshold": 0.0,
                 "multimask_output": False,
-                "max_points": 25,
+                "max_points": 10,
                 "use_initial_mask": True,
             },
         }

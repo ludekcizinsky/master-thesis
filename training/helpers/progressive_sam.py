@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import torch
+import numpy as np
 from torch import Tensor
 
 from training.helpers.model_init import SceneSplats
@@ -129,11 +130,102 @@ def _point_in_mask(u: int, v: int, mask: Tensor) -> bool:
     return bool(mask[v, u].item())
 
 
+CATEGORY_JOINTS = {
+    "feet": {7, 8, 10, 11},
+    "legs": {1, 2, 4, 5, 7, 8},
+    "hands": {20, 21, 22, 23},
+    "arms": {16, 17, 18, 19, 20, 21},
+    "chest": {0, 3, 6, 9},
+    "head": {12, 15},
+}
+POINTS_PER_CATEGORY = 2
+
+
+def _build_category_indices(joint_labels: np.ndarray) -> dict[str, np.ndarray]:
+    category_indices: dict[str, np.ndarray] = {}
+    for name, joint_ids in CATEGORY_JOINTS.items():
+        mask = np.isin(joint_labels, list(joint_ids))
+        category_indices[name] = np.where(mask)[0]
+    return category_indices
+
+
+def _sample_from_category(
+    indices: np.ndarray,
+    uv_coords: Tensor,
+    include_mask: Optional[Tensor],
+    exclude_masks: Sequence[Tensor],
+    count: int,
+) -> List[List[int]]:
+    selected: List[List[int]] = []
+    if indices.size == 0:
+        return selected
+    H = include_mask.shape[0] if include_mask is not None else None
+    W = include_mask.shape[1] if include_mask is not None else None
+    candidates: List[List[int]] = []
+    for vid in indices.tolist():
+        if vid >= uv_coords.shape[0]:
+            continue
+        uv = uv_coords[vid]
+        u = int(round(float(uv[0].item())))
+        v = int(round(float(uv[1].item())))
+        if include_mask is not None and not _point_in_mask(u, v, include_mask):
+            continue
+        if any(_point_in_mask(u, v, m) for m in exclude_masks):
+            continue
+        candidates.append([u, v])
+
+    if not candidates:
+        return selected
+
+    if len(candidates) <= count:
+        return candidates
+
+    chosen_idx = np.linspace(0, len(candidates) - 1, num=count, dtype=int)
+    for idx in chosen_idx:
+        selected.append(candidates[idx])
+    return selected
+
+
+def _default_positive_points(
+    uv_coords: Tensor,
+    target_mask: Tensor,
+    other_masks: Sequence[Tensor],
+) -> List[List[int]]:
+    fallback: List[List[int]] = []
+    for uv in uv_coords:
+        u = int(round(float(uv[0].item())))
+        v = int(round(float(uv[1].item())))
+        if not _point_in_mask(u, v, target_mask):
+            continue
+        if any(_point_in_mask(u, v, m) for m in other_masks):
+            continue
+        fallback.append([u, v])
+    return fallback
+
+
+def _default_negative_points(
+    uv_coords: Tensor,
+    target_mask: Tensor,
+    own_mask: Tensor,
+) -> List[List[int]]:
+    fallback: List[List[int]] = []
+    for uv in uv_coords:
+        u = int(round(float(uv[0].item())))
+        v = int(round(float(uv[1].item())))
+        if not _point_in_mask(u, v, own_mask):
+            continue
+        if _point_in_mask(u, v, target_mask):
+            continue
+        fallback.append([u, v])
+    return fallback
+
+
 def _collect_prompt_points(
     idx: int,
     keypoints: Sequence[Tensor],
     masks: Sequence[Tensor],
     image_size: Tuple[int, int],
+    category_vertices: dict[str, np.ndarray],
 ) -> Tuple[Tensor, Tensor]:
     H, W = image_size
     target_kp = keypoints[idx]
@@ -141,28 +233,37 @@ def _collect_prompt_points(
 
     other_masks = [masks[j] for j in range(len(masks)) if j != idx]
 
-    positive_pts = []
-    for uv in target_kp:
-        u = int(round(float(uv[0].item())))
-        v = int(round(float(uv[1].item())))
-        if not _point_in_mask(u, v, target_mask):
-            continue
-        if any(_point_in_mask(u, v, m) for m in other_masks):
-            continue
-        positive_pts.append([u, v])
+    positive_pts: List[List[int]] = []
+    for indices in category_vertices.values():
+        positive_pts.extend(
+            _sample_from_category(
+                indices,
+                target_kp,
+                target_mask,
+                other_masks,
+                POINTS_PER_CATEGORY,
+            )
+        )
+    if not positive_pts:
+        positive_pts = _default_positive_points(target_kp, target_mask, other_masks)
 
-    negative_pts = []
+    negative_pts: List[List[int]] = []
     for j, kp in enumerate(keypoints):
         if j == idx:
             continue
-        for uv in kp:
-            u = int(round(float(uv[0].item())))
-            v = int(round(float(uv[1].item())))
-            if u < 0 or u >= W or v < 0 or v >= H:
-                continue
-            if _point_in_mask(u, v, target_mask):
-                continue
-            negative_pts.append([u, v])
+        own_mask = masks[j]
+        for indices in category_vertices.values():
+            negative_pts.extend(
+                _sample_from_category(
+                    indices,
+                    kp,
+                    own_mask,
+                    [target_mask],
+                    POINTS_PER_CATEGORY,
+                )
+            )
+        if not negative_pts:
+            negative_pts.extend(_default_negative_points(kp, target_mask, own_mask))
 
     pos_tensor = (
         torch.tensor(positive_pts, dtype=torch.float32)
@@ -235,9 +336,18 @@ def get_sam_masks(
             for verts in posed_vertices
         ]
 
+        joint_labels = torch.argmax(all_gs.smpl_c_info["weights_c"], dim=1).cpu().numpy()
+        category_vertices = _build_category_indices(joint_labels)
+
         results: List[SamMaskResult] = []
         for idx in range(len(all_gs.dynamic)):
-            pos_pts, neg_pts = _collect_prompt_points(idx, keypoints, masks, (H, W))
+            pos_pts, neg_pts = _collect_prompt_points(
+                idx,
+                keypoints,
+                masks,
+                (H, W),
+                category_vertices,
+            )
             results.append(
                 SamMaskResult(
                     mask=masks[idx],
