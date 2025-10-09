@@ -49,6 +49,18 @@ ma_free_radius: 0.001   # meters tolerated w/o penalty
 # k-nearest neighbors for skinning weights computation
 lbs_knn: 30
 
+mask_refinement:
+  enabled: true
+  alpha_threshold: 0.3
+  loss_weight: 0.05
+  sam2:
+    model_id: facebook/sam2.1-hiera-large
+    device: cuda
+    mask_threshold: 0.0
+    multimask_output: false
+    max_points: 10
+    use_initial_mask: true
+
 # --- Learning rates for the model parameters
 # LR for 3D point positions
 means_lr: 1.6e-4 

@@ -5,6 +5,10 @@ Collection of functions for multi view geometry.
 import numpy as np
 import cv2
 
+from typing import Tuple
+
+import torch
+
 def load_K_Rt_from_P(P: np.ndarray):
     """
     Inputs
@@ -38,3 +42,33 @@ def load_K_Rt_from_P(P: np.ndarray):
     pose[:3, 3]  = (-R @ C).astype(np.float32)
 
     return intrinsics, pose
+
+def project_points(
+    X_cam: torch.Tensor,
+    K: torch.Tensor,
+    flip_z: bool = False,
+    rz180: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    X_cam: [M,3] in camera-view coordinates.
+    K: [3,3] intrinsics.
+    flip_z: set True if your renderer uses -Z forward (OpenGL-style).
+    rz180: set True to apply a global 180° rotation around Z (x->-x, y->-y).
+           This matches the canonical preview fix you discovered.
+    """
+    Xc = X_cam.clone()
+
+    if rz180:
+        # 180° rotation around Z: (x,y,z) -> (-x,-y,z)
+        Xc[:, 0] = -Xc[:, 0]
+        Xc[:, 1] = -Xc[:, 1]
+
+    if flip_z:
+        Xc[:, 2] = -Xc[:, 2]
+
+    Z = Xc[:, 2].clamp(min=1e-6)
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    u = fx * (Xc[:, 0] / Z) + cx
+    v = fy * (Xc[:, 1] / Z) + cy
+    uv = torch.stack([u, v], dim=-1)
+    return uv, Z

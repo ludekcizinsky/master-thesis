@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import math
 from pathlib import Path
 from training.helpers.dataset import HumanOnlyDataset, TraceDataset
-from training.helpers.utils import lbs_apply
+from training.helpers.trainer_init import lbs_apply
 
 import numpy as np
 import torch

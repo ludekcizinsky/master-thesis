@@ -1,10 +1,11 @@
 import hydra
 import os
 import sys
-from omegaconf import DictConfig
+import numpy as np
+from omegaconf import DictConfig, OmegaConf
+from hydra.core.global_hydra import GlobalHydra
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../submodules/humans4d")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 
@@ -19,13 +20,15 @@ import wandb
 
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, save_loss_visualization
+from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights
 from training.helpers.dataset import FullSceneDataset
 from training.helpers.model_init import create_splats_with_optimizers
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
+from training.helpers.progressive_sam import compute_refined_masks
+from training.helpers.visualisation_utils import save_mask_refinement_figure, save_loss_visualization
 
 from fused_ssim import fused_ssim
 
@@ -36,6 +39,14 @@ class Trainer:
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
+
+        mask_cfg = getattr(cfg, "mask_refinement", None)
+        mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
+        self.mask_loss_weight = float(mask_container.get("loss_weight", 0.0))
+        self.mask_alpha_threshold = float(mask_container.get("alpha_threshold", 0.3))
+        self.mask_predictor_cfg = mask_container.get("sam2", {})
+        self.mask_enabled = bool(mask_container.get("enabled", False)) and len(cfg.tids) > 0
+        self.sam_predictor = None
 
         self.dataset = FullSceneDataset(
             Path(cfg.preprocess_dir),
@@ -82,14 +93,79 @@ class Trainer:
             print(f"--- FYI: in total have {len(self.lbs_weights)} sets of skinning weights (one per dynamic splat set)")
         else:
             self.lbs_weights = None
+
+        if self.mask_enabled:
+            self.sam_predictor = self._init_sam_predictor()
+
+    def _init_sam_predictor(self):
+
+        gh = GlobalHydra.instance()
+        if gh.is_initialized():
+            gh.clear()
+
+        from sam2.build_sam import build_sam2_hf
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        sam_cfg = self.mask_predictor_cfg
+        model_id = sam_cfg.get("model_id", "facebook/sam2.1-hiera-large")
+        device_str = sam_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        sam_model = build_sam2_hf(model_id, device=device_str)
+        predictor = SAM2ImagePredictor(
+            sam_model,
+            mask_threshold=float(sam_cfg.get("mask_threshold", 0.0)),
+        )
+        import logging
+        logging.getLogger("sam2").setLevel(logging.ERROR)
+        logging.getLogger("sam2").propagate = False
+        self.sam_device = device_str
+        return predictor
     
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
-        K  = batch["K"].to(self.device)      # [B,3,3]
-        w2c = batch["M_ext"].to(self.device)  # [B,4,4]
-        masks  = batch["mask"].to(self.device)   # [B,P,H,W]
-        H, W = batch["image"].shape[1:3] 
+        K = batch["K"].to(self.device)           # [B,3,3]
+        w2c = batch["M_ext"].to(self.device)     # [B,4,4]
+        H, W = batch["image"].shape[1:3]
         smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
+
+        assert images.shape[0] == 1, "Mask refinement currently expects batch size 1."
+        image_np = np.clip(images[0].detach().cpu().numpy(), 0.0, 1.0)
+
+        human_masks = torch.zeros(
+            (images.shape[0], len(self.cfg.tids), H, W),
+            device=self.device,
+            dtype=images.dtype,
+        )
+        mask_loss = torch.tensor(0.0, device=self.device)
+        refined_results = []
+        alpha_stack = None
+        if self.mask_enabled and len(self.cfg.tids) > 0:
+            from training.helpers.progressive_sam import suppress_sam_logging
+            with torch.no_grad():
+                image_uint8 = (image_np * 255.0).round().astype(np.uint8)
+                with suppress_sam_logging():
+                    self.sam_predictor.set_image(image_uint8)
+                refined_results = compute_refined_masks(
+                    scene_splats=self.all_gs,
+                    smpl_params=smpl_param[0],
+                    w2c=w2c[0],
+                    K=K[0],
+                    image_size=(H, W),
+                    alpha_threshold=self.mask_alpha_threshold,
+                    predictor=self.sam_predictor,
+                    predictor_cfg=self.mask_predictor_cfg,
+                    lbs_weights=self.lbs_weights,
+                    lbs_knn=int(self.cfg.lbs_knn),
+                    device=self.device,
+                )
+            if refined_results:
+                refined_stack = torch.stack([res.refined_mask for res in refined_results], dim=0).to(self.device)
+                human_masks = refined_stack.unsqueeze(0)
+                alpha_stack = torch.stack([res.alpha for res in refined_results], dim=0).to(self.device)
+                mask_loss = F.mse_loss(alpha_stack, refined_stack)
+            else:
+                alpha_stack = None
+
+        human_masks = human_masks.to(self.device)
 
         # Forward pass: render
         colors, alphas, info = render_splats(
@@ -108,9 +184,9 @@ class Trainer:
 
         # Losses
         gt_render, pred_render = prepare_input_for_loss(
-            gt_imgs=images, 
-            renders=colors, 
-            human_masks=masks, 
+            gt_imgs=images,
+            renders=colors,
+            human_masks=human_masks,
             cfg=self.cfg
         )  # [B,h,w,3], [B,h,w,3] (cropped if needed)
 
@@ -124,6 +200,8 @@ class Trainer:
 
         # - Combined 
         loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
+        if self.mask_enabled and alpha_stack is not None and self.mask_loss_weight > 0.0:
+            loss = loss + self.mask_loss_weight * mask_loss
 
         # - Add Regularizers
         static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
@@ -181,6 +259,22 @@ class Trainer:
                 out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
             )
 
+        if (
+            self.mask_enabled
+            and refined_results
+            and ((it_number % 500 == 0 and self.cfg.visualise_cam_preds) or (it_number == 1))
+        ):
+            for idx, res in enumerate(refined_results):
+                out_path = self.trn_viz_debug_dir / f"maskref_it{it_number:05d}_human{idx:02d}.png"
+                save_mask_refinement_figure(
+                    image_np,
+                    res.initial_mask.cpu().numpy(),
+                    res.refined_mask.cpu().numpy(),
+                    res.vis_positive_points,
+                    res.vis_negative_points,
+                    out_path,
+                )
+
         # Log values
         log_values = {
             "loss/combined": float(loss.item()),
@@ -188,6 +282,7 @@ class Trainer:
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
+            "loss/mask_refinement": float(mask_loss.item()),
         }
         total_n_gs = 0
         for i, gs in enumerate(self.all_gs.dynamic):

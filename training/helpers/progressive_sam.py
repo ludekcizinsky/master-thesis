@@ -1,15 +1,18 @@
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from torch import Tensor
+import logging
 
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed, update_skinning_weights
-from training.helpers.utils import project_points
+from training.helpers.geom_utils import project_points
 
 
 @dataclass
@@ -18,6 +21,34 @@ class SamMaskResult:
     alpha: Tensor
     positive_points: Tensor
     negative_points: Tensor
+
+
+@dataclass
+class RefinedMaskResult:
+    initial_mask: Tensor
+    refined_mask: Tensor
+    alpha: Tensor
+    positive_points: Tensor
+    negative_points: Tensor
+    point_coords: Optional[np.ndarray]
+    point_labels: Optional[np.ndarray]
+    vis_positive_points: Optional[np.ndarray]
+    vis_negative_points: Optional[np.ndarray]
+
+
+if TYPE_CHECKING:
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+
+@contextmanager
+def suppress_sam_logging(level: int = logging.WARNING):
+    logger = logging.getLogger()
+    prev_level = logger.level
+    logger.setLevel(level)
+    try:
+        yield
+    finally:
+        logger.setLevel(prev_level)
 
 
 def _infer_sh_degree(scene_splats: SceneSplats) -> int:
@@ -278,6 +309,42 @@ def _collect_prompt_points(
     return pos_tensor, neg_tensor
 
 
+def _downsample_points(points: Optional[np.ndarray], max_points: int) -> Optional[np.ndarray]:
+    if points is None:
+        return None
+    if points.shape[0] <= max_points:
+        return points
+    idx = np.linspace(0, points.shape[0] - 1, num=max_points, dtype=int)
+    return points[idx]
+
+
+def _prepare_point_arrays(
+    result: SamMaskResult,
+    max_points: int,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    pos = result.positive_points.cpu().numpy() if result.positive_points.numel() > 0 else None
+    neg = result.negative_points.cpu().numpy() if result.negative_points.numel() > 0 else None
+
+    pos_ds = _downsample_points(pos, max_points)
+    neg_ds = _downsample_points(neg, max_points)
+
+    if pos_ds is None and neg_ds is None:
+        return None, None, pos_ds, neg_ds
+
+    coords: List[np.ndarray] = []
+    labels: List[np.ndarray] = []
+    if pos_ds is not None:
+        coords.append(pos_ds.astype(np.float32))
+        labels.append(np.ones(pos_ds.shape[0], dtype=np.int32))
+    if neg_ds is not None:
+        coords.append(neg_ds.astype(np.float32))
+        labels.append(np.zeros(neg_ds.shape[0], dtype=np.int32))
+
+    point_coords = np.concatenate(coords, axis=0).astype(np.float32) if coords else None
+    point_labels = np.concatenate(labels, axis=0) if labels else None
+    return point_coords, point_labels, pos_ds, neg_ds
+
+
 def get_sam_masks(
     all_gs: SceneSplats,
     smpl_params: Tensor,
@@ -358,3 +425,116 @@ def get_sam_masks(
             )
 
     return results
+
+
+def refine_masks_with_predictor(
+    sam_results: Sequence[SamMaskResult],
+    predictor: "SAM2ImagePredictor",
+    *,
+    multimask_output: bool,
+    use_initial_mask: bool,
+    max_points: int,
+) -> List[RefinedMaskResult]:
+    refined: List[RefinedMaskResult] = []
+    for result in sam_results:
+        point_coords, point_labels, pos_vis, neg_vis = _prepare_point_arrays(result, max_points)
+
+        mask_input = None
+        if use_initial_mask:
+            mask_np = result.mask.numpy().astype(np.float32)
+            mask_tensor = torch.from_numpy(mask_np)[None, None, :, :]
+            target_size = predictor.model.sam_prompt_encoder.mask_input_size
+            if mask_tensor.shape[-2:] != target_size:
+                mask_tensor = F.interpolate(
+                    mask_tensor,
+                    size=target_size,
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            mask_input = mask_tensor.cpu().numpy()
+
+        refined_masks, scores, _ = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            mask_input=mask_input,
+            multimask_output=multimask_output,
+            )
+
+        if refined_masks.ndim == 3:
+            idx = 0
+            if refined_masks.shape[0] > 1:
+                idx = int(np.argmax(scores))
+            refined_mask_np = refined_masks[idx]
+        else:
+            refined_mask_np = refined_masks
+
+        refined_mask_tensor = torch.from_numpy(refined_mask_np).float()
+
+        refined.append(
+            RefinedMaskResult(
+                initial_mask=result.mask.clone(),
+                refined_mask=refined_mask_tensor,
+                alpha=result.alpha.clone(),
+                positive_points=result.positive_points.clone(),
+                negative_points=result.negative_points.clone(),
+                point_coords=point_coords,
+                point_labels=point_labels,
+                vis_positive_points=pos_vis,
+                vis_negative_points=neg_vis,
+            )
+        )
+    return refined
+
+
+def compute_refined_masks(
+    *,
+    scene_splats: SceneSplats,
+    smpl_params: Tensor,
+    w2c: Tensor,
+    K: Tensor,
+    image_size: Tuple[int, int],
+    alpha_threshold: float,
+    predictor: "SAM2ImagePredictor",
+    predictor_cfg: Dict[str, Any],
+    lbs_weights: Optional[Sequence[Tensor]] = None,
+    lbs_knn: int = 30,
+    device: Optional[torch.device | str] = None,
+) -> List[RefinedMaskResult]:
+    sam_results = get_sam_masks(
+        scene_splats,
+        smpl_params,
+        w2c,
+        K,
+        image_size,
+        alpha_threshold=alpha_threshold,
+        lbs_weights=lbs_weights,
+        lbs_knn=lbs_knn,
+        device=device,
+    )
+    if predictor is None:
+        max_points = int(predictor_cfg.get("max_points", 50))
+        refined: List[RefinedMaskResult] = []
+        for result in sam_results:
+            _, _, pos_vis, neg_vis = _prepare_point_arrays(result, max_points)
+            refined.append(
+                RefinedMaskResult(
+                    initial_mask=result.mask.clone(),
+                    refined_mask=result.mask.clone().float(),
+                    alpha=result.alpha.clone(),
+                    positive_points=result.positive_points.clone(),
+                    negative_points=result.negative_points.clone(),
+                    point_coords=None,
+                    point_labels=None,
+                    vis_positive_points=pos_vis,
+                    vis_negative_points=neg_vis,
+                )
+            )
+    else:
+        refined = refine_masks_with_predictor(
+            sam_results,
+            predictor,
+            multimask_output=bool(predictor_cfg.get("multimask_output", False)),
+            use_initial_mask=bool(predictor_cfg.get("use_initial_mask", True)),
+            max_points=int(predictor_cfg.get("max_points", 50)),
+        )
+    return refined

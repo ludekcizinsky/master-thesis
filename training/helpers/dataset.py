@@ -5,13 +5,14 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 
-from training.helpers.utils import load_image, load_mask
 from training.helpers.geom_utils import load_K_Rt_from_P
+
+from PIL import Image
 
 
 class FullSceneDataset(Dataset):
     """
-    Exposes (frame_id, image, mask, cam_intrinsics, smpl_param) for a chosen track id.
+    Exposes (frame_id, image, cam_intrinsics, smpl_param) for a chosen track id.
 
     Simplifying assumptions:
     1. All persons are on all frames
@@ -24,10 +25,9 @@ class FullSceneDataset(Dataset):
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
-        self.mask_dir = self.preprocess_dir / "mask"
 
         # Cache H,W from cam_dicts (assuming constant across frames; we still read per-frame K)
-        first_image = load_image(self.images_dir / "0000.png")
+        first_image = self._load_image(self.images_dir / "0000.png")
         self.H, self.W = first_image.shape[:2]
         print(f"--- FYI: operating on images of size {self.W}x{self.H}.")
 
@@ -44,6 +44,10 @@ class FullSceneDataset(Dataset):
         if self.train_bg:
             self.load_unidepth_pointcloud(downsample=cloud_downsample)
 
+    def _load_image(self, path: Path) -> torch.Tensor:
+        img = Image.open(path).convert("RGB")
+        im = torch.from_numpy(np.array(img)).float() / 255.0  # [H,W,3]
+        return im.contiguous() 
 
     def _load_cameras(self):
 
@@ -97,19 +101,6 @@ class FullSceneDataset(Dataset):
         self.point_cloud = (pts, cols)
         print(f"--- FYI: loaded POINT CLOUD from {npz_path} with {pts.shape[0]} points (downsample={downsample}).")
 
-    def _load_masks(self, tids: List[int], idx: int):
-        masks = []
-        for tid in tids:
-            mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
-            if mask_path.exists():
-                mask = load_mask(mask_path)  # [H,W]
-            else:
-                raise FileNotFoundError(f"Mask not found: {mask_path}")
-            masks.append(mask)
-        mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
-        assert mask.shape[0] == len(tids), f"Mask shape {mask.shape} does not match number of tids {len(tids)}"
-        return mask
-
     def __len__(self):
         return len(self.pose_all)
 
@@ -117,17 +108,8 @@ class FullSceneDataset(Dataset):
 
         # Image
         img_path = self.images_dir / f"{idx:04d}.png"
-        image = load_image(img_path)  # [H,W,3]
+        image = self._load_image(img_path)  # [H,W,3]
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
-
-        # Masks for each tid
-        # - load masks only for selected tids
-        if len(self.tids) > 0:
-            mask = self._load_masks(self.tids, idx)  # [P,H,W]
-        # - if no tids -> static background training -> load all masks and combine
-        else:
-            tids = os.listdir(self.mask_dir)
-            mask = self._load_masks(tids, idx)  # [P,H,W]
 
         # Camera 
         # - Extrinsics
@@ -157,7 +139,6 @@ class FullSceneDataset(Dataset):
         return {
             "fid": idx,
             "image": image,     # [H,W,3]
-            "mask": mask,       # [P,H,W]
             "K": K,             # [3,3]
             "smpl_param": smpl_params,  # [P,86]
             "M_ext": M_ext,         # [4,4]
