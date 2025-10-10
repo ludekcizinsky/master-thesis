@@ -53,6 +53,7 @@ mask_refinement:
   enabled: true
   alpha_threshold: 0.3
   loss_weight: 0.05
+  rebuild_every_epochs: 10
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda

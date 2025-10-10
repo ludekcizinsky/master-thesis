@@ -3,7 +3,7 @@ import os
 import time
 
 import torch
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pathlib import Path
 from training.helpers.dataset import FullSceneDataset
@@ -62,7 +62,7 @@ def load_unidepth_pointcloud(npz_path, downsample: int = 1):
 # ---- Load data
 preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/football_high_res")
 tids = [0, 1]  # List of tids to include
-ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids)
+ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids, train_bg=True)
 
 # SMPL canonical data
 smpl_server = SMPLServer().eval()
