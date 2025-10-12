@@ -60,7 +60,7 @@ def load_unidepth_pointcloud(npz_path, downsample: int = 1):
     return pts, cols
 
 # ---- Load data
-preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/initial_demo")
+preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/pushups_smpl")  # Path to preprocessing output
 tids = [0]  # List of tids to include
 ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids, train_bg=False)
 
