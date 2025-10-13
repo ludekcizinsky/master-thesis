@@ -27,7 +27,11 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
-from training.helpers.visualisation_utils import save_mask_refinement_figure, save_loss_visualization
+from training.helpers.visualisation_utils import (
+    save_mask_refinement_figure,
+    save_loss_visualization,
+    save_orbit_visualization,
+)
 
 from fused_ssim import fused_ssim
 
@@ -59,6 +63,10 @@ class Trainer:
             cloud_downsample=cfg.cloud_downsample,
             train_bg=cfg.train_bg,
         )
+        if len(self.dataset) > 0:
+            self.orbit_reference_w2c = self.dataset.pose_all[0].clone()
+        else:
+            self.orbit_reference_w2c = torch.eye(4)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
@@ -235,6 +243,23 @@ class Trainer:
                     entry["neg"],
                     out_path,
                 )
+
+        if self.cfg.visualise_cam_preds and (it_number % 500 == 0):
+            orbit_path = self.trn_viz_debug_dir / f"orbit_it{it_number:05d}.mp4"
+            try:
+                save_orbit_visualization(
+                    scene_splats=self.all_gs,
+                    smpl_params=smpl_param.detach(),
+                    lbs_weights=self.lbs_weights,
+                    base_w2c=self.orbit_reference_w2c.to(self.device),
+                    K=K[0],
+                    image_size=(H, W),
+                    device=self.device,
+                    sh_degree=self.cfg.sh_degree,
+                    out_path=orbit_path,
+                )
+            except Exception as exc:
+                print(f"--- WARN: Failed to produce orbit visualization at iter {it_number}: {exc}")
 
         # Log values
         mask_loss_scalar = float(mask_loss.item()) if self.mask_enabled else 0.0
