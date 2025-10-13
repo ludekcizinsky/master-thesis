@@ -1,17 +1,15 @@
 import hydra
 import os
 import sys
-import logging
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from hydra.core.global_hydra import GlobalHydra
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
@@ -28,7 +26,7 @@ from training.helpers.model_init import create_splats_with_optimizers
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
-from training.helpers.progressive_sam import compute_refined_masks, suppress_sam_logging
+from training.helpers.progressive_sam import ProgressiveSAMManager
 from training.helpers.visualisation_utils import save_mask_refinement_figure, save_loss_visualization
 
 from fused_ssim import fused_ssim
@@ -43,16 +41,14 @@ class Trainer:
 
         mask_cfg = getattr(cfg, "mask_refinement", None)
         mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
-        self.mask_loss_weight = float(mask_container.get("loss_weight", 0.0))
-        self.mask_alpha_threshold = float(mask_container.get("alpha_threshold", 0.3))
-        self.mask_rebuild_every = max(int(mask_container.get("rebuild_every_epochs", 10)), 1)
-        self.mask_predictor_cfg = mask_container.get("sam2", {})
-        self.mask_enabled = bool(mask_container.get("enabled", False)) and len(cfg.tids) > 0
-        self.sam_predictor = None
-        self.sam_device = None
-        self.mask_cache: dict[int, dict[str, Any]] = {}
-        self.current_epoch = 0
-        self.last_mask_rebuild_epoch = -1
+        self.progressive_sam = ProgressiveSAMManager(
+            mask_cfg=mask_container,
+            tids=list(cfg.tids),
+            device=self.device,
+            default_lbs_knn=int(cfg.lbs_knn),
+        )
+        self.mask_loss_weight = self.progressive_sam.loss_weight
+        self.mask_enabled = self.progressive_sam.enabled
 
         self.dataset = FullSceneDataset(
             Path(cfg.preprocess_dir),
@@ -100,85 +96,6 @@ class Trainer:
         else:
             self.lbs_weights = None
 
-        if self.mask_enabled:
-            self.sam_predictor = self._init_sam_predictor()
-
-    def _init_sam_predictor(self):
-
-        gh = GlobalHydra.instance()
-        if gh.is_initialized():
-            gh.clear()
-
-        from sam2.build_sam import build_sam2_hf
-        from sam2.sam2_image_predictor import SAM2ImagePredictor
-
-        sam_cfg = self.mask_predictor_cfg
-        model_id = sam_cfg.get("model_id", "facebook/sam2.1-hiera-large")
-        device_str = sam_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
-        sam_model = build_sam2_hf(model_id, device=device_str)
-        predictor = SAM2ImagePredictor(
-            sam_model,
-            mask_threshold=float(sam_cfg.get("mask_threshold", 0.0)),
-        )
-        import logging
-        logging.getLogger("sam2").setLevel(logging.ERROR)
-        logging.getLogger("sam2").propagate = False
-        self.sam_device = device_str
-        logging.getLogger("sam2").setLevel(logging.ERROR)
-        logging.getLogger("sam2").propagate = False
-        return predictor
-
-    def _rebuild_mask_cache(self) -> None:
-        if not self.mask_enabled or len(self.cfg.tids) == 0:
-            return
-
-        if self.sam_predictor is None:
-            self.sam_predictor = self._init_sam_predictor()
-
-        self.mask_cache.clear()
-
-        with torch.no_grad():
-            n_samples = len(self.dataset)
-            for i in tqdm(range(n_samples), desc=f"Rebuilding SAM mask cache (epoch {self.current_epoch})"):
-                sample = self.dataset[i]
-                fid = int(sample["fid"])
-                image_np = np.clip(sample["image"].cpu().numpy(), 0.0, 1.0)
-                image_uint8 = (image_np * 255.0).round().astype(np.uint8)
-                with suppress_sam_logging():
-                    self.sam_predictor.set_image(image_uint8)
-                    refined_results = compute_refined_masks(
-                        scene_splats=self.all_gs,
-                        smpl_params=sample["smpl_param"].to(self.device),
-                        w2c=sample["M_ext"].to(self.device),
-                        K=sample["K"].to(self.device),
-                        image_size=(int(sample["H"]), int(sample["W"])),
-                        alpha_threshold=self.mask_alpha_threshold,
-                        predictor=self.sam_predictor,
-                        predictor_cfg=self.mask_predictor_cfg,
-                        lbs_weights=self.lbs_weights,
-                        lbs_knn=int(self.cfg.lbs_knn),
-                        device=self.device,
-                    )
-
-                if not refined_results:
-                    continue
-
-                refined_tensor = torch.stack([res.refined_mask for res in refined_results], dim=0).to(self.device)
-                alpha_tensor = torch.stack([res.alpha for res in refined_results], dim=0).to(self.device)
-                initial_tensor = torch.stack([res.initial_mask for res in refined_results], dim=0).to(self.device)
-                vis_pos = [res.vis_positive_points for res in refined_results]
-                vis_neg = [res.vis_negative_points for res in refined_results]
-
-                self.mask_cache[fid] = {
-                    "refined": refined_tensor,
-                    "alpha": alpha_tensor,
-                    "initial": initial_tensor,
-                    "vis_pos": vis_pos,
-                    "vis_neg": vis_neg,
-                }
-
-        self.last_mask_rebuild_epoch = self.current_epoch
-    
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
         K = batch["K"].to(self.device)           # [B,3,3]
@@ -188,69 +105,25 @@ class Trainer:
 
         assert images.shape[0] == 1, "Mask refinement currently expects batch size 1."
         image_np = np.clip(images[0].detach().cpu().numpy(), 0.0, 1.0)
-        image_uint8 = (image_np * 255.0).round().astype(np.uint8)
         fid_tensor = batch["fid"]
         fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
 
-        if len(self.cfg.tids) > 0:
-            human_masks = torch.ones((1, len(self.cfg.tids), H, W), device=self.device, dtype=images.dtype)
-        else:
-            human_masks = torch.zeros((1, 1, H, W), device=self.device, dtype=images.dtype)
-
-        mask_loss = torch.tensor(0.0, device=self.device)
-        alpha_stack = None
-        viz_entries: List[dict[str, Any]] = []
-
-        if self.mask_enabled and len(self.cfg.tids) > 0:
-            cache_entry = self.mask_cache.get(fid)
-
-            if cache_entry is None:
-                with torch.no_grad():
-                    with suppress_sam_logging():
-                        self.sam_predictor.set_image(image_uint8)
-                        refined_results = compute_refined_masks(
-                            scene_splats=self.all_gs,
-                            smpl_params=smpl_param[0],
-                            w2c=w2c[0],
-                            K=K[0],
-                            image_size=(H, W),
-                            alpha_threshold=self.mask_alpha_threshold,
-                            predictor=self.sam_predictor,
-                            predictor_cfg=self.mask_predictor_cfg,
-                            lbs_weights=self.lbs_weights,
-                            lbs_knn=int(self.cfg.lbs_knn),
-                            device=self.device,
-                        )
-
-                if refined_results:
-                    refined_tensor = torch.stack([res.refined_mask for res in refined_results], dim=0).to(self.device)
-                    alpha_tensor = torch.stack([res.alpha for res in refined_results], dim=0).to(self.device)
-                    initial_tensor = torch.stack([res.initial_mask for res in refined_results], dim=0).to(self.device)
-                    vis_pos = [res.vis_positive_points for res in refined_results]
-                    vis_neg = [res.vis_negative_points for res in refined_results]
-                    self.mask_cache[fid] = {
-                        "refined": refined_tensor,
-                        "alpha": alpha_tensor,
-                        "initial": initial_tensor,
-                        "vis_pos": vis_pos,
-                        "vis_neg": vis_neg,
-                    }
-                    cache_entry = self.mask_cache[fid]
-
-            if cache_entry is not None:
-                refined_tensor = cache_entry["refined"]
-                alpha_tensor = cache_entry["alpha"]
-                initial_tensor = cache_entry["initial"]
-                human_masks = refined_tensor.unsqueeze(0)
-                alpha_stack = alpha_tensor
-                mask_loss = F.mse_loss(alpha_tensor, refined_tensor)
-                for idx_h in range(refined_tensor.shape[0]):
-                    viz_entries.append({
-                        "initial": initial_tensor[idx_h].detach().cpu().numpy(),
-                        "refined": refined_tensor[idx_h].detach().cpu().numpy(),
-                        "pos": cache_entry["vis_pos"][idx_h],
-                        "neg": cache_entry["vis_neg"][idx_h],
-                    })
+        mask_output = self.progressive_sam.process_batch(
+            fid=fid,
+            image=images[0],
+            smpl_params=smpl_param[0],
+            w2c=w2c[0],
+            K=K[0],
+            scene_splats=self.all_gs,
+            lbs_weights=self.lbs_weights,
+            device=self.device,
+            image_size=(H, W),
+            lbs_knn=int(self.cfg.lbs_knn),
+        )
+        human_masks = mask_output.human_masks
+        mask_loss = mask_output.mask_loss
+        alpha_stack = mask_output.alpha_stack
+        viz_entries = mask_output.viz_entries
 
         # Forward pass: render
         colors, alphas, info = render_splats(
@@ -389,17 +262,15 @@ class Trainer:
 
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
             while iteration < iters:
-                self.current_epoch = epoch
-                if (
-                    self.mask_enabled
-                    and len(self.cfg.tids) > 0
-                    and (
-                        epoch == 0
-                        or self.last_mask_rebuild_epoch < 0
-                        or (epoch - self.last_mask_rebuild_epoch) >= self.mask_rebuild_every
+                if self.progressive_sam.should_rebuild(epoch):
+                    self.progressive_sam.rebuild_cache(
+                        self.dataset,
+                        self.all_gs,
+                        self.lbs_weights,
+                        epoch=epoch,
+                        lbs_knn=int(self.cfg.lbs_knn),
+                        device=self.device,
                     )
-                ):
-                    self._rebuild_mask_cache()
 
                 for batch in self.loader:
                     iteration += 1

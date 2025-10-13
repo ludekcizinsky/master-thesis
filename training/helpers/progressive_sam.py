@@ -8,6 +8,9 @@ import torch.nn.functional as F
 import numpy as np
 from torch import Tensor
 import logging
+from tqdm import tqdm
+
+from hydra.core.global_hydra import GlobalHydra
 
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
@@ -38,6 +41,23 @@ class RefinedMaskResult:
 
 if TYPE_CHECKING:
     from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+
+@dataclass
+class MaskCacheEntry:
+    refined: Tensor
+    alpha: Tensor
+    initial: Tensor
+    vis_pos: List[Optional[np.ndarray]]
+    vis_neg: List[Optional[np.ndarray]]
+
+
+@dataclass
+class ProgressiveSamBatchOutput:
+    human_masks: Tensor
+    mask_loss: Tensor
+    alpha_stack: Optional[Tensor]
+    viz_entries: List[Dict[str, Any]]
 
 
 @contextmanager
@@ -538,3 +558,235 @@ def compute_refined_masks(
             max_points=int(predictor_cfg.get("max_points", 50)),
         )
     return refined
+
+
+class ProgressiveSAMManager:
+    def __init__(
+        self,
+        mask_cfg: Optional[Dict[str, Any]],
+        tids: Sequence[int],
+        device: torch.device,
+        default_lbs_knn: int,
+    ) -> None:
+        mask_cfg = mask_cfg or {}
+        self.tids = list(tids)
+        self.device = device
+        self.default_lbs_knn = int(default_lbs_knn)
+
+        self.enabled = bool(mask_cfg.get("enabled", False)) and len(self.tids) > 0
+        self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
+        self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
+        self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
+        self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
+
+        self.predictor: Optional["SAM2ImagePredictor"] = None
+        self.sam_device: Optional[str] = None
+        self.mask_cache: Dict[int, MaskCacheEntry] = {}
+        self.last_rebuild_epoch: int = -1
+
+    def should_rebuild(self, epoch: int) -> bool:
+        if not self.enabled:
+            return False
+        if epoch == 0 or self.last_rebuild_epoch < 0:
+            return True
+        return (epoch - self.last_rebuild_epoch) >= self.rebuild_every_epochs
+
+    def clear_cache(self) -> None:
+        self.mask_cache.clear()
+        self.last_rebuild_epoch = -1
+
+    def rebuild_cache(
+        self,
+        dataset,
+        scene_splats: SceneSplats,
+        lbs_weights: Optional[Sequence[Tensor]],
+        *,
+        epoch: int,
+        lbs_knn: Optional[int] = None,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        if not self.enabled:
+            return
+
+        predictor = self._ensure_predictor()
+        if predictor is None:
+            return
+
+        target_device = device or self.device
+        effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
+        self.mask_cache.clear()
+
+        n_samples = len(dataset)
+        with torch.no_grad():
+            for idx in tqdm(range(n_samples), desc=f"Rebuilding SAM mask cache (epoch {epoch})"):
+                sample = dataset[idx]
+                fid = int(sample["fid"])
+                image_tensor = sample["image"]
+                image_np = np.clip(image_tensor.detach().cpu().numpy(), 0.0, 1.0)
+                image_uint8 = (image_np * 255.0).round().astype(np.uint8)
+
+                with suppress_sam_logging():
+                    predictor.set_image(image_uint8)
+                    refined_results = compute_refined_masks(
+                        scene_splats=scene_splats,
+                        smpl_params=sample["smpl_param"].to(target_device),
+                        w2c=sample["M_ext"].to(target_device),
+                        K=sample["K"].to(target_device),
+                        image_size=(int(sample["H"]), int(sample["W"])),
+                        alpha_threshold=self.alpha_threshold,
+                        predictor=predictor,
+                        predictor_cfg=self.predictor_cfg,
+                        lbs_weights=lbs_weights,
+                        lbs_knn=effective_knn,
+                        device=target_device,
+                    )
+
+                entry = self._build_cache_entry(refined_results, target_device)
+                if entry is not None:
+                    self.mask_cache[fid] = entry
+
+        self.last_rebuild_epoch = epoch
+
+    def process_batch(
+        self,
+        *,
+        fid: int,
+        image: Tensor,
+        smpl_params: Tensor,
+        w2c: Tensor,
+        K: Tensor,
+        scene_splats: SceneSplats,
+        lbs_weights: Optional[Sequence[Tensor]],
+        device: torch.device,
+        image_size: Tuple[int, int],
+        lbs_knn: Optional[int] = None,
+    ) -> ProgressiveSamBatchOutput:
+        H, W = image_size
+        dtype = image.dtype
+        batch_device = device
+
+        if len(self.tids) > 0:
+            human_masks = torch.ones((1, len(self.tids), H, W), device=batch_device, dtype=dtype)
+        else:
+            human_masks = torch.zeros((1, 1, H, W), device=batch_device, dtype=dtype)
+
+        mask_loss = torch.tensor(0.0, device=batch_device)
+        alpha_stack: Optional[Tensor] = None
+        viz_entries: List[Dict[str, Any]] = []
+
+        if not self.enabled:
+            return ProgressiveSamBatchOutput(
+                human_masks=human_masks,
+                mask_loss=mask_loss,
+                alpha_stack=alpha_stack,
+                viz_entries=viz_entries,
+            )
+
+        cache_entry = self.mask_cache.get(fid)
+
+        if cache_entry is None:
+            predictor = self._ensure_predictor()
+            if predictor is None:
+                return ProgressiveSamBatchOutput(
+                    human_masks=human_masks,
+                    mask_loss=mask_loss,
+                    alpha_stack=alpha_stack,
+                    viz_entries=viz_entries,
+                )
+
+            image_np = np.clip(image.detach().cpu().numpy(), 0.0, 1.0)
+            image_uint8 = (image_np * 255.0).round().astype(np.uint8)
+            effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
+
+            with suppress_sam_logging():
+                predictor.set_image(image_uint8)
+                refined_results = compute_refined_masks(
+                    scene_splats=scene_splats,
+                    smpl_params=smpl_params.to(batch_device),
+                    w2c=w2c.to(batch_device),
+                    K=K.to(batch_device),
+                    image_size=(H, W),
+                    alpha_threshold=self.alpha_threshold,
+                    predictor=predictor,
+                    predictor_cfg=self.predictor_cfg,
+                    lbs_weights=lbs_weights,
+                    lbs_knn=effective_knn,
+                    device=batch_device,
+                )
+
+            cache_entry = self._build_cache_entry(refined_results, batch_device)
+            if cache_entry is not None:
+                self.mask_cache[fid] = cache_entry
+
+        if cache_entry is not None:
+            human_masks = cache_entry.refined.unsqueeze(0)
+            alpha_stack = cache_entry.alpha
+            mask_loss = F.mse_loss(cache_entry.alpha, cache_entry.refined)
+
+            for idx_h in range(cache_entry.refined.shape[0]):
+                viz_entries.append(
+                    {
+                        "initial": cache_entry.initial[idx_h].detach().cpu().numpy(),
+                        "refined": cache_entry.refined[idx_h].detach().cpu().numpy(),
+                        "pos": cache_entry.vis_pos[idx_h],
+                        "neg": cache_entry.vis_neg[idx_h],
+                    }
+                )
+
+        return ProgressiveSamBatchOutput(
+            human_masks=human_masks,
+            mask_loss=mask_loss,
+            alpha_stack=alpha_stack,
+            viz_entries=viz_entries,
+        )
+
+    def _build_cache_entry(
+        self,
+        refined_results: Sequence[RefinedMaskResult],
+        device: torch.device,
+    ) -> Optional[MaskCacheEntry]:
+        if not refined_results:
+            return None
+
+        refined_tensor = torch.stack([res.refined_mask for res in refined_results], dim=0).to(device)
+        alpha_tensor = torch.stack([res.alpha for res in refined_results], dim=0).to(device)
+        initial_tensor = torch.stack([res.initial_mask for res in refined_results], dim=0).to(device)
+        vis_pos = [res.vis_positive_points for res in refined_results]
+        vis_neg = [res.vis_negative_points for res in refined_results]
+
+        return MaskCacheEntry(
+            refined=refined_tensor,
+            alpha=alpha_tensor,
+            initial=initial_tensor,
+            vis_pos=vis_pos,
+            vis_neg=vis_neg,
+        )
+
+    def _ensure_predictor(self) -> Optional["SAM2ImagePredictor"]:
+        if not self.enabled:
+            return None
+        if self.predictor is not None:
+            return self.predictor
+
+        gh = GlobalHydra.instance()
+        if gh.is_initialized():
+            gh.clear()
+
+        from sam2.build_sam import build_sam2_hf
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        sam_cfg = self.predictor_cfg
+        model_id = sam_cfg.get("model_id", "facebook/sam2.1-hiera-large")
+        device_str = sam_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        sam_model = build_sam2_hf(model_id, device=device_str)
+        predictor = SAM2ImagePredictor(
+            sam_model,
+            mask_threshold=float(sam_cfg.get("mask_threshold", 0.0)),
+        )
+
+        logging.getLogger("sam2").setLevel(logging.ERROR)
+        logging.getLogger("sam2").propagate = False
+
+        self.sam_device = device_str
+        self.predictor = predictor
+        return self.predictor
