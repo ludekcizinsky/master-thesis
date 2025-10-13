@@ -37,23 +37,17 @@ gs_refine_start_iter: 500 # default is normally 500
 l1_lambda: 0.8
 # SSIM loss weight 
 ssim_lambda: 0.2
-# Opacity loss weight
-opa_lambda: 0.01 
-opa_free_radius: 0.01  # meters tolerated w/o penalty
 # Opacity and scale regularization weights
-opacity_reg: 0.05
-scale_reg: 0.05
-# means anchor (ma)
-ma_lambda: 1.0          # strength
-ma_free_radius: 0.001   # meters tolerated w/o penalty
+opacity_reg: 0.001
+scale_reg: 0.001
 # k-nearest neighbors for skinning weights computation
 lbs_knn: 30
 
 mask_refinement:
   enabled: true
   alpha_threshold: 0.3
-  loss_weight: 0.005
-  rebuild_every_epochs: 50
+  loss_weight: 0.000
+  rebuild_every_epochs: 1000
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda
