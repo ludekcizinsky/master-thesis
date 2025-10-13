@@ -21,7 +21,7 @@ import wandb
 
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, save_loss_visualization
+from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights
 from training.helpers.dataset import FullSceneDataset
 from training.helpers.model_init import create_splats_with_optimizers
@@ -29,7 +29,7 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
 from training.helpers.progressive_sam import compute_refined_masks, suppress_sam_logging
-from training.helpers.visualisation_utils import save_mask_refinement_figure
+from training.helpers.visualisation_utils import save_mask_refinement_figure, save_loss_visualization
 
 from fused_ssim import fused_ssim
 
@@ -135,11 +135,12 @@ class Trainer:
         if self.sam_predictor is None:
             self.sam_predictor = self._init_sam_predictor()
 
-        print(f"--- FYI: rebuilding SAM mask cache for epoch {self.current_epoch}")
         self.mask_cache.clear()
 
         with torch.no_grad():
-            for sample in self.dataset:
+            n_samples = len(self.dataset)
+            for i in tqdm(range(n_samples), desc=f"Rebuilding SAM mask cache (epoch {self.current_epoch})"):
+                sample = self.dataset[i]
                 fid = int(sample["fid"])
                 image_np = np.clip(sample["image"].cpu().numpy(), 0.0, 1.0)
                 image_uint8 = (image_np * 255.0).round().astype(np.uint8)

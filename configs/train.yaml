@@ -42,7 +42,7 @@ opa_lambda: 0.01
 opa_free_radius: 0.01  # meters tolerated w/o penalty
 # Opacity and scale regularization weights
 opacity_reg: 0.05
-scale_reg: 0.1
+scale_reg: 0.05
 # means anchor (ma)
 ma_lambda: 1.0          # strength
 ma_free_radius: 0.001   # meters tolerated w/o penalty
@@ -52,8 +52,8 @@ lbs_knn: 30
 mask_refinement:
   enabled: true
   alpha_threshold: 0.3
-  loss_weight: 0.05
-  rebuild_every_epochs: 10
+  loss_weight: 0.005
+  rebuild_every_epochs: 50
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda
