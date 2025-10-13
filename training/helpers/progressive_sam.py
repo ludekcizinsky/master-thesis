@@ -1,6 +1,7 @@
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import torch
@@ -567,11 +568,14 @@ class ProgressiveSAMManager:
         tids: Sequence[int],
         device: torch.device,
         default_lbs_knn: int,
+        preprocess_dir: Path,
     ) -> None:
         mask_cfg = mask_cfg or {}
         self.tids = list(tids)
         self.device = device
         self.default_lbs_knn = int(default_lbs_knn)
+        self.preprocess_dir = Path(preprocess_dir)
+        self.disk_cache_dir = self.preprocess_dir / "progressive_sam_masks"
 
         self.enabled = bool(mask_cfg.get("enabled", False)) and len(self.tids) > 0
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
@@ -595,6 +599,75 @@ class ProgressiveSAMManager:
         self.mask_cache.clear()
         self.last_rebuild_epoch = -1
 
+    def _cache_file_path(self, fid: int) -> Path:
+        return self.disk_cache_dir / f"mask_{fid:04d}.pt"
+
+    @staticmethod
+    def _fid_from_path(path: Path) -> int:
+        stem = path.stem
+        if stem.startswith("mask_"):
+            suffix = stem.split("_", 1)[1]
+            try:
+                return int(suffix)
+            except ValueError:
+                pass
+        raise ValueError(f"Unable to infer frame id from {path}")
+
+    def _load_cache_from_disk(self, device: torch.device) -> bool:
+        if not self.disk_cache_dir.exists():
+            return False
+
+        files = sorted(self.disk_cache_dir.glob("mask_*.pt"))
+        if not files:
+            return False
+
+        temp_cache: Dict[int, MaskCacheEntry] = {}
+        for file_path in files:
+            try:
+                data = torch.load(file_path, map_location=device, weights_only=False)
+            except Exception:
+                return False
+
+            fid = int(data.get("fid", self._fid_from_path(file_path)))
+            refined = data.get("refined")
+            alpha = data.get("alpha")
+            initial = data.get("initial")
+            if refined is None or alpha is None or initial is None:
+                return False
+
+            entry = MaskCacheEntry(
+                refined=refined.detach().to(device),
+                alpha=alpha.detach().to(device),
+                initial=initial.detach().to(device),
+                vis_pos=data.get("vis_pos", []),
+                vis_neg=data.get("vis_neg", []),
+            )
+            temp_cache[fid] = entry
+
+        if not temp_cache:
+            return False
+
+        self.mask_cache = temp_cache
+        print(f"--- FYI: Loaded SAM masks from {self.disk_cache_dir} ({len(temp_cache)} frames).")
+        return True
+
+    def _save_cache_to_disk(self) -> None:
+        if not self.disk_cache_dir.exists():
+            self.disk_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        for fid, entry in self.mask_cache.items():
+            payload = {
+                "fid": int(fid),
+                "refined": entry.refined.detach().cpu(),
+                "alpha": entry.alpha.detach().cpu(),
+                "initial": entry.initial.detach().cpu(),
+                "vis_pos": entry.vis_pos,
+                "vis_neg": entry.vis_neg,
+            }
+            torch.save(payload, self._cache_file_path(int(fid)))
+
+        print(f"--- FYI: Saved SAM masks to {self.disk_cache_dir} ({len(self.mask_cache)} frames).")
+
     def rebuild_cache(
         self,
         dataset,
@@ -608,11 +681,12 @@ class ProgressiveSAMManager:
         if not self.enabled:
             return
 
-        predictor = self._ensure_predictor()
-        if predictor is None:
+        target_device = device or self.device
+        if epoch == 0 and self._load_cache_from_disk(target_device):
+            self.last_rebuild_epoch = epoch
             return
 
-        target_device = device or self.device
+        predictor = self._ensure_predictor()
         effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
         self.mask_cache.clear()
 
@@ -626,7 +700,8 @@ class ProgressiveSAMManager:
                 image_uint8 = (image_np * 255.0).round().astype(np.uint8)
 
                 with suppress_sam_logging():
-                    predictor.set_image(image_uint8)
+                    if predictor is not None:
+                        predictor.set_image(image_uint8)
                     refined_results = compute_refined_masks(
                         scene_splats=scene_splats,
                         smpl_params=sample["smpl_param"].to(target_device),
@@ -644,6 +719,9 @@ class ProgressiveSAMManager:
                 entry = self._build_cache_entry(refined_results, target_device)
                 if entry is not None:
                     self.mask_cache[fid] = entry
+
+        if epoch == 0 and self.mask_cache:
+            self._save_cache_to_disk()
 
         self.last_rebuild_epoch = epoch
 

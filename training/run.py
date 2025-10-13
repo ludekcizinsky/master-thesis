@@ -39,6 +39,8 @@ class Trainer:
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         print(f"--- FYI: using device {self.device}")
 
+        preprocess_path = Path(cfg.preprocess_dir)
+
         mask_cfg = getattr(cfg, "mask_refinement", None)
         mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
         self.progressive_sam = ProgressiveSAMManager(
@@ -46,12 +48,13 @@ class Trainer:
             tids=list(cfg.tids),
             device=self.device,
             default_lbs_knn=int(cfg.lbs_knn),
+            preprocess_dir=preprocess_path,
         )
         self.mask_loss_weight = self.progressive_sam.loss_weight
         self.mask_enabled = self.progressive_sam.enabled
 
         self.dataset = FullSceneDataset(
-            Path(cfg.preprocess_dir),
+            preprocess_path,
             cfg.tids,  # list of tids to train on
             cloud_downsample=cfg.cloud_downsample,
             train_bg=cfg.train_bg,
