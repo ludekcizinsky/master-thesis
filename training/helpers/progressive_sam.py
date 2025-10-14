@@ -613,6 +613,8 @@ class ProgressiveSAMManager:
         self.reliable_frames: List[int] = []
         self.unreliable_frames: List[int] = []
         self.iou_threshold: Optional[float] = None
+        self._reliable_frame_set: set[int] = set()
+        self._unreliable_frame_set: set[int] = set()
 
     def should_rebuild(self, epoch: int) -> bool:
         if not self.enabled:
@@ -627,6 +629,8 @@ class ProgressiveSAMManager:
         self.reliable_frames = []
         self.unreliable_frames = []
         self.iou_threshold = None
+        self._reliable_frame_set.clear()
+        self._unreliable_frame_set.clear()
         self.last_rebuild_epoch = -1
 
     def _cache_file_path(self, fid: int) -> Path:
@@ -739,6 +743,8 @@ class ProgressiveSAMManager:
         unreliable.sort()
         self.reliable_frames = reliable
         self.unreliable_frames = unreliable
+        self._reliable_frame_set = set(reliable)
+        self._unreliable_frame_set = set(unreliable)
 
         print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
@@ -761,6 +767,8 @@ class ProgressiveSAMManager:
         self.reliable_frames = []
         self.unreliable_frames = []
         self.iou_threshold = None
+        self._reliable_frame_set.clear()
+        self._unreliable_frame_set.clear()
         if epoch == 0 and self._load_cache_from_disk(target_device):
             self.last_rebuild_epoch = epoch
             return
@@ -804,6 +812,17 @@ class ProgressiveSAMManager:
 
         self.last_rebuild_epoch = epoch
         self._update_reliability_stats()
+
+    def is_frame_reliable(self, fid: int) -> bool:
+        if not self.enabled or self.iou_threshold is None:
+            return False
+        return int(fid) in self._reliable_frame_set
+
+    def get_reliability_ratio(self) -> float:
+        total = len(self._reliable_frame_set) + len(self._unreliable_frame_set)
+        if total == 0:
+            return 0.0
+        return len(self._reliable_frame_set) / total
 
     def process_batch(
         self,

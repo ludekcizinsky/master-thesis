@@ -271,7 +271,7 @@ def init_optimizers(scene_splats, cfg):
 def init_densification_strategy(scene_splats: SceneSplats, scene_optimisers: SceneSplatsOptimizers, cfg) -> SceneSplatsStrategies:
 
     def _init_single_strategy(splats, optimizers):
-        strategy = DefaultStrategy(verbose=True)
+        strategy = DefaultStrategy(verbose=False)
         strategy.refine_stop_iter = cfg.gs_refine_stop_iter
         strategy.refine_every = cfg.gs_refine_every
         strategy.refine_start_iter = cfg.gs_refine_start_iter

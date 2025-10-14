@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.nn import Parameter
 
 import wandb
 
@@ -71,6 +72,29 @@ class Trainer:
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
+        # Prepare per-frame SMPL parameters for optimization
+        self.smpl_params: Dict[int, Parameter] = {}
+        smpl_param_list: List[Parameter] = []
+        if len(cfg.tids) > 0:
+            scale_value = float(self.dataset.scale)
+            for fid in range(len(self.dataset)):
+                param_tensor = torch.zeros((len(cfg.tids), 86), dtype=torch.float32)
+                for tid_idx, tid in enumerate(cfg.tids):
+                    param_tensor[tid_idx, 0] = scale_value
+                    param_tensor[tid_idx, 1:4] = torch.from_numpy(self.dataset.trans[fid][tid] * scale_value).float()
+                    param_tensor[tid_idx, 4:76] = torch.from_numpy(self.dataset.poses[fid][tid]).float()
+                    param_tensor[tid_idx, 76:] = torch.from_numpy(self.dataset.shape[tid]).float()
+                param = Parameter(param_tensor.to(self.device))
+                self.smpl_params[fid] = param
+                smpl_param_list.append(param)
+
+        smpl_lr = float(getattr(cfg, "smpl_lr", 1e-4))
+        self.smpl_param_optimizer = (
+            torch.optim.Adam(smpl_param_list, lr=smpl_lr) if smpl_param_list else None
+        )
+        if self.smpl_param_optimizer is not None:
+            self.smpl_param_optimizer.zero_grad(set_to_none=True)
+
         if internal_run_id is not None:
             run_name, run_id = internal_run_id.split("_")
             self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
@@ -90,6 +114,8 @@ class Trainer:
             reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
             self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
+
+        self.current_epoch = 0
 
         # Define model and optimizers
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
@@ -113,17 +139,28 @@ class Trainer:
         K = batch["K"].to(self.device)           # [B,3,3]
         w2c = batch["M_ext"].to(self.device)     # [B,4,4]
         H, W = batch["image"].shape[1:3]
-        smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
-
         assert images.shape[0] == 1, "Mask refinement currently expects batch size 1."
         image_np = np.clip(images[0].detach().cpu().numpy(), 0.0, 1.0)
         fid_tensor = batch["fid"]
         fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
 
+        smpl_param_param = self.smpl_params.get(fid)
+        if smpl_param_param is None:
+            base_param = batch["smpl_param"][0].to(self.device)
+            smpl_param_param = Parameter(base_param)
+            self.smpl_params[fid] = smpl_param_param
+            if self.smpl_param_optimizer is not None:
+                self.smpl_param_optimizer.add_param_group({"params": [smpl_param_param]})
+                self.smpl_param_optimizer.zero_grad(set_to_none=True)
+
+        frame_reliable = self.progressive_sam.is_frame_reliable(fid)
+        smpl_param_batch = smpl_param_param.unsqueeze(0)
+        smpl_param_forward = smpl_param_batch if frame_reliable else smpl_param_batch.detach()
+
         mask_output = self.progressive_sam.process_batch(
             fid=fid,
             image=images[0],
-            smpl_params=smpl_param[0],
+            smpl_params=smpl_param_forward[0],
             w2c=w2c[0],
             K=K[0],
             scene_splats=self.all_gs,
@@ -139,7 +176,7 @@ class Trainer:
 
         # Forward pass: render
         colors, alphas, info = render_splats(
-            self.all_gs, smpl_param, 
+            self.all_gs, smpl_param_forward, 
             self.lbs_weights, w2c, K, H, W, 
             sh_degree=self.cfg.sh_degree
         )
@@ -170,7 +207,13 @@ class Trainer:
 
         # - Combined 
         loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
-        if self.mask_enabled and alpha_stack is not None and self.mask_loss_weight > 0.0:
+        apply_mask_loss = (
+            self.mask_enabled
+            and alpha_stack is not None
+            and self.mask_loss_weight > 0.0
+            and self.progressive_sam.last_rebuild_epoch == self.current_epoch
+        )
+        if apply_mask_loss:
             loss = loss + self.mask_loss_weight * mask_loss
 
         # - Add Regularizers
@@ -202,6 +245,11 @@ class Trainer:
             for opt in optimizers.values():
                 opt.step()
                 opt.zero_grad(set_to_none=True)
+
+        if self.smpl_param_optimizer is not None:
+            if frame_reliable:
+                self.smpl_param_optimizer.step()
+            self.smpl_param_optimizer.zero_grad(set_to_none=True)
 
 
         # Adaptive densification step
@@ -250,7 +298,7 @@ class Trainer:
             try:
                 save_orbit_visualization(
                     scene_splats=self.all_gs,
-                    smpl_params=smpl_param.detach(),
+                    smpl_params=smpl_param_forward.detach(),
                     lbs_weights=self.lbs_weights,
                     base_w2c=self.orbit_reference_w2c.to(self.device),
                     K=K[0],
@@ -263,12 +311,10 @@ class Trainer:
                 print(f"--- WARN: Failed to produce orbit visualization at iter {it_number}: {exc}")
 
         # Log values
-        mask_loss_scalar = float(mask_loss.item()) if self.mask_enabled else 0.0
-        reliability_ratio = 0.0
+        mask_loss_scalar = float(mask_loss.item()) if apply_mask_loss else 0.0
+        reliability_pct = 0.0
         if self.mask_enabled:
-            total_frames = len(self.progressive_sam.reliable_frames) + len(self.progressive_sam.unreliable_frames)
-            if total_frames > 0:
-                reliability_ratio = len(self.progressive_sam.reliable_frames) / total_frames
+            reliability_pct = 100.0 * self.progressive_sam.get_reliability_ratio()
 
         log_values = {
             "loss/combined": float(loss.item()),
@@ -277,7 +323,7 @@ class Trainer:
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
             "loss/mask_refinement": mask_loss_scalar,
-            "mask/reliability_ratio": reliability_ratio,
+            "mask/reliable_pct": reliability_pct,
         }
         total_n_gs = 0
         for i, gs in enumerate(self.all_gs.dynamic):
@@ -297,6 +343,7 @@ class Trainer:
 
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
             while iteration < iters:
+                self.current_epoch = epoch
                 if self.progressive_sam.should_rebuild(epoch):
                     self.progressive_sam.rebuild_cache(
                         self.dataset,
@@ -316,6 +363,7 @@ class Trainer:
                     pbar.set_postfix({
                         "loss": f"{logs['loss/combined']:.4f}",
                         "epoch": epoch,
+                        "n_gs": logs.get("splats/num_gs_total", 0),
                     })
 
                     # Log to wandb

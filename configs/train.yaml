@@ -45,9 +45,9 @@ lbs_knn: 30
 
 mask_refinement:
   enabled: true
-  alpha_threshold: 0.3
-  loss_weight: 0.000
-  rebuild_every_epochs: 1000
+  alpha_threshold: 0.5
+  loss_weight: 0.01
+  rebuild_every_epochs: 50
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda
@@ -69,6 +69,8 @@ opacities_lr: 5e-2
 sh_degree: 3 
 sh0_lr: 2.5e-3 
 shN_lr: 1.25e-4 
+# LR for SMPL pose parameters
+smpl_lr: 1.0e-3
 
 
 # --- Wandb logging settings
