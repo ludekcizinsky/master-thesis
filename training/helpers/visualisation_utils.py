@@ -221,6 +221,30 @@ def _w2c_to_camera_center(w2c: torch.Tensor) -> torch.Tensor:
     return (-R.T @ t).clone()
 
 
+def _project_world_to_pixels(
+    points_world: torch.Tensor,
+    w2c: torch.Tensor,
+    K: torch.Tensor,
+) -> np.ndarray:
+    if points_world.numel() == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+
+    device = points_world.device
+    cam = _transform_points_camera(w2c.to(device), points_world)
+    if cam.numel() == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+
+    positive_mask = cam[:, 2] > 1e-6
+    if not positive_mask.any():
+        return np.zeros((0, 2), dtype=np.float32)
+
+    cam = cam[positive_mask]
+    K_3 = K[:3, :3].to(device)
+    uvw = (K_3 @ cam.t()).t()
+    uv = uvw[:, :2] / uvw[:, 2:3]
+    return uv.detach().cpu().numpy()
+
+
 def _create_orbit_w2c_matrices(
     center: torch.Tensor,
     num_frames: int,
@@ -362,3 +386,113 @@ def save_orbit_visualization(
     )
 
     return out_path
+
+
+@torch.no_grad()
+def save_smpl_pose_overlay(
+    *,
+    image_np: np.ndarray,
+    scene_splats: SceneSplats,
+    initial_params: torch.Tensor,
+    current_params: torch.Tensor,
+    w2c: torch.Tensor,
+    K: torch.Tensor,
+    device: torch.device,
+    out_path: Path,
+) -> Path:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    img_uint8 = np.clip(image_np, 0, 255).astype(np.uint8)
+
+    init_vertices = _pose_body_vertices(scene_splats, initial_params, device)
+    curr_vertices = _pose_body_vertices(scene_splats, current_params, device)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax.imshow(img_uint8)
+
+    init_label_added = False
+    curr_label_added = False
+
+    for verts in init_vertices:
+        if verts.numel() == 0:
+            continue
+        uv = _project_world_to_pixels(verts, w2c, K)
+        if uv.size == 0:
+            continue
+        ax.scatter(
+            uv[:, 0],
+            uv[:, 1],
+            s=0.75,
+            c="#ff4d4d",
+            alpha=0.25,
+            linewidths=0,
+            label="Initial pose" if not init_label_added else None,
+        )
+        init_label_added = True
+
+    for verts in curr_vertices:
+        if verts.numel() == 0:
+            continue
+        uv = _project_world_to_pixels(verts, w2c, K)
+        if uv.size == 0:
+            continue
+        ax.scatter(
+            uv[:, 0],
+            uv[:, 1],
+            s=0.5,
+            c="#32cd32",
+            alpha=0.25,
+            linewidths=0,
+            label="Current pose" if not curr_label_added else None,
+        )
+        curr_label_added = True
+
+    if init_label_added or curr_label_added:
+        legend = ax.legend(loc="upper right")
+        for handle in legend.legend_handles:
+            handle.set_sizes([50])
+
+    ax.set_axis_off()
+    fig.tight_layout(pad=0.1)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
+@torch.no_grad()
+def save_pose_progress_overlay(
+    *,
+    dataset,
+    scene_splats: SceneSplats,
+    frame_id: int,
+    initial_params_list: Sequence[torch.Tensor],
+    current_params: torch.Tensor,
+    device: torch.device,
+    epoch: int,
+    out_dir: Path,
+) -> Path:
+    sample = dataset[frame_id]
+
+    image_np = sample["image"].cpu().numpy()
+    image_np = np.clip(image_np, 0.0, 1.0)
+    image_np = (image_np * 255.0).astype(np.uint8)
+    image_np = np.ascontiguousarray(image_np)
+
+    K = sample["K"].to(device)
+    w2c = sample["M_ext"].to(device)
+
+    initial_params = torch.stack(initial_params_list, dim=0).to(device, dtype=torch.float32)
+    current_params = current_params.detach().to(device, dtype=torch.float32)
+
+    out_path = Path(out_dir) / f"pose_overlay_epoch{epoch:03d}_fid{frame_id:04d}.png"
+    return save_smpl_pose_overlay(
+        image_np=image_np,
+        scene_splats=scene_splats,
+        initial_params=initial_params,
+        current_params=current_params,
+        w2c=w2c,
+        K=K,
+        device=device,
+        out_path=out_path,
+    )

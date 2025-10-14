@@ -33,6 +33,7 @@ from training.helpers.visualisation_utils import (
     save_mask_refinement_figure,
     save_loss_visualization,
     save_orbit_visualization,
+    save_pose_progress_overlay,
 )
 
 from fused_ssim import fused_ssim
@@ -116,6 +117,10 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         self.current_epoch = 0
+        self.smpl_snapshot_frame: Optional[int] = None
+        self.smpl_snapshot_params: Optional[List[torch.Tensor]] = None
+        self.pose_overlay_period = 5
+        self.last_pose_overlay_epoch: int = -1
 
         # Define model and optimizers
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
@@ -268,7 +273,7 @@ class Trainer:
                 new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
                 self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
 
-        should_log_epoch = self.mask_enabled and (self.progressive_sam.last_rebuild_epoch == self.current_epoch)
+        should_log_epoch = self.mask_enabled and self.current_epoch % 5 == 0
         should_log_frame = int(fid) == 35
         if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
             save_loss_visualization(
@@ -305,6 +310,30 @@ class Trainer:
                 )
             except Exception as exc:
                 print(f"--- WARN: Failed to produce orbit visualization for epoch {self.current_epoch}, fid {fid}: {exc}")
+
+        pose_overlay_condition = (
+            self.cfg.visualise_cam_preds
+            and self.smpl_snapshot_frame is not None
+            and self.smpl_snapshot_params is not None
+            and fid == self.smpl_snapshot_frame
+            and self.current_epoch % self.pose_overlay_period == 0
+            and self.current_epoch != self.last_pose_overlay_epoch
+        )
+        if pose_overlay_condition:
+            try:
+                save_pose_progress_overlay(
+                    dataset=self.dataset,
+                    scene_splats=self.all_gs,
+                    frame_id=self.smpl_snapshot_frame,
+                    initial_params_list=self.smpl_snapshot_params,
+                    current_params=self.smpl_params[self.smpl_snapshot_frame],
+                    device=self.device,
+                    epoch=self.current_epoch,
+                    out_dir=self.trn_viz_debug_dir,
+                )
+                self.last_pose_overlay_epoch = self.current_epoch
+            except Exception as exc:
+                print(f"--- WARN: Failed to produce SMPL pose overlay for epoch {self.current_epoch}, fid {fid}: {exc}")
 
         # Log values
         mask_loss_scalar = float(mask_loss.item()) if apply_mask_loss else 0.0
@@ -349,6 +378,12 @@ class Trainer:
                         lbs_knn=int(self.cfg.lbs_knn),
                         device=self.device,
                     )
+                    snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
+                    if snapshot_fid is not None and snapshot_fid in self.smpl_params:
+                        self.smpl_snapshot_frame = snapshot_fid
+                        param_tensor = self.smpl_params[snapshot_fid].detach().clone()
+                        self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
+                        self.last_pose_overlay_epoch = -1
 
                 for batch in self.loader:
                     iteration += 1

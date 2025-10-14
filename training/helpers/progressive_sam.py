@@ -824,6 +824,21 @@ class ProgressiveSAMManager:
             return 0.0
         return len(self._reliable_frame_set) / total
 
+    def get_lowest_iou_reliable_frame(self) -> Optional[int]:
+        if not self.reliable_frames:
+            return None
+        lowest_fid = None
+        lowest_value = float("inf")
+        for fid in self.reliable_frames:
+            scores = self.frame_iou_scores.get(fid)
+            if not scores:
+                continue
+            avg_iou = float(np.mean(np.asarray(scores, dtype=np.float32)))
+            if avg_iou < lowest_value:
+                lowest_value = avg_iou
+                lowest_fid = fid
+        return lowest_fid
+
     def process_batch(
         self,
         *,
