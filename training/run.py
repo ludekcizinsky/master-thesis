@@ -7,9 +7,10 @@ from omegaconf import DictConfig, OmegaConf
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -263,6 +264,11 @@ class Trainer:
 
         # Log values
         mask_loss_scalar = float(mask_loss.item()) if self.mask_enabled else 0.0
+        reliability_ratio = 0.0
+        if self.mask_enabled:
+            total_frames = len(self.progressive_sam.reliable_frames) + len(self.progressive_sam.unreliable_frames)
+            if total_frames > 0:
+                reliability_ratio = len(self.progressive_sam.reliable_frames) / total_frames
 
         log_values = {
             "loss/combined": float(loss.item()),
@@ -271,6 +277,7 @@ class Trainer:
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
             "loss/mask_refinement": mask_loss_scalar,
+            "mask/reliability_ratio": reliability_ratio,
         }
         total_n_gs = 0
         for i, gs in enumerate(self.all_gs.dynamic):

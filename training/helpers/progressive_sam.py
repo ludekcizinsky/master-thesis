@@ -51,6 +51,7 @@ class MaskCacheEntry:
     initial: Tensor
     vis_pos: List[Optional[np.ndarray]]
     vis_neg: List[Optional[np.ndarray]]
+    iou_scores: List[float]
 
 
 @dataclass
@@ -59,6 +60,7 @@ class ProgressiveSamBatchOutput:
     mask_loss: Tensor
     alpha_stack: Optional[Tensor]
     viz_entries: List[Dict[str, Any]]
+    iou_scores: Optional[List[float]] = None
 
 
 @contextmanager
@@ -366,6 +368,26 @@ def _prepare_point_arrays(
     return point_coords, point_labels, pos_ds, neg_ds
 
 
+def _compute_mask_iou(initial_mask: Tensor, refined_mask: Tensor) -> float:
+    if initial_mask.dtype != torch.bool:
+        initial_bool = initial_mask > 0.5
+    else:
+        initial_bool = initial_mask
+
+    if refined_mask.dtype != torch.bool:
+        refined_bool = refined_mask > 0.5
+    else:
+        refined_bool = refined_mask
+
+    intersection = torch.logical_and(initial_bool, refined_bool).float().sum()
+    union = torch.logical_or(initial_bool, refined_bool).float().sum()
+
+    if union.item() == 0.0:
+        return 1.0
+
+    return float((intersection / union).item())
+
+
 def get_sam_masks(
     all_gs: SceneSplats,
     smpl_params: Tensor,
@@ -587,6 +609,10 @@ class ProgressiveSAMManager:
         self.sam_device: Optional[str] = None
         self.mask_cache: Dict[int, MaskCacheEntry] = {}
         self.last_rebuild_epoch: int = -1
+        self.frame_iou_scores: Dict[int, List[float]] = {}
+        self.reliable_frames: List[int] = []
+        self.unreliable_frames: List[int] = []
+        self.iou_threshold: Optional[float] = None
 
     def should_rebuild(self, epoch: int) -> bool:
         if not self.enabled:
@@ -597,6 +623,10 @@ class ProgressiveSAMManager:
 
     def clear_cache(self) -> None:
         self.mask_cache.clear()
+        self.frame_iou_scores = {}
+        self.reliable_frames = []
+        self.unreliable_frames = []
+        self.iou_threshold = None
         self.last_rebuild_epoch = -1
 
     def _cache_file_path(self, fid: int) -> Path:
@@ -622,6 +652,7 @@ class ProgressiveSAMManager:
             return False
 
         temp_cache: Dict[int, MaskCacheEntry] = {}
+        frame_scores: Dict[int, List[float]] = {}
         for file_path in files:
             try:
                 data = torch.load(file_path, map_location=device, weights_only=False)
@@ -635,19 +666,29 @@ class ProgressiveSAMManager:
             if refined is None or alpha is None or initial is None:
                 return False
 
+            iou_scores_raw = data.get("iou_scores", [])
+            if isinstance(iou_scores_raw, torch.Tensor):
+                iou_scores = [float(v) for v in iou_scores_raw.flatten().tolist()]
+            else:
+                iou_scores = [float(v) for v in iou_scores_raw]
+
             entry = MaskCacheEntry(
                 refined=refined.detach().to(device),
                 alpha=alpha.detach().to(device),
                 initial=initial.detach().to(device),
                 vis_pos=data.get("vis_pos", []),
                 vis_neg=data.get("vis_neg", []),
+                iou_scores=iou_scores,
             )
             temp_cache[fid] = entry
+            frame_scores[fid] = iou_scores
 
         if not temp_cache:
             return False
 
         self.mask_cache = temp_cache
+        self.frame_iou_scores = frame_scores
+        self._update_reliability_stats()
         print(f"--- FYI: Loaded SAM masks from {self.disk_cache_dir} ({len(temp_cache)} frames).")
         return True
 
@@ -663,10 +704,43 @@ class ProgressiveSAMManager:
                 "initial": entry.initial.detach().cpu(),
                 "vis_pos": entry.vis_pos,
                 "vis_neg": entry.vis_neg,
+                "iou_scores": entry.iou_scores,
             }
             torch.save(payload, self._cache_file_path(int(fid)))
 
         print(f"--- FYI: Saved SAM masks to {self.disk_cache_dir} ({len(self.mask_cache)} frames).")
+
+    def _update_reliability_stats(self) -> None:
+        all_scores = [score for scores in self.frame_iou_scores.values() for score in scores]
+        if not all_scores:
+            print("--- FYI: No IoU scores available to update reliability stats.")
+            self.iou_threshold = None
+            self.reliable_frames = []
+            self.unreliable_frames = []
+            return
+
+        alpha = float(np.median(np.asarray(all_scores, dtype=np.float32)))
+        self.iou_threshold = alpha
+
+        reliable: List[int] = []
+        unreliable: List[int] = []
+        for fid, scores in self.frame_iou_scores.items():
+            if scores:
+                avg_iou = float(np.mean(np.asarray(scores, dtype=np.float32)))
+            else:
+                print(f"--- FYI: No IoU scores for frame {fid}, marking as unreliable.")
+                avg_iou = 0.0
+            if avg_iou >= alpha:
+                reliable.append(int(fid))
+            else:
+                unreliable.append(int(fid))
+
+        reliable.sort()
+        unreliable.sort()
+        self.reliable_frames = reliable
+        self.unreliable_frames = unreliable
+
+        print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
     def rebuild_cache(
         self,
@@ -682,13 +756,17 @@ class ProgressiveSAMManager:
             return
 
         target_device = device or self.device
+        self.mask_cache.clear()
+        self.frame_iou_scores = {}
+        self.reliable_frames = []
+        self.unreliable_frames = []
+        self.iou_threshold = None
         if epoch == 0 and self._load_cache_from_disk(target_device):
             self.last_rebuild_epoch = epoch
             return
 
         predictor = self._ensure_predictor()
         effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
-        self.mask_cache.clear()
 
         n_samples = len(dataset)
         with torch.no_grad():
@@ -716,14 +794,16 @@ class ProgressiveSAMManager:
                         device=target_device,
                     )
 
-                entry = self._build_cache_entry(refined_results, target_device)
+                entry, iou_scores = self._build_cache_entry(refined_results, target_device)
                 if entry is not None:
                     self.mask_cache[fid] = entry
+                    self.frame_iou_scores[fid] = iou_scores
 
         if epoch == 0 and self.mask_cache:
             self._save_cache_to_disk()
 
         self.last_rebuild_epoch = epoch
+        self._update_reliability_stats()
 
     def process_batch(
         self,
@@ -758,6 +838,7 @@ class ProgressiveSAMManager:
                 mask_loss=mask_loss,
                 alpha_stack=alpha_stack,
                 viz_entries=viz_entries,
+                iou_scores=None,
             )
 
         cache_entry = self.mask_cache.get(fid)
@@ -770,6 +851,7 @@ class ProgressiveSAMManager:
                     mask_loss=mask_loss,
                     alpha_stack=alpha_stack,
                     viz_entries=viz_entries,
+                    iou_scores=None,
                 )
 
             image_np = np.clip(image.detach().cpu().numpy(), 0.0, 1.0)
@@ -792,9 +874,12 @@ class ProgressiveSAMManager:
                     device=batch_device,
                 )
 
-            cache_entry = self._build_cache_entry(refined_results, batch_device)
+            cache_entry, iou_scores = self._build_cache_entry(refined_results, batch_device)
             if cache_entry is not None:
                 self.mask_cache[fid] = cache_entry
+                if iou_scores:
+                    self.frame_iou_scores[fid] = iou_scores
+                    self._update_reliability_stats()
 
         if cache_entry is not None:
             human_masks = cache_entry.refined.unsqueeze(0)
@@ -816,15 +901,16 @@ class ProgressiveSAMManager:
             mask_loss=mask_loss,
             alpha_stack=alpha_stack,
             viz_entries=viz_entries,
+            iou_scores=self.frame_iou_scores.get(fid),
         )
 
     def _build_cache_entry(
         self,
         refined_results: Sequence[RefinedMaskResult],
         device: torch.device,
-    ) -> Optional[MaskCacheEntry]:
+    ) -> Tuple[Optional[MaskCacheEntry], List[float]]:
         if not refined_results:
-            return None
+            return None, []
 
         refined_tensor = torch.stack([res.refined_mask for res in refined_results], dim=0).to(device)
         alpha_tensor = torch.stack([res.alpha for res in refined_results], dim=0).to(device)
@@ -832,13 +918,19 @@ class ProgressiveSAMManager:
         vis_pos = [res.vis_positive_points for res in refined_results]
         vis_neg = [res.vis_negative_points for res in refined_results]
 
-        return MaskCacheEntry(
+        iou_scores: List[float] = []
+        for initial_mask, refined_mask in zip(initial_tensor, refined_tensor):
+            iou_scores.append(_compute_mask_iou(initial_mask, refined_mask))
+
+        entry = MaskCacheEntry(
             refined=refined_tensor,
             alpha=alpha_tensor,
             initial=initial_tensor,
             vis_pos=vis_pos,
             vis_neg=vis_neg,
+            iou_scores=iou_scores,
         )
+        return entry, iou_scores
 
     def _ensure_predictor(self) -> Optional["SAM2ImagePredictor"]:
         if not self.enabled:
