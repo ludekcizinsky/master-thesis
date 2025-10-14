@@ -29,12 +29,7 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
-from training.helpers.visualisation_utils import (
-    save_mask_refinement_figure,
-    save_loss_visualization,
-    save_orbit_visualization,
-    save_pose_progress_overlay,
-)
+from training.helpers.visualisation_utils import VisualisationManager
 
 from fused_ssim import fused_ssim
 
@@ -139,16 +134,30 @@ class Trainer:
         else:
             self.lbs_weights = None
 
+        self.visualisation_manager = VisualisationManager(
+            cfg=self.cfg,
+            mask_enabled=self.mask_enabled,
+            progressive_sam=self.progressive_sam,
+            trn_viz_dir=self.trn_viz_debug_dir,
+            scene_splats=self.all_gs,
+            lbs_weights=self.lbs_weights,
+            device=self.device,
+            sh_degree=self.cfg.sh_degree,
+            dataset=self.dataset,
+            pose_overlay_period=self.pose_overlay_period,
+        )
+
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
+        # Parse batch
         images = batch["image"].to(self.device)  # [B,H,W,3]
         K = batch["K"].to(self.device)           # [B,3,3]
         w2c = batch["M_ext"].to(self.device)     # [B,4,4]
         H, W = batch["image"].shape[1:3]
         assert images.shape[0] == 1, "Mask refinement currently expects batch size 1."
-        image_np = np.clip(images[0].detach().cpu().numpy(), 0.0, 1.0)
         fid_tensor = batch["fid"]
         fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
 
+        # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
         smpl_param_param = self.smpl_params.get(fid)
         if smpl_param_param is None:
             base_param = batch["smpl_param"][0].to(self.device)
@@ -162,6 +171,7 @@ class Trainer:
         smpl_param_batch = smpl_param_param.unsqueeze(0)
         smpl_param_forward = smpl_param_batch if frame_reliable else smpl_param_batch.detach()
 
+        # Forward pass: mask refinement
         mask_output = self.progressive_sam.process_batch(
             fid=fid,
             image=images[0],
@@ -195,7 +205,7 @@ class Trainer:
         )
 
         # Losses
-        gt_render, pred_render = prepare_input_for_loss(
+        gt_render, pred_render, pred_original = prepare_input_for_loss(
             gt_imgs=images,
             renders=colors,
             human_masks=human_masks,
@@ -272,68 +282,28 @@ class Trainer:
             with torch.no_grad():
                 new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
                 self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
+                self.visualisation_manager.lbs_weights = self.lbs_weights
+        else:
+            self.visualisation_manager.lbs_weights = self.lbs_weights
 
-        should_log_epoch = self.mask_enabled and self.current_epoch % 5 == 0
-        should_log_frame = int(fid) == 35
-        if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
-            save_loss_visualization(
-                image_input=images,
-                gt=gt_render,
-                prediction=colors,
-                out_path=self.trn_viz_debug_dir / f"lossviz_epoch{self.current_epoch:03d}_fid{fid:04d}.png"
-            )
-
-            if viz_entries:
-                for idx, entry in enumerate(viz_entries):
-                    out_path = self.trn_viz_debug_dir / f"maskref_epoch{self.current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
-                    save_mask_refinement_figure(
-                        image_np,
-                        entry["initial"],
-                        entry["refined"],
-                        entry["pos"],
-                        entry["neg"],
-                        out_path,
-                    )
-
-            orbit_path = self.trn_viz_debug_dir / f"orbit_epoch{self.current_epoch:03d}_fid{fid:04d}.mp4"
-            try:
-                save_orbit_visualization(
-                    scene_splats=self.all_gs,
-                    smpl_params=smpl_param_forward.detach(),
-                    lbs_weights=self.lbs_weights,
-                    base_w2c=self.orbit_reference_w2c.to(self.device),
-                    K=K[0],
-                    image_size=(H, W),
-                    device=self.device,
-                    sh_degree=self.cfg.sh_degree,
-                    out_path=orbit_path,
-                )
-            except Exception as exc:
-                print(f"--- WARN: Failed to produce orbit visualization for epoch {self.current_epoch}, fid {fid}: {exc}")
-
-        pose_overlay_condition = (
-            self.cfg.visualise_cam_preds
-            and self.smpl_snapshot_frame is not None
-            and self.smpl_snapshot_params is not None
-            and fid == self.smpl_snapshot_frame
-            and self.current_epoch % self.pose_overlay_period == 0
-            and self.current_epoch != self.last_pose_overlay_epoch
+        # Visualizations
+        self.last_pose_overlay_epoch = self.visualisation_manager.run_visualisation_step(
+            gt_render=gt_render,
+            pred_render=pred_render,
+            pred_original=pred_original,
+            viz_entries=viz_entries,
+            fid=fid,
+            current_epoch=self.current_epoch,
+            smpl_param_forward=smpl_param_forward,
+            w2c=w2c[0],
+            K=K[0],
+            H=H,
+            W=W,
+            smpl_snapshot_frame=self.smpl_snapshot_frame,
+            smpl_snapshot_params=self.smpl_snapshot_params,
+            smpl_params_per_frame=self.smpl_params,
+            last_pose_overlay_epoch=self.last_pose_overlay_epoch,
         )
-        if pose_overlay_condition:
-            try:
-                save_pose_progress_overlay(
-                    dataset=self.dataset,
-                    scene_splats=self.all_gs,
-                    frame_id=self.smpl_snapshot_frame,
-                    initial_params_list=self.smpl_snapshot_params,
-                    current_params=self.smpl_params[self.smpl_snapshot_frame],
-                    device=self.device,
-                    epoch=self.current_epoch,
-                    out_dir=self.trn_viz_debug_dir,
-                )
-                self.last_pose_overlay_epoch = self.current_epoch
-            except Exception as exc:
-                print(f"--- WARN: Failed to produce SMPL pose overlay for epoch {self.current_epoch}, fid {fid}: {exc}")
 
         # Log values
         mask_loss_scalar = float(mask_loss.item()) if apply_mask_loss else 0.0

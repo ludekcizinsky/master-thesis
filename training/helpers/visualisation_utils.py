@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Sequence, List
+from typing import Optional, Sequence, List, Dict, Any
 
 import torch
 from PIL import Image
@@ -75,37 +75,13 @@ def save_mask_refinement_figure(
 
 @torch.no_grad()
 def save_loss_visualization(
-    image_input: torch.Tensor,       # [B, H,W, 3], GT image in [0,1]
-    gt: torch.Tensor,        # [B, H,W, 3], 0–1
-    prediction: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
+    gt_masked: torch.Tensor,        # [B, H,W, 3], 0–1
+    prediction_masked: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
+    prediction_original: torch.Tensor,  # [B, H,W, 3], predicted image in [0,1]
     out_path: str,
 ):
-    """
-    Saves a side-by-side visualization of:
-    - original image
-    - masked image (image * mask)
-    - predicted image
-    """
 
-    # it may happen that gt and prediction have different sizes due to cropping
-    # in which case, resize them to the input image size, use black background
-    if image_input.shape[1:3] != gt.shape[1:3]:
-        B, H, W = image_input.shape[0:3]
-        gt_resized = torch.zeros((B, H, W, 3), device=gt.device)
-        # pr_resized = torch.zeros((B, H, W, 3), device=prediction.device)
-
-        h0 = (H - gt.shape[1]) // 2
-        w0 = (W - gt.shape[2]) // 2
-        h1 = h0 + gt.shape[1]
-        w1 = w0 + gt.shape[2]
-
-        gt_resized[:, h0:h1, w0:w1, :] = gt
-        # pr_resized[:, h0:h1, w0:w1, :] = prediction
-
-        gt = gt_resized
-        # prediction = pr_resized
-
-    comparison = torch.cat([image_input, gt, prediction], dim=2)  # [B,H,3W,3]
+    comparison = torch.cat([gt_masked, prediction_masked, prediction_original], dim=2)  # [B,H,3W,3]
     comparison = comparison[0]  # Take first in batch
 
     # Convert to uint8 for saving
@@ -496,3 +472,120 @@ def save_pose_progress_overlay(
         device=device,
         out_path=out_path,
     )
+
+
+class VisualisationManager:
+    def __init__(
+        self,
+        *,
+        cfg,
+        mask_enabled: bool,
+        progressive_sam,
+        trn_viz_dir: Path,
+        scene_splats: SceneSplats,
+        lbs_weights,
+        device: torch.device,
+        sh_degree: int,
+        dataset,
+        pose_overlay_period: int,
+    ) -> None:
+        self.cfg = cfg
+        self.mask_enabled = mask_enabled
+        self.progressive_sam = progressive_sam
+        self.trn_viz_dir = Path(trn_viz_dir)
+        self.scene_splats = scene_splats
+        self.lbs_weights = lbs_weights
+        self.device = device
+        self.sh_degree = sh_degree
+        self.dataset = dataset
+        self.pose_overlay_period = max(int(pose_overlay_period), 1)
+
+    @torch.no_grad()
+    def run_visualisation_step(
+        self,
+        *,
+        gt_render: torch.Tensor,
+        pred_render: torch.Tensor,
+        pred_original: torch.Tensor,
+        viz_entries: List[Dict[str, Any]],
+        fid: int,
+        current_epoch: int,
+        smpl_param_forward: torch.Tensor,
+        w2c: torch.Tensor,
+        K: torch.Tensor,
+        H: int,
+        W: int,
+        smpl_snapshot_frame: Optional[int],
+        smpl_snapshot_params: Optional[Sequence[torch.Tensor]],
+        smpl_params_per_frame: Dict[int, torch.Tensor],
+        last_pose_overlay_epoch: int,
+    ) -> int:
+        updated_overlay_epoch = last_pose_overlay_epoch
+
+        sample = self.dataset[fid]
+        image_np = sample["image"].cpu().numpy()
+        image_np = np.clip(image_np, 0.0, 1.0)
+
+        should_log_epoch = self.mask_enabled and (current_epoch % 10 == 0)
+        should_log_frame = fid == 35
+        if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
+            save_loss_visualization(
+                gt_masked=gt_render,
+                prediction_masked=pred_render,
+                prediction_original=pred_original,
+                out_path=self.trn_viz_dir / f"lossviz_epoch{current_epoch:03d}_fid{fid:04d}.png",
+            )
+
+            if viz_entries:
+                for idx, entry in enumerate(viz_entries):
+                    out_path = self.trn_viz_dir / f"maskref_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
+                    save_mask_refinement_figure(
+                        image_np,
+                        entry["initial"],
+                        entry["refined"],
+                        entry["pos"],
+                        entry["neg"],
+                        out_path,
+                    )
+
+            orbit_path = self.trn_viz_dir / f"orbit_epoch{current_epoch:03d}_fid{fid:04d}.mp4"
+            try:
+                save_orbit_visualization(
+                    scene_splats=self.scene_splats,
+                    smpl_params=smpl_param_forward.detach(),
+                    lbs_weights=self.lbs_weights,
+                    base_w2c=w2c.to(self.device),
+                    K=K.to(self.device),
+                    image_size=(H, W),
+                    device=self.device,
+                    sh_degree=self.sh_degree,
+                    out_path=orbit_path,
+                )
+            except Exception as exc:
+                print(f"--- WARN: Failed to produce orbit visualization for epoch {current_epoch}, fid {fid}: {exc}")
+
+        pose_overlay_condition = (
+            self.cfg.visualise_cam_preds
+            and smpl_snapshot_frame is not None
+            and smpl_snapshot_params is not None
+            and fid == smpl_snapshot_frame
+            and current_epoch % self.pose_overlay_period == 0
+            and current_epoch != last_pose_overlay_epoch
+        )
+        if pose_overlay_condition:
+            try:
+                save_pose_progress_overlay(
+                    dataset=self.dataset,
+                    scene_splats=self.scene_splats,
+                    frame_id=smpl_snapshot_frame,
+                    initial_params_list=smpl_snapshot_params,
+                    current_params=smpl_params_per_frame[smpl_snapshot_frame],
+                    device=self.device,
+                    epoch=current_epoch,
+                    out_dir=self.trn_viz_dir,
+                )
+                updated_overlay_epoch = current_epoch
+            except Exception as exc:
+                print(f"--- WARN: Failed to produce SMPL pose overlay for epoch {current_epoch}, fid {fid}: {exc}")
+
+        return updated_overlay_epoch
