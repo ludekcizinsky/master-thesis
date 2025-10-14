@@ -212,16 +212,20 @@ class Trainer:
             cfg=self.cfg
         )  # [B,h,w,3], [B,h,w,3] (cropped if needed)
 
+        render_for_loss = pred_original if frame_reliable else pred_render
+
         # - L1
-        l1_loss = F.l1_loss(pred_render, gt_render)
+        l1_loss = F.l1_loss(render_for_loss, gt_render)
 
         # - SSIM
         ssim_loss = 1.0 - fused_ssim(
-            pred_render.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
+            render_for_loss.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
 
         # - Combined 
         loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
+
+        # - Mask loss (only when mask refinement is enabled and on the epoch of rebuilding the SAM cache)
         apply_mask_loss = (
             self.mask_enabled
             and alpha_stack is not None
@@ -281,10 +285,8 @@ class Trainer:
         if len(self.cfg.tids) > 0:
             with torch.no_grad():
                 new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
-                self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
+                self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]
                 self.visualisation_manager.lbs_weights = self.lbs_weights
-        else:
-            self.visualisation_manager.lbs_weights = self.lbs_weights
 
         # Visualizations
         self.last_pose_overlay_epoch = self.visualisation_manager.run_visualisation_step(

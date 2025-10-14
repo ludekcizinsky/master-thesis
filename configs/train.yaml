@@ -33,14 +33,12 @@ gs_refine_stop_iter: 7500 # stop applying the densification strategy after these
 gs_refine_start_iter: 500 # default is normally 500
 
 # --- Loss and regularization weights
-# L1 loss weight
 l1_lambda: 0.8
-# SSIM loss weight 
 ssim_lambda: 0.2
-# Opacity and scale regularization weights
+unmasked_l1_lambda: 0.8
+unmasked_ssim_lambda: 0.2
 opacity_reg: 0.001
 scale_reg: 0.001
-# k-nearest neighbors for skinning weights computation
 lbs_knn: 30
 
 mask_refinement:
@@ -71,7 +69,6 @@ sh0_lr: 2.5e-3
 shN_lr: 1.25e-4 
 # LR for SMPL pose parameters
 smpl_lr: 1.0e-3
-
 
 # --- Wandb logging settings
 logger:
