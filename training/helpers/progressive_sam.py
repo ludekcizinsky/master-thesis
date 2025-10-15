@@ -618,6 +618,7 @@ class ProgressiveSAMManager:
         self.iou_threshold: Optional[float] = None
         self._reliable_frame_set: set[int] = set()
         self._unreliable_frame_set: set[int] = set()
+        self.base_iteration: int = 0
 
     def should_rebuild(self, epoch: int) -> bool:
         if not self.enabled:
@@ -635,6 +636,7 @@ class ProgressiveSAMManager:
         self._reliable_frame_set.clear()
         self._unreliable_frame_set.clear()
         self.last_rebuild_epoch = -1
+        self.base_iteration = 0
 
     def _cache_file_path(self, fid: int) -> Path:
         return self.disk_cache_dir / f"mask_{fid:04d}.pt"
@@ -845,8 +847,11 @@ class ProgressiveSAMManager:
     def save(self, iteration: int) -> None:
         if not self.enabled:
             return
+        total_iter = int(iteration) + int(self.base_iteration)
         payload = {
-            "iteration": int(iteration),
+            "iteration": total_iter,
+            "base_iteration": int(self.base_iteration),
+            "session_iteration": int(iteration),
             "mask_cache": {
                 fid: {
                     "refined": entry.refined.detach().cpu(),
@@ -864,13 +869,15 @@ class ProgressiveSAMManager:
             "iou_threshold": self.iou_threshold,
             "last_rebuild_epoch": self.last_rebuild_epoch,
         }
-        path = self.checkpoint_dir / f"progressive_sam_{iteration:06d}.pt"
+        path = self.checkpoint_dir / f"progressive_sam_{total_iter:06d}.pt"
         torch.save(payload, path)
+        latest_path = self.checkpoint_dir / "latest.txt"
+        latest_path.write_text(path.name)
 
     def load(self, path: Path) -> None:
         if not path.exists():
             raise FileNotFoundError(f"Progressive SAM checkpoint not found: {path}")
-        data = torch.load(path, map_location=self.device)
+        data = torch.load(path, map_location=self.device, weights_only=False)
 
         mask_cache = {}
         for fid, entry in data.get("mask_cache", {}).items():
@@ -890,6 +897,14 @@ class ProgressiveSAMManager:
         self.last_rebuild_epoch = int(data.get("last_rebuild_epoch", -1))
         self._reliable_frame_set = set(self.reliable_frames)
         self._unreliable_frame_set = set(self.unreliable_frames)
+        total_iter = int(data.get("iteration", 0))
+        base_iter = data.get("base_iteration")
+        if base_iter is None:
+            session_iter = int(data.get("session_iteration", 0))
+            base_iter = total_iter - session_iter
+        if base_iter is None:
+            base_iter = total_iter
+        self.base_iteration = max(int(total_iter), 0)
         print(f"--- FYI: Loaded Progressive SAM checkpoint from {path}")
 
     def init_from_disk(self) -> None:

@@ -80,7 +80,7 @@ class Trainer:
         )
         self.mask_loss_weight = self.progressive_sam.loss_weight
         self.mask_enabled = self.progressive_sam.enabled
-        if cfg.resume:
+        if getattr(cfg, "resume", False):
             self.progressive_sam.init_from_disk()
 
         # Load dataset and create dataloader
