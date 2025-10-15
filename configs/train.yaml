@@ -12,7 +12,7 @@ train_dir: ${output_dir}/training
 
 # --- Training settings
 iters: 30000
-save_freq: 1000 # frequency of saving the canonical model
+save_freq: 1000 # frequency of checkpointing
 resume: false
 tids: [0, 1]
 cloud_downsample: 30

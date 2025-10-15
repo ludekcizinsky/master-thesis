@@ -591,6 +591,7 @@ class ProgressiveSAMManager:
         device: torch.device,
         default_lbs_knn: int,
         preprocess_dir: Path,
+        checkpoint_dir: Path,
     ) -> None:
         mask_cfg = mask_cfg or {}
         self.tids = list(tids)
@@ -598,6 +599,8 @@ class ProgressiveSAMManager:
         self.default_lbs_knn = int(default_lbs_knn)
         self.preprocess_dir = Path(preprocess_dir)
         self.disk_cache_dir = self.preprocess_dir / "progressive_sam_masks"
+        self.checkpoint_dir = Path(checkpoint_dir) / "progressive_sam"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.enabled = bool(mask_cfg.get("enabled", False)) and len(self.tids) > 0
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
@@ -838,6 +841,72 @@ class ProgressiveSAMManager:
                 lowest_value = avg_iou
                 lowest_fid = fid
         return lowest_fid
+
+    def save(self, iteration: int) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "iteration": int(iteration),
+            "mask_cache": {
+                fid: {
+                    "refined": entry.refined.detach().cpu(),
+                    "alpha": entry.alpha.detach().cpu(),
+                    "initial": entry.initial.detach().cpu(),
+                    "vis_pos": entry.vis_pos,
+                    "vis_neg": entry.vis_neg,
+                    "iou_scores": entry.iou_scores,
+                }
+                for fid, entry in self.mask_cache.items()
+            },
+            "frame_iou_scores": self.frame_iou_scores,
+            "reliable_frames": self.reliable_frames,
+            "unreliable_frames": self.unreliable_frames,
+            "iou_threshold": self.iou_threshold,
+            "last_rebuild_epoch": self.last_rebuild_epoch,
+        }
+        path = self.checkpoint_dir / f"progressive_sam_{iteration:06d}.pt"
+        torch.save(payload, path)
+
+    def load(self, path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(f"Progressive SAM checkpoint not found: {path}")
+        data = torch.load(path, map_location=self.device)
+
+        mask_cache = {}
+        for fid, entry in data.get("mask_cache", {}).items():
+            mask_cache[int(fid)] = MaskCacheEntry(
+                refined=entry["refined"].to(self.device),
+                alpha=entry["alpha"].to(self.device),
+                initial=entry["initial"].to(self.device),
+                vis_pos=entry.get("vis_pos", []),
+                vis_neg=entry.get("vis_neg", []),
+                iou_scores=[float(v) for v in entry.get("iou_scores", [])],
+            )
+        self.mask_cache = mask_cache
+        self.frame_iou_scores = {int(k): list(map(float, v)) for k, v in data.get("frame_iou_scores", {}).items()}
+        self.reliable_frames = [int(v) for v in data.get("reliable_frames", [])]
+        self.unreliable_frames = [int(v) for v in data.get("unreliable_frames", [])]
+        self.iou_threshold = data.get("iou_threshold", None)
+        self.last_rebuild_epoch = int(data.get("last_rebuild_epoch", -1))
+        self._reliable_frame_set = set(self.reliable_frames)
+        self._unreliable_frame_set = set(self.unreliable_frames)
+        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path}")
+
+    def init_from_disk(self) -> None:
+        if not self.enabled:
+            return
+        if not self.checkpoint_dir.exists():
+            print(f"--- FYI: Progressive SAM checkpoint dir {self.checkpoint_dir} missing, starting fresh.")
+            return
+        ckpts = sorted(self.checkpoint_dir.glob("progressive_sam_*.pt"))
+        if not ckpts:
+            print("--- FYI: No Progressive SAM checkpoints found, starting from scratch.")
+            return
+        latest = ckpts[-1]
+        try:
+            self.load(latest)
+        except Exception as exc:
+            print(f"--- WARN: Failed to load Progressive SAM checkpoint {latest}: {exc}. Starting fresh.")
 
     def process_batch(
         self,

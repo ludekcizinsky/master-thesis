@@ -76,9 +76,12 @@ class Trainer:
             device=self.device,
             default_lbs_knn=int(cfg.lbs_knn),
             preprocess_dir=preprocess_path,
+            checkpoint_dir=self.checkpoint_dir,
         )
         self.mask_loss_weight = self.progressive_sam.loss_weight
         self.mask_enabled = self.progressive_sam.enabled
+        if cfg.resume:
+            self.progressive_sam.init_from_disk()
 
         # Load dataset and create dataloader
         self.dataset = FullSceneDataset(
@@ -361,6 +364,7 @@ class Trainer:
 
                     if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
                         self.ckpt_manager.save(self.all_gs, iteration)
+                        self.progressive_sam.save(iteration)
 
                     if iteration >= iters:
                         break
@@ -369,6 +373,7 @@ class Trainer:
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
             self.ckpt_manager.save(self.all_gs, iteration)
+            self.progressive_sam.save(iteration)
         
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
