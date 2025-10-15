@@ -153,6 +153,39 @@ def init_smpl_server(device):
 
 
 @torch.no_grad()
+def init_trainable_smpl_params(dataset, cfg, device: torch.device) -> tuple[dict[int, nn.Parameter], list[nn.Parameter]]:
+
+    tids = list(cfg.tids)
+    smpl_params: dict[int, nn.Parameter] = {}
+    params_list: list[nn.Parameter] = []
+
+    if len(tids) == 0:
+        return smpl_params, params_list
+
+    scale_value = float(dataset.scale)
+    for fid in range(len(dataset)):
+        param_tensor = torch.zeros((len(tids), 86), dtype=torch.float32, device=device)
+        for idx, tid in enumerate(tids):
+            param_tensor[idx, 0] = scale_value
+            param_tensor[idx, 1:4] = torch.as_tensor(dataset.trans[fid][tid], dtype=torch.float32, device=device) * scale_value
+            param_tensor[idx, 4:76] = torch.as_tensor(dataset.poses[fid][tid], dtype=torch.float32, device=device)
+            param_tensor[idx, 76:] = torch.as_tensor(dataset.shape[tid], dtype=torch.float32, device=device)
+        param = nn.Parameter(param_tensor)
+        smpl_params[fid] = param
+        params_list.append(param)
+
+    smpl_lr = float(getattr(cfg, "smpl_lr", 1e-4))
+    smpl_param_optimizer = (
+        torch.optim.Adam(params_list, lr=smpl_lr) if params_list else None
+    )
+    if smpl_param_optimizer is not None:
+        smpl_param_optimizer.zero_grad(set_to_none=True)
+
+
+    return smpl_params, smpl_param_optimizer
+
+
+@torch.no_grad()
 def init_3dgs_humans(
     n_humans,
     *,

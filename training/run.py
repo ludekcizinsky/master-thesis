@@ -14,8 +14,8 @@ from typing import Dict, Any, List, Optional
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.nn import Parameter
 
 import wandb
 
@@ -24,7 +24,7 @@ from tqdm import tqdm
 from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights
 from training.helpers.dataset import FullSceneDataset
-from training.helpers.model_init import create_splats_with_optimizers
+from training.helpers.model_init import create_splats_with_optimizers, init_trainable_smpl_params
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import GaussianCheckpointManager
@@ -36,13 +36,25 @@ from fused_ssim import fused_ssim
 
 class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
+        # Initial param setup
         self.cfg = cfg
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        self.current_epoch = 0
         print(f"--- FYI: using device {self.device}")
 
+        # Setup experiment dirs
         preprocess_path = Path(cfg.preprocess_dir)
+        if internal_run_id is not None:
+            run_name, run_id = internal_run_id.split("_")
+            self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
+        else:
+            self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
+        self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
+        os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
+        print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
+        # Initialize Progressive SAM manager
         mask_cfg = getattr(cfg, "mask_refinement", None)
         mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
         self.progressive_sam = ProgressiveSAMManager(
@@ -55,6 +67,7 @@ class Trainer:
         self.mask_loss_weight = self.progressive_sam.loss_weight
         self.mask_enabled = self.progressive_sam.enabled
 
+        # Load dataset and create dataloader
         self.dataset = FullSceneDataset(
             preprocess_path,
             cfg.tids,  # list of tids to train on
@@ -68,56 +81,20 @@ class Trainer:
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
-        # Prepare per-frame SMPL parameters for optimization
-        self.smpl_params: Dict[int, Parameter] = {}
-        smpl_param_list: List[Parameter] = []
-        if len(cfg.tids) > 0:
-            scale_value = float(self.dataset.scale)
-            for fid in range(len(self.dataset)):
-                param_tensor = torch.zeros((len(cfg.tids), 86), dtype=torch.float32)
-                for tid_idx, tid in enumerate(cfg.tids):
-                    param_tensor[tid_idx, 0] = scale_value
-                    param_tensor[tid_idx, 1:4] = torch.from_numpy(self.dataset.trans[fid][tid] * scale_value).float()
-                    param_tensor[tid_idx, 4:76] = torch.from_numpy(self.dataset.poses[fid][tid]).float()
-                    param_tensor[tid_idx, 76:] = torch.from_numpy(self.dataset.shape[tid]).float()
-                param = Parameter(param_tensor.to(self.device))
-                self.smpl_params[fid] = param
-                smpl_param_list.append(param)
-
-        smpl_lr = float(getattr(cfg, "smpl_lr", 1e-4))
-        self.smpl_param_optimizer = (
-            torch.optim.Adam(smpl_param_list, lr=smpl_lr) if smpl_param_list else None
-        )
-        if self.smpl_param_optimizer is not None:
-            self.smpl_param_optimizer.zero_grad(set_to_none=True)
-
-        if internal_run_id is not None:
-            run_name, run_id = internal_run_id.split("_")
-            self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
-        else:
-            self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
-        self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
+        # Checkpoint manager
         self.ckpt_manager = GaussianCheckpointManager(
             Path(cfg.output_dir),
             cfg.group_name,
             cfg.tids,
         )
         self.checkpoint_dir = self.ckpt_manager.root
-        os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
 
         if not getattr(cfg, "resume", False):
             reset_static = bool(cfg.train_bg)
             reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
             self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
-        print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
-        self.current_epoch = 0
-        self.smpl_snapshot_frame: Optional[int] = None
-        self.smpl_snapshot_params: Optional[List[torch.Tensor]] = None
-        self.pose_overlay_period = 5
-        self.last_pose_overlay_epoch: int = -1
-
-        # Define model and optimizers
+        # Define 3dgs model of the scene and optimizers
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
             self.device, cfg, self.dataset, checkpoint_manager=self.ckpt_manager
         )
@@ -134,6 +111,14 @@ class Trainer:
         else:
             self.lbs_weights = None
 
+        # Define trainable SMPL parameters and optimizer
+        self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(self.dataset, cfg, self.device)
+        self.smpl_snapshot_frame: Optional[int] = None
+        self.smpl_snapshot_params: Optional[List[torch.Tensor]] = None
+
+        # Init Visualisation manager responsible for periodic visualizations
+        self.pose_overlay_period = 5
+        self.last_pose_overlay_epoch: int = -1
         self.visualisation_manager = VisualisationManager(
             cfg=self.cfg,
             mask_enabled=self.mask_enabled,
@@ -161,7 +146,7 @@ class Trainer:
         smpl_param_param = self.smpl_params.get(fid)
         if smpl_param_param is None:
             base_param = batch["smpl_param"][0].to(self.device)
-            smpl_param_param = Parameter(base_param)
+            smpl_param_param = nn.Parameter(base_param)
             self.smpl_params[fid] = smpl_param_param
             if self.smpl_param_optimizer is not None:
                 self.smpl_param_optimizer.add_param_group({"params": [smpl_param_param]})
