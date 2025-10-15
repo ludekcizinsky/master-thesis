@@ -57,3 +57,10 @@ conda deactivate && conda activate $multiply_env
 python normalize_cameras_trace.py --input_cameras_file $folder_path/data/$seq/cameras.npz \
                             --output_cameras_file $folder_path/data/$seq/cameras_normalize.npz \
                             --max_human_sphere_file $folder_path/data/$seq/max_human_sphere.npy
+
+echo "---- Running unidepth to obtain per frame depth maps"
+export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
+CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
+--scene-name $seq \
+--img-path $folder_path/data/$seq/image \
+--outdir $folder_path/data/$seq/unidepth
