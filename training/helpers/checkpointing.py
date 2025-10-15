@@ -7,7 +7,7 @@ import torch.nn as nn
 from training.helpers.model_init import SceneSplats
 
 
-class GaussianCheckpointManager:
+class ModelCheckpointManager:
     """Handles persistence of static and human 3DGS parameter sets."""
 
     def __init__(

@@ -27,7 +27,7 @@ from training.helpers.dataset import FullSceneDataset
 from training.helpers.model_init import create_splats_with_optimizers, init_trainable_smpl_params
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
-from training.helpers.checkpointing import GaussianCheckpointManager
+from training.helpers.checkpointing import ModelCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
 from training.helpers.visualisation_utils import VisualisationManager
 
@@ -44,7 +44,7 @@ class Trainer:
         print(f"--- FYI: using device {self.device}")
 
         # Checkpoint manager
-        self.ckpt_manager = GaussianCheckpointManager(
+        self.ckpt_manager = ModelCheckpointManager(
             Path(cfg.output_dir),
             cfg.group_name,
             cfg.tids,
@@ -146,17 +146,10 @@ class Trainer:
         fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
 
         # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
-        smpl_param_param = self.smpl_params.get(fid)
-        if smpl_param_param is None:
-            base_param = batch["smpl_param"][0].to(self.device)
-            smpl_param_param = nn.Parameter(base_param)
-            self.smpl_params[fid] = smpl_param_param
-            if self.smpl_param_optimizer is not None:
-                self.smpl_param_optimizer.add_param_group({"params": [smpl_param_param]})
-                self.smpl_param_optimizer.zero_grad(set_to_none=True)
-
+        frame_smpl_params = self.smpl_params.get(fid)
+        assert frame_smpl_params is not None, f"SMPL parameters for frame {fid} not found. Currently, we expect all frames to have SMPL parameters (i.e. at least one person)."
         frame_reliable = self.progressive_sam.is_frame_reliable(fid)
-        smpl_param_batch = smpl_param_param.unsqueeze(0)
+        smpl_param_batch = frame_smpl_params.unsqueeze(0)
         smpl_param_forward = smpl_param_batch if frame_reliable else smpl_param_batch.detach()
 
         # Forward pass: mask refinement

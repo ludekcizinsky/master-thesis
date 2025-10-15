@@ -160,7 +160,7 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device) -> tuple[dict
     params_list: list[nn.Parameter] = []
 
     if len(tids) == 0:
-        return smpl_params, params_list
+        return smpl_params, None
 
     scale_value = float(dataset.scale)
     for fid in range(len(dataset)):
@@ -172,15 +172,13 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device) -> tuple[dict
             param_tensor[idx, 76:] = torch.as_tensor(dataset.shape[tid], dtype=torch.float32, device=device)
         param = nn.Parameter(param_tensor)
         smpl_params[fid] = param
-        params_list.append(param)
+        params_list.append(param) 
+    assert len(params_list) > 0, "Across all frames, no SMPL parameters were found."
 
-    smpl_lr = float(getattr(cfg, "smpl_lr", 1e-4))
     smpl_param_optimizer = (
-        torch.optim.Adam(params_list, lr=smpl_lr) if params_list else None
+        torch.optim.Adam(params_list, lr=cfg.smpl_lr) if params_list else None
     )
-    if smpl_param_optimizer is not None:
-        smpl_param_optimizer.zero_grad(set_to_none=True)
-
+    smpl_param_optimizer.zero_grad(set_to_none=True)
 
     return smpl_params, smpl_param_optimizer
 
