@@ -925,7 +925,7 @@ class ProgressiveSAMManager:
                 latest_path.unlink()
             except Exception:
                 pass
-        print(f"--- FYI: Cleared Progressive SAM checkpoints in {self.checkpoint_dir} since resume is disabled.")
+        print(f"--- FYI: Cleared Progressive SAM checkpoints in {self.checkpoint_dir} since resume is disabled and we are optimising humans (non-empty tids).")
 
 
     def init_from_disk(self) -> None:

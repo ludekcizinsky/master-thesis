@@ -81,8 +81,7 @@ class Trainer:
         self.mask_enabled = self.progressive_sam.enabled
         if cfg.resume:
             self.progressive_sam.init_from_disk()
-        else:
-            self.progressive_sam.clear_cache()
+        elif not cfg.resume and len(cfg.tids) > 0:
             self.progressive_sam.clear_ckpt_dir()
 
         # Load dataset and create dataloader
