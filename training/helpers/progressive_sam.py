@@ -622,8 +622,8 @@ class ProgressiveSAMManager:
 
     def should_rebuild(self, epoch: int) -> bool:
         if not self.enabled:
-            return False
-        if epoch == 0 or self.last_rebuild_epoch < 0:
+            return False 
+        if self.last_rebuild_epoch < 0:
             return True
         return (epoch - self.last_rebuild_epoch) >= self.rebuild_every_epochs
 
@@ -906,6 +906,27 @@ class ProgressiveSAMManager:
             base_iter = total_iter
         self.base_iteration = max(int(total_iter), 0)
         print(f"--- FYI: Loaded Progressive SAM checkpoint from {path}")
+
+    def clear_ckpt_dir(self) -> None:
+        """
+        Remove the content of the checkpoint directory only.
+        """
+        if not self.checkpoint_dir.exists():
+            return
+        files = list(self.checkpoint_dir.glob("progressive_sam_*.pt"))
+        for file_path in files:
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+        latest_path = self.checkpoint_dir / "latest.txt"
+        if latest_path.exists():
+            try:
+                latest_path.unlink()
+            except Exception:
+                pass
+        print(f"--- FYI: Cleared Progressive SAM checkpoints in {self.checkpoint_dir} since resume is disabled.")
+
 
     def init_from_disk(self) -> None:
         if not self.enabled:

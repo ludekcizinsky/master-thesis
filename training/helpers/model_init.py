@@ -153,32 +153,65 @@ def init_smpl_server(device):
 
 
 @torch.no_grad()
-def init_trainable_smpl_params(dataset, cfg, device: torch.device) -> tuple[dict[int, nn.Parameter], list[nn.Parameter]]:
+def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_manager=None):
 
     tids = list(cfg.tids)
-    smpl_params: dict[int, nn.Parameter] = {}
-    params_list: list[nn.Parameter] = []
-
     if len(tids) == 0:
-        return smpl_params, None
+        return {}, None
 
-    scale_value = float(dataset.scale)
-    for fid in range(len(dataset)):
-        param_tensor = torch.zeros((len(tids), 86), dtype=torch.float32, device=device)
-        for idx, tid in enumerate(tids):
-            param_tensor[idx, 0] = scale_value
-            param_tensor[idx, 1:4] = torch.as_tensor(dataset.trans[fid][tid], dtype=torch.float32, device=device) * scale_value
-            param_tensor[idx, 4:76] = torch.as_tensor(dataset.poses[fid][tid], dtype=torch.float32, device=device)
-            param_tensor[idx, 76:] = torch.as_tensor(dataset.shape[tid], dtype=torch.float32, device=device)
-        param = nn.Parameter(param_tensor)
-        smpl_params[fid] = param
-        params_list.append(param) 
-    assert len(params_list) > 0, "Across all frames, no SMPL parameters were found."
+    def _init_from_dataset() -> tuple[dict[int, nn.Parameter], list[nn.Parameter]]:
+        smpl_params: dict[int, nn.Parameter] = {}
+        params_list: list[nn.Parameter] = []
+        scale_value = float(dataset.scale)
+        for fid in range(len(dataset)):
+            param_tensor = torch.zeros((len(tids), 86), dtype=torch.float32, device=device)
+            for idx, tid in enumerate(tids):
+                param_tensor[idx, 0] = scale_value
+                param_tensor[idx, 1:4] = torch.as_tensor(
+                    dataset.trans[fid][tid], dtype=torch.float32, device=device
+                ) * scale_value
+                param_tensor[idx, 4:76] = torch.as_tensor(
+                    dataset.poses[fid][tid], dtype=torch.float32, device=device
+                )
+                param_tensor[idx, 76:] = torch.as_tensor(
+                    dataset.shape[tid], dtype=torch.float32, device=device
+                )
+            param = nn.Parameter(param_tensor)
+            smpl_params[fid] = param
+            params_list.append(param)
+        assert len(params_list) > 0, "Across all frames, no SMPL parameters were found."
+        return smpl_params, params_list
+
+    smpl_params: dict[int, nn.Parameter]
+    params_list: list[nn.Parameter]
+
+    resume_enabled = bool(getattr(cfg, "resume", False)) and checkpoint_manager is not None
+    if resume_enabled:
+        loaded_params, loaded_iteration = checkpoint_manager.load_smpl(device=device)
+        if loaded_params is not None:
+            missing_frames = [fid for fid in range(len(dataset)) if fid not in loaded_params]
+            if missing_frames:
+                print(f"--- FYI: SMPL checkpoint missing frames {missing_frames}; initializing from scratch.")
+                smpl_params, params_list = _init_from_dataset()
+            else:
+                smpl_params = {fid: loaded_params[fid] for fid in range(len(dataset))}
+                params_list = [smpl_params[fid] for fid in range(len(dataset))]
+                if loaded_iteration is not None and loaded_iteration >= 0:
+                    print(f"--- FYI: Loaded SMPL params from iteration {loaded_iteration}.")
+                else:
+                    print("--- FYI: Loaded SMPL params from checkpoint with unknown iteration.")
+        else:
+            print("--- FYI: Resume enabled but no SMPL checkpoint found; initializing SMPL params from scratch.")
+            smpl_params, params_list = _init_from_dataset()
+    else:
+        smpl_params, params_list = _init_from_dataset()
+        print("--- FYI: Initializing SMPL params from dataset.")
 
     smpl_param_optimizer = (
         torch.optim.Adam(params_list, lr=cfg.smpl_lr) if params_list else None
     )
-    smpl_param_optimizer.zero_grad(set_to_none=True)
+    if smpl_param_optimizer is not None:
+        smpl_param_optimizer.zero_grad(set_to_none=True)
 
     return smpl_params, smpl_param_optimizer
 

@@ -14,7 +14,6 @@ from typing import Dict, Any, List, Optional
 
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 import wandb
@@ -80,8 +79,11 @@ class Trainer:
         )
         self.mask_loss_weight = self.progressive_sam.loss_weight
         self.mask_enabled = self.progressive_sam.enabled
-        if getattr(cfg, "resume", False):
+        if cfg.resume:
             self.progressive_sam.init_from_disk()
+        else:
+            self.progressive_sam.clear_cache()
+            self.progressive_sam.clear_ckpt_dir()
 
         # Load dataset and create dataloader
         self.dataset = FullSceneDataset(
@@ -115,7 +117,9 @@ class Trainer:
             self.lbs_weights = None
 
         # Define trainable SMPL parameters and optimizer
-        self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(self.dataset, cfg, self.device)
+        self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(
+            self.dataset, cfg, self.device, checkpoint_manager=self.ckpt_manager
+        )
         self.smpl_snapshot_frame: Optional[int] = None
         self.smpl_snapshot_params: Optional[List[torch.Tensor]] = None
 
@@ -356,7 +360,7 @@ class Trainer:
                     wandb.log(logs)
 
                     if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
-                        self.ckpt_manager.save(self.all_gs, iteration)
+                        self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
                         self.progressive_sam.save(iteration)
 
                     if iteration >= iters:
@@ -365,7 +369,7 @@ class Trainer:
                 epoch += 1
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
-            self.ckpt_manager.save(self.all_gs, iteration)
+            self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
             self.progressive_sam.save(iteration)
         
 
