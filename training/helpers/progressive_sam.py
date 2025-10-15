@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class MaskCacheEntry:
+class SamMaskEntry:
     refined: Tensor
     alpha: Tensor
     initial: Tensor
@@ -115,7 +115,7 @@ def _render_alpha_mask(
         dynamic=[all_gs.dynamic[dynamic_index]],
         smpl_c_info=all_gs.smpl_c_info,
     )
-    smpl_param = smpl_params[dynamic_index].unsqueeze(0).unsqueeze(0).to(device)
+    smpl_param = smpl_params[dynamic_index].unsqueeze(0).to(device)
     lbs_weight = [lbs_weights[dynamic_index]]
 
     colors, alphas, _ = render_splats(
@@ -554,32 +554,14 @@ def compute_refined_masks(
         lbs_knn=lbs_knn,
         device=device,
     )
-    if predictor is None:
-        max_points = int(predictor_cfg.get("max_points", 50))
-        refined: List[RefinedMaskResult] = []
-        for result in sam_results:
-            _, _, pos_vis, neg_vis = _prepare_point_arrays(result, max_points)
-            refined.append(
-                RefinedMaskResult(
-                    initial_mask=result.mask.clone(),
-                    refined_mask=result.mask.clone().float(),
-                    alpha=result.alpha.clone(),
-                    positive_points=result.positive_points.clone(),
-                    negative_points=result.negative_points.clone(),
-                    point_coords=None,
-                    point_labels=None,
-                    vis_positive_points=pos_vis,
-                    vis_negative_points=neg_vis,
-                )
-            )
-    else:
-        refined = refine_masks_with_predictor(
-            sam_results,
-            predictor,
-            multimask_output=bool(predictor_cfg.get("multimask_output", False)),
-            use_initial_mask=bool(predictor_cfg.get("use_initial_mask", True)),
-            max_points=int(predictor_cfg.get("max_points", 50)),
-        )
+
+    refined = refine_masks_with_predictor(
+        sam_results,
+        predictor,
+        multimask_output=bool(predictor_cfg.get("multimask_output", False)),
+        use_initial_mask=bool(predictor_cfg.get("use_initial_mask", True)),
+        max_points=int(predictor_cfg.get("max_points", 50)),
+    )
     return refined
 
 
@@ -590,28 +572,28 @@ class ProgressiveSAMManager:
         tids: Sequence[int],
         device: torch.device,
         default_lbs_knn: int,
-        preprocess_dir: Path,
         checkpoint_dir: Path,
     ) -> None:
+        # cfg
         mask_cfg = mask_cfg or {}
         self.tids = list(tids)
         self.device = device
         self.default_lbs_knn = int(default_lbs_knn)
-        self.preprocess_dir = Path(preprocess_dir)
-        self.disk_cache_dir = self.preprocess_dir / "progressive_sam_masks"
-        self.checkpoint_dir = Path(checkpoint_dir) / "progressive_sam"
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        self.enabled = bool(mask_cfg.get("enabled", False)) # and len(self.tids) > 0
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
         self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
         self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
 
+        # paths
+        self.checkpoint_dir = checkpoint_dir / "progressive_sam"
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # sam2
         self.predictor: Optional["SAM2ImagePredictor"] = None
         self.sam_device: Optional[str] = None
-        self.mask_cache: Dict[int, MaskCacheEntry] = {}
-        self.last_rebuild_epoch: int = -1
+
+        # reliability stats
+        self.last_update_epoch: int = -1
         self.frame_iou_scores: Dict[int, List[float]] = {}
         self.reliable_frames: List[int] = []
         self.unreliable_frames: List[int] = []
@@ -620,104 +602,59 @@ class ProgressiveSAMManager:
         self._unreliable_frame_set: set[int] = set()
         self.base_iteration: int = 0
 
-    def should_rebuild(self, epoch: int) -> bool:
-        if not self.enabled:
-            return False 
-        if self.last_rebuild_epoch < 0:
-            return True
-        return (epoch - self.last_rebuild_epoch) >= self.rebuild_every_epochs
+    def should_update(self, epoch: int) -> bool:
+        return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs
 
-    def clear_cache(self) -> None:
-        self.mask_cache.clear()
+    def reset_state(self) -> None:
         self.frame_iou_scores = {}
         self.reliable_frames = []
         self.unreliable_frames = []
         self.iou_threshold = None
         self._reliable_frame_set.clear()
         self._unreliable_frame_set.clear()
-        self.last_rebuild_epoch = -1
+        self.last_update_epoch = -1
         self.base_iteration = 0
 
-    def _cache_file_path(self, fid: int) -> Path:
-        return self.disk_cache_dir / f"mask_{fid:04d}.pt"
+    def _save_entry_to_disk(self, entry: SamMaskEntry, fid: int) -> None:
+        payload = {
+            "fid": int(fid),
+            "refined": entry.refined.detach().cpu(),
+            "alpha": entry.alpha.detach().cpu(),
+            "initial": entry.initial.detach().cpu(),
+            "vis_pos": entry.vis_pos,
+            "vis_neg": entry.vis_neg,
+            "iou_scores": entry.iou_scores,
+        }
+
+        entry_path = self.checkpoint_dir / f"mask_{fid:04d}.pt"
+        torch.save(payload, entry_path)
 
     @staticmethod
-    def _fid_from_path(path: Path) -> int:
-        stem = path.stem
-        if stem.startswith("mask_"):
-            suffix = stem.split("_", 1)[1]
-            try:
-                return int(suffix)
-            except ValueError:
-                pass
-        raise ValueError(f"Unable to infer frame id from {path}")
+    def _load_entry_from_disk(ckpt_dir: Path, fid: int, device: torch.device) -> SamMaskEntry:
+        entry_path = ckpt_dir / f"mask_{fid:04d}.pt"
+        if not entry_path.exists():
+            return None
+        data = torch.load(entry_path, map_location=device, weights_only=False)
 
-    def _load_cache_from_disk(self, device: torch.device) -> bool:
-        if not self.disk_cache_dir.exists():
-            return False
+        refined = data.get("refined")
+        alpha = data.get("alpha")
+        initial = data.get("initial")
 
-        files = sorted(self.disk_cache_dir.glob("mask_*.pt"))
-        if not files:
-            return False
+        iou_scores_raw = data.get("iou_scores", [])
+        if isinstance(iou_scores_raw, torch.Tensor):
+            iou_scores = [float(v) for v in iou_scores_raw.flatten().tolist()]
+        else:
+            iou_scores = [float(v) for v in iou_scores_raw]
 
-        temp_cache: Dict[int, MaskCacheEntry] = {}
-        frame_scores: Dict[int, List[float]] = {}
-        for file_path in files:
-            try:
-                data = torch.load(file_path, map_location=device, weights_only=False)
-            except Exception:
-                return False
-
-            fid = int(data.get("fid", self._fid_from_path(file_path)))
-            refined = data.get("refined")
-            alpha = data.get("alpha")
-            initial = data.get("initial")
-            if refined is None or alpha is None or initial is None:
-                return False
-
-            iou_scores_raw = data.get("iou_scores", [])
-            if isinstance(iou_scores_raw, torch.Tensor):
-                iou_scores = [float(v) for v in iou_scores_raw.flatten().tolist()]
-            else:
-                iou_scores = [float(v) for v in iou_scores_raw]
-
-            entry = MaskCacheEntry(
-                refined=refined.detach().to(device),
-                alpha=alpha.detach().to(device),
-                initial=initial.detach().to(device),
-                vis_pos=data.get("vis_pos", []),
-                vis_neg=data.get("vis_neg", []),
-                iou_scores=iou_scores,
-            )
-            temp_cache[fid] = entry
-            frame_scores[fid] = iou_scores
-
-        if not temp_cache:
-            return False
-
-        self.mask_cache = temp_cache
-        self.frame_iou_scores = frame_scores
-        self._update_reliability_stats()
-        print(f"--- FYI: Loaded SAM masks from {self.disk_cache_dir} ({len(temp_cache)} frames).")
-        return True
-
-    def _save_cache_to_disk(self) -> None:
-        if not self.disk_cache_dir.exists():
-            self.disk_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        for fid, entry in self.mask_cache.items():
-            payload = {
-                "fid": int(fid),
-                "refined": entry.refined.detach().cpu(),
-                "alpha": entry.alpha.detach().cpu(),
-                "initial": entry.initial.detach().cpu(),
-                "vis_pos": entry.vis_pos,
-                "vis_neg": entry.vis_neg,
-                "iou_scores": entry.iou_scores,
-            }
-            torch.save(payload, self._cache_file_path(int(fid)))
-
-        print(f"--- FYI: Saved SAM masks to {self.disk_cache_dir} ({len(self.mask_cache)} frames).")
+        entry = SamMaskEntry(
+            refined=refined.detach().to(device),
+            alpha=alpha.detach().to(device),
+            initial=initial.detach().to(device),
+            vis_pos=data.get("vis_pos", []),
+            vis_neg=data.get("vis_neg", []),
+            iou_scores=iou_scores,
+        )
+        return entry
 
     def _update_reliability_stats(self) -> None:
         all_scores = [score for scores in self.frame_iou_scores.values() for score in scores]
@@ -753,33 +690,16 @@ class ProgressiveSAMManager:
 
         print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
-    def rebuild_cache(
+    def update_masks(
         self,
         dataset,
         scene_splats: SceneSplats,
         lbs_weights: Optional[Sequence[Tensor]],
-        *,
         epoch: int,
-        lbs_knn: Optional[int] = None,
-        device: Optional[torch.device] = None,
     ) -> None:
-        if not self.enabled:
-            return
 
-        target_device = device or self.device
-        self.mask_cache.clear()
-        self.frame_iou_scores = {}
-        self.reliable_frames = []
-        self.unreliable_frames = []
-        self.iou_threshold = None
-        self._reliable_frame_set.clear()
-        self._unreliable_frame_set.clear()
-        if epoch == 0 and self._load_cache_from_disk(target_device):
-            self.last_rebuild_epoch = epoch
-            return
-
+        self.reset_state()
         predictor = self._ensure_predictor()
-        effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
 
         n_samples = len(dataset)
         with torch.no_grad():
@@ -791,36 +711,30 @@ class ProgressiveSAMManager:
                 image_uint8 = (image_np * 255.0).round().astype(np.uint8)
 
                 with suppress_sam_logging():
-                    if predictor is not None:
-                        predictor.set_image(image_uint8)
+                    predictor.set_image(image_uint8)
                     refined_results = compute_refined_masks(
                         scene_splats=scene_splats,
-                        smpl_params=sample["smpl_param"].to(target_device),
-                        w2c=sample["M_ext"].to(target_device),
-                        K=sample["K"].to(target_device),
+                        smpl_params=sample["smpl_param"].to(self.device),
+                        w2c=sample["M_ext"].to(self.device),
+                        K=sample["K"].to(self.device),
                         image_size=(int(sample["H"]), int(sample["W"])),
                         alpha_threshold=self.alpha_threshold,
                         predictor=predictor,
                         predictor_cfg=self.predictor_cfg,
                         lbs_weights=lbs_weights,
-                        lbs_knn=effective_knn,
-                        device=target_device,
+                        lbs_knn=self.default_lbs_knn,
+                        device=self.device,
                     )
 
-                entry, iou_scores = self._build_cache_entry(refined_results, target_device)
-                if entry is not None:
-                    self.mask_cache[fid] = entry
-                    self.frame_iou_scores[fid] = iou_scores
+                entry, iou_scores = self._build_mask_entry(refined_results, self.device)
+                self.frame_iou_scores[fid] = iou_scores
+                self._save_entry_to_disk(entry, fid)
 
-        if epoch == 0 and self.mask_cache:
-            self._save_cache_to_disk()
-
-        self.last_rebuild_epoch = epoch
+        self.last_update_epoch = epoch
         self._update_reliability_stats()
+        self._save_state()
 
     def is_frame_reliable(self, fid: int) -> bool:
-        if not self.enabled or self.iou_threshold is None:
-            return False
         return int(fid) in self._reliable_frame_set
 
     def get_reliability_ratio(self) -> float:
@@ -844,68 +758,31 @@ class ProgressiveSAMManager:
                 lowest_fid = fid
         return lowest_fid
 
-    def save(self, iteration: int) -> None:
-        if not self.enabled or len(self.tids) == 0:
-            return
-        total_iter = int(iteration) + int(self.base_iteration)
+    def _save_state(self) -> None:
+        total_iter = int(self.base_iteration) + 1
         payload = {
             "iteration": total_iter,
-            "base_iteration": int(self.base_iteration),
-            "session_iteration": int(iteration),
-            "mask_cache": {
-                fid: {
-                    "refined": entry.refined.detach().cpu(),
-                    "alpha": entry.alpha.detach().cpu(),
-                    "initial": entry.initial.detach().cpu(),
-                    "vis_pos": entry.vis_pos,
-                    "vis_neg": entry.vis_neg,
-                    "iou_scores": entry.iou_scores,
-                }
-                for fid, entry in self.mask_cache.items()
-            },
             "frame_iou_scores": self.frame_iou_scores,
             "reliable_frames": self.reliable_frames,
             "unreliable_frames": self.unreliable_frames,
             "iou_threshold": self.iou_threshold,
-            "last_rebuild_epoch": self.last_rebuild_epoch,
+            "last_update_epoch": self.last_update_epoch,
         }
-        path = self.checkpoint_dir / f"progressive_sam_{total_iter:06d}.pt"
+        path = self.checkpoint_dir / f"progressive_sam.pt"
         torch.save(payload, path)
-        latest_path = self.checkpoint_dir / "latest.txt"
-        latest_path.write_text(path.name)
+        print(f"--- FYI: Saved Progressive SAM checkpoint to {path}")
 
-    def load(self, path: Path) -> None:
-        if not path.exists():
-            raise FileNotFoundError(f"Progressive SAM checkpoint not found: {path}")
+    def _load_state(self, path: Path) -> None:
         data = torch.load(path, map_location=self.device, weights_only=False)
-
-        mask_cache = {}
-        for fid, entry in data.get("mask_cache", {}).items():
-            mask_cache[int(fid)] = MaskCacheEntry(
-                refined=entry["refined"].to(self.device),
-                alpha=entry["alpha"].to(self.device),
-                initial=entry["initial"].to(self.device),
-                vis_pos=entry.get("vis_pos", []),
-                vis_neg=entry.get("vis_neg", []),
-                iou_scores=[float(v) for v in entry.get("iou_scores", [])],
-            )
-        self.mask_cache = mask_cache
         self.frame_iou_scores = {int(k): list(map(float, v)) for k, v in data.get("frame_iou_scores", {}).items()}
         self.reliable_frames = [int(v) for v in data.get("reliable_frames", [])]
         self.unreliable_frames = [int(v) for v in data.get("unreliable_frames", [])]
         self.iou_threshold = data.get("iou_threshold", None)
-        self.last_rebuild_epoch = int(data.get("last_rebuild_epoch", -1))
+        self.last_update_epoch = int(data.get("last_update_epoch", -1))
         self._reliable_frame_set = set(self.reliable_frames)
         self._unreliable_frame_set = set(self.unreliable_frames)
-        total_iter = int(data.get("iteration", 0))
-        base_iter = data.get("base_iteration")
-        if base_iter is None:
-            session_iter = int(data.get("session_iteration", 0))
-            base_iter = total_iter - session_iter
-        if base_iter is None:
-            base_iter = total_iter
-        self.base_iteration = max(int(total_iter), 0)
-        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path}")
+        self.base_iter = max(int(data.get("iteration", 0)), 0)
+        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iter}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}.")
 
     def clear_ckpt_dir(self) -> None:
         """
@@ -919,135 +796,24 @@ class ProgressiveSAMManager:
                 file_path.unlink()
             except Exception:
                 pass
-        latest_path = self.checkpoint_dir / "latest.txt"
-        if latest_path.exists():
-            try:
-                latest_path.unlink()
-            except Exception:
-                pass
         print(f"--- FYI: Cleared Progressive SAM checkpoints in {self.checkpoint_dir} since resume is disabled and we are optimising humans (non-empty tids).")
 
 
-    def init_from_disk(self) -> None:
-        if not self.enabled:
-            return
-        if not self.checkpoint_dir.exists():
-            print(f"--- FYI: Progressive SAM checkpoint dir {self.checkpoint_dir} missing, starting fresh.")
-            return
-        ckpts = sorted(self.checkpoint_dir.glob("progressive_sam_*.pt"))
-        if not ckpts:
-            print("--- FYI: No Progressive SAM checkpoints found, starting from scratch.")
-            return
-        latest = ckpts[-1]
-        try:
-            self.load(latest)
-        except Exception as exc:
-            print(f"--- WARN: Failed to load Progressive SAM checkpoint {latest}: {exc}. Starting fresh.")
-
-    def process_batch(
-        self,
-        *,
-        fid: int,
-        image: Tensor,
-        smpl_params: Tensor,
-        w2c: Tensor,
-        K: Tensor,
-        scene_splats: SceneSplats,
-        lbs_weights: Optional[Sequence[Tensor]],
-        device: torch.device,
-        image_size: Tuple[int, int],
-        lbs_knn: Optional[int] = None,
-    ) -> ProgressiveSamBatchOutput:
-        H, W = image_size
-        dtype = image.dtype
-        batch_device = device
-
-        if len(self.tids) > 0:
-            human_masks = torch.ones((1, len(self.tids), H, W), device=batch_device, dtype=dtype)
+    def init_state(self, resume: bool, dataset, scene_splats: SceneSplats, lbs_weights, epoch: int) -> None:
+        if resume:
+            ckpt_path = self.checkpoint_dir / "progressive_sam.pt"
+            self._load_state(ckpt_path)
         else:
-            human_masks = torch.zeros((1, 1, H, W), device=batch_device, dtype=dtype)
+            if self.tids:
+                self.clear_ckpt_dir()
+            self.reset_state()
+            self.update_masks(dataset, scene_splats, lbs_weights, epoch)
 
-        mask_loss = torch.tensor(0.0, device=batch_device)
-        alpha_stack: Optional[Tensor] = None
-        viz_entries: List[Dict[str, Any]] = []
-
-        if not self.enabled:
-            return ProgressiveSamBatchOutput(
-                human_masks=human_masks,
-                mask_loss=mask_loss,
-                alpha_stack=alpha_stack,
-                viz_entries=viz_entries,
-                iou_scores=None,
-            )
-
-        cache_entry = self.mask_cache.get(fid)
-
-        if cache_entry is None:
-            predictor = self._ensure_predictor()
-            if predictor is None:
-                return ProgressiveSamBatchOutput(
-                    human_masks=human_masks,
-                    mask_loss=mask_loss,
-                    alpha_stack=alpha_stack,
-                    viz_entries=viz_entries,
-                    iou_scores=None,
-                )
-
-            image_np = np.clip(image.detach().cpu().numpy(), 0.0, 1.0)
-            image_uint8 = (image_np * 255.0).round().astype(np.uint8)
-            effective_knn = int(lbs_knn) if lbs_knn is not None else self.default_lbs_knn
-
-            with suppress_sam_logging():
-                predictor.set_image(image_uint8)
-                refined_results = compute_refined_masks(
-                    scene_splats=scene_splats,
-                    smpl_params=smpl_params.to(batch_device),
-                    w2c=w2c.to(batch_device),
-                    K=K.to(batch_device),
-                    image_size=(H, W),
-                    alpha_threshold=self.alpha_threshold,
-                    predictor=predictor,
-                    predictor_cfg=self.predictor_cfg,
-                    lbs_weights=lbs_weights,
-                    lbs_knn=effective_knn,
-                    device=batch_device,
-                )
-
-            cache_entry, iou_scores = self._build_cache_entry(refined_results, batch_device)
-            if cache_entry is not None:
-                self.mask_cache[fid] = cache_entry
-                if iou_scores:
-                    self.frame_iou_scores[fid] = iou_scores
-                    self._update_reliability_stats()
-
-        if cache_entry is not None:
-            human_masks = cache_entry.refined.unsqueeze(0)
-            alpha_stack = cache_entry.alpha
-            mask_loss = F.mse_loss(cache_entry.alpha, cache_entry.refined)
-
-            for idx_h in range(cache_entry.refined.shape[0]):
-                viz_entries.append(
-                    {
-                        "initial": cache_entry.initial[idx_h].detach().cpu().numpy(),
-                        "refined": cache_entry.refined[idx_h].detach().cpu().numpy(),
-                        "pos": cache_entry.vis_pos[idx_h],
-                        "neg": cache_entry.vis_neg[idx_h],
-                    }
-                )
-
-        return ProgressiveSamBatchOutput(
-            human_masks=human_masks,
-            mask_loss=mask_loss,
-            alpha_stack=alpha_stack,
-            viz_entries=viz_entries,
-            iou_scores=self.frame_iou_scores.get(fid),
-        )
-
-    def _build_cache_entry(
+    def _build_mask_entry(
         self,
         refined_results: Sequence[RefinedMaskResult],
         device: torch.device,
-    ) -> Tuple[Optional[MaskCacheEntry], List[float]]:
+    ) -> Tuple[Optional[SamMaskEntry], List[float]]:
         if not refined_results:
             return None, []
 
@@ -1061,7 +827,7 @@ class ProgressiveSAMManager:
         for initial_mask, refined_mask in zip(initial_tensor, refined_tensor):
             iou_scores.append(_compute_mask_iou(initial_mask, refined_mask))
 
-        entry = MaskCacheEntry(
+        entry = SamMaskEntry(
             refined=refined_tensor,
             alpha=alpha_tensor,
             initial=initial_tensor,
@@ -1072,8 +838,6 @@ class ProgressiveSAMManager:
         return entry, iou_scores
 
     def _ensure_predictor(self) -> Optional["SAM2ImagePredictor"]:
-        if not self.enabled:
-            return None
         if self.predictor is not None:
             return self.predictor
 

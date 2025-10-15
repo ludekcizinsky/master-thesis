@@ -479,7 +479,6 @@ class VisualisationManager:
         self,
         *,
         cfg,
-        mask_enabled: bool,
         progressive_sam,
         trn_viz_dir: Path,
         scene_splats: SceneSplats,
@@ -490,7 +489,6 @@ class VisualisationManager:
         pose_overlay_period: int,
     ) -> None:
         self.cfg = cfg
-        self.mask_enabled = mask_enabled
         self.progressive_sam = progressive_sam
         self.trn_viz_dir = Path(trn_viz_dir)
         self.scene_splats = scene_splats
@@ -526,7 +524,7 @@ class VisualisationManager:
         image_np = sample["image"].cpu().numpy()
         image_np = np.clip(image_np, 0.0, 1.0)
 
-        should_log_epoch = self.mask_enabled and (current_epoch % 10 == 0)
+        should_log_epoch = current_epoch % 10 == 0
         should_log_frame = fid == 35
         if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
             save_loss_visualization(
@@ -564,8 +562,6 @@ class VisualisationManager:
 
         pose_overlay_condition = (
             self.cfg.visualise_cam_preds
-            and smpl_snapshot_frame is not None
-            and smpl_snapshot_params is not None
             and fid == smpl_snapshot_frame
             and current_epoch % self.pose_overlay_period == 0
             and current_epoch != last_pose_overlay_epoch

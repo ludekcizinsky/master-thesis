@@ -6,6 +6,7 @@ from torch.utils.data import Dataset
 import numpy as np
 
 from training.helpers.geom_utils import load_K_Rt_from_P
+from training.helpers.progressive_sam import ProgressiveSAMManager
 
 from PIL import Image
 
@@ -18,10 +19,11 @@ class FullSceneDataset(Dataset):
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int], cloud_downsample: int = 10, train_bg: bool = False):
+    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
         self.train_bg = train_bg
+        self.mask_path = mask_path
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
@@ -111,6 +113,13 @@ class FullSceneDataset(Dataset):
         image = self._load_image(img_path)  # [H,W,3]
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
+        # Human masks
+        mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
+        if mask_entry is not None:
+            human_masks = mask_entry.refined
+        else:
+            human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
+
         # Camera 
         # - Extrinsics
         M_ext = self.pose_all[idx]  # [4,4]
@@ -139,6 +148,7 @@ class FullSceneDataset(Dataset):
         return {
             "fid": idx,
             "image": image,     # [H,W,3]
+            "human_mask": human_masks,  # [P,H,W]
             "K": K,             # [3,3]
             "smpl_param": smpl_params,  # [P,86]
             "M_ext": M_ext,         # [4,4]

@@ -55,7 +55,7 @@ class Trainer:
         )
         self.checkpoint_dir = self.ckpt_manager.root
 
-        if not getattr(cfg, "resume", False):
+        if not cfg.resume:
             reset_static = bool(cfg.train_bg)
             reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
             self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
@@ -71,28 +71,11 @@ class Trainer:
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
-        # Initialize Progressive SAM manager
-        mask_cfg = getattr(cfg, "mask_refinement", None)
-        mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
-        self.progressive_sam = ProgressiveSAMManager(
-            mask_cfg=mask_container,
-            tids=list(cfg.tids),
-            device=self.device,
-            default_lbs_knn=int(cfg.lbs_knn),
-            preprocess_dir=preprocess_path,
-            checkpoint_dir=self.checkpoint_dir,
-        )
-        self.mask_loss_weight = self.progressive_sam.loss_weight
-        self.mask_enabled = self.progressive_sam.enabled
-        if cfg.resume:
-            self.progressive_sam.init_from_disk()
-        elif not cfg.resume and len(cfg.tids) > 0:
-            self.progressive_sam.clear_ckpt_dir()
-
         # Load dataset and create dataloader
         self.dataset = FullSceneDataset(
             preprocess_path,
             cfg.tids,  # list of tids to train on
+            mask_path=self.checkpoint_dir / "progressive_sam",
             cloud_downsample=cfg.cloud_downsample,
             train_bg=cfg.train_bg,
         )
@@ -100,7 +83,7 @@ class Trainer:
             self.orbit_reference_w2c = self.dataset.pose_all[0].clone()
         else:
             self.orbit_reference_w2c = torch.eye(4)
-        self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
+
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
 
         # Define 3dgs model of the scene and optimizers
@@ -120,19 +103,40 @@ class Trainer:
         else:
             self.lbs_weights = None
 
+        # Initialize Progressive SAM manager
+        mask_cfg = cfg.mask_refinement
+        mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
+        self.progressive_sam = ProgressiveSAMManager(
+            mask_cfg=mask_container,
+            tids=list(cfg.tids),
+            device=self.device,
+            default_lbs_knn=int(cfg.lbs_knn),
+            checkpoint_dir=self.checkpoint_dir,
+        )
+        self.progressive_sam.init_state(
+            cfg.resume, self.dataset, 
+            self.all_gs, self.lbs_weights, self.current_epoch
+        )
+
+        # Create dataloader
+        self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=4)
+
         # Define trainable SMPL parameters and optimizer
         self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(
             self.dataset, cfg, self.device, checkpoint_manager=self.ckpt_manager
         )
-        self.smpl_snapshot_frame: Optional[int] = None
-        self.smpl_snapshot_params: Optional[List[torch.Tensor]] = None
+        snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
+        if snapshot_fid is not None and snapshot_fid in self.smpl_params:
+            self.smpl_snapshot_frame = snapshot_fid
+            param_tensor = self.smpl_params[snapshot_fid].detach().clone()
+            self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
+            self.last_pose_overlay_epoch = -1
 
         # Init Visualisation manager responsible for periodic visualizations
         self.pose_overlay_period = 5
         self.last_pose_overlay_epoch: int = -1
         self.visualisation_manager = VisualisationManager(
             cfg=self.cfg,
-            mask_enabled=self.mask_enabled,
             progressive_sam=self.progressive_sam,
             trn_viz_dir=self.trn_viz_debug_dir,
             scene_splats=self.all_gs,
@@ -146,6 +150,7 @@ class Trainer:
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         # Parse batch
         images = batch["image"].to(self.device)  # [B,H,W,3]
+        human_masks = batch["human_mask"].to(self.device)  # [B,P,H,W]
         K = batch["K"].to(self.device)           # [B,3,3]
         w2c = batch["M_ext"].to(self.device)     # [B,4,4]
         H, W = batch["image"].shape[1:3]
@@ -161,26 +166,8 @@ class Trainer:
         else:
             smpl_param_forward = frame_smpl_params if frame_reliable else frame_smpl_params.detach()
 
-        # Forward pass: mask refinement
-        mask_output = self.progressive_sam.process_batch(
-            fid=fid,
-            image=images[0],
-            smpl_params=smpl_param_forward,
-            w2c=w2c[0],
-            K=K[0],
-            scene_splats=self.all_gs,
-            lbs_weights=self.lbs_weights,
-            device=self.device,
-            image_size=(H, W),
-            lbs_knn=int(self.cfg.lbs_knn),
-        )
-        human_masks = mask_output.human_masks
-        mask_loss = mask_output.mask_loss
-        alpha_stack = mask_output.alpha_stack
-        viz_entries = mask_output.viz_entries
-
         # Forward pass: render
-        colors, alphas, info = render_splats(
+        colors, _, info = render_splats(
             self.all_gs, smpl_param_forward, 
             self.lbs_weights, w2c, K, H, W, 
             sh_degree=self.cfg.sh_degree
@@ -214,16 +201,6 @@ class Trainer:
 
         # - Combined 
         loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
-
-        # - Mask loss (only when mask refinement is enabled and on the epoch of rebuilding the SAM cache)
-        apply_mask_loss = (
-            self.mask_enabled
-            and alpha_stack is not None
-            and self.mask_loss_weight > 0.0
-            and self.progressive_sam.last_rebuild_epoch == self.current_epoch
-        )
-        if apply_mask_loss:
-            loss = loss + self.mask_loss_weight * mask_loss
 
         # - Add Regularizers
         static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
@@ -283,7 +260,7 @@ class Trainer:
             gt_render=gt_render,
             pred_render=pred_render,
             pred_original=pred_original,
-            viz_entries=viz_entries,
+            viz_entries=None, # TODO: resolve this
             fid=fid,
             current_epoch=self.current_epoch,
             smpl_param_forward=smpl_param_forward,
@@ -298,19 +275,12 @@ class Trainer:
         )
 
         # Log values
-        mask_loss_scalar = float(mask_loss.item()) if apply_mask_loss else 0.0
-        reliability_pct = 0.0
-        if self.mask_enabled:
-            reliability_pct = 100.0 * self.progressive_sam.get_reliability_ratio()
-
         log_values = {
             "loss/combined": float(loss.item()),
             "loss/masked_l1": float(l1_loss.item()),
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
-            "loss/mask_refinement": mask_loss_scalar,
-            "mask/reliable_pct": reliability_pct,
         }
         total_n_gs = 0
         for i, gs in enumerate(self.all_gs.dynamic):
@@ -340,10 +310,8 @@ class Trainer:
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
             while iteration < iters:
                 self.current_epoch = epoch
-                if epoch % 1 == 0:
-                    self._log_epoch_memory(epoch)
-                if self.progressive_sam.should_rebuild(epoch):
-                    self.progressive_sam.rebuild_cache(
+                if self.progressive_sam.should_update(epoch):
+                    self.progressive_sam.update_masks(
                         self.dataset,
                         self.all_gs,
                         self.lbs_weights,
@@ -377,7 +345,6 @@ class Trainer:
 
                     if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
                         self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
-                        self.progressive_sam.save(iteration)
 
                     if iteration >= iters:
                         break
@@ -386,7 +353,6 @@ class Trainer:
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
             self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
-            self.progressive_sam.save(iteration)
         
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)
