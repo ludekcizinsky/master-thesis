@@ -43,6 +43,19 @@ class Trainer:
         self.current_epoch = 0
         print(f"--- FYI: using device {self.device}")
 
+        # Checkpoint manager
+        self.ckpt_manager = GaussianCheckpointManager(
+            Path(cfg.output_dir),
+            cfg.group_name,
+            cfg.tids,
+        )
+        self.checkpoint_dir = self.ckpt_manager.root
+
+        if not getattr(cfg, "resume", False):
+            reset_static = bool(cfg.train_bg)
+            reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
+            self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
+
         # Setup experiment dirs
         preprocess_path = Path(cfg.preprocess_dir)
         if internal_run_id is not None:
@@ -80,19 +93,6 @@ class Trainer:
             self.orbit_reference_w2c = torch.eye(4)
         self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
         print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
-
-        # Checkpoint manager
-        self.ckpt_manager = GaussianCheckpointManager(
-            Path(cfg.output_dir),
-            cfg.group_name,
-            cfg.tids,
-        )
-        self.checkpoint_dir = self.ckpt_manager.root
-
-        if not getattr(cfg, "resume", False):
-            reset_static = bool(cfg.train_bg)
-            reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
-            self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
 
         # Define 3dgs model of the scene and optimizers
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
