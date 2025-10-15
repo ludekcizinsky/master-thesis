@@ -11,12 +11,17 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import resource
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import wandb
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None
 
 from tqdm import tqdm
 
@@ -319,6 +324,15 @@ class Trainer:
 
         return log_values
 
+    def _log_epoch_memory(self, epoch: int) -> None:
+        if psutil is not None:
+            process = psutil.Process(os.getpid())
+            rss_gb = process.memory_info().rss / (1024 ** 3)
+        else:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            rss_gb = usage.ru_maxrss / (1024 ** 2)
+        print(f"--- FYI: epoch {epoch:03d} RSS {rss_gb:.2f} GB")
+
     def train_loop(self, iters: int = 2000):
         iteration = 0
         epoch = 0
@@ -326,6 +340,8 @@ class Trainer:
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
             while iteration < iters:
                 self.current_epoch = epoch
+                if epoch % 1 == 0:
+                    self._log_epoch_memory(epoch)
                 if self.progressive_sam.should_rebuild(epoch):
                     self.progressive_sam.rebuild_cache(
                         self.dataset,
