@@ -60,7 +60,7 @@ class ModelCheckpointManager:
                 session_iteration=iteration,
             )
 
-        if smpl_params:
+        if len(smpl_params) > 0:
             base_iter = int(self.smpl_base_iteration)
             total_iter = int(iteration) + base_iter
             self._save_smpl_params(

@@ -151,16 +151,17 @@ class Trainer:
 
         # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
         frame_smpl_params = self.smpl_params.get(fid)
-        assert frame_smpl_params is not None, f"SMPL parameters for frame {fid} not found. Currently, we expect all frames to have SMPL parameters (i.e. at least one person)."
         frame_reliable = self.progressive_sam.is_frame_reliable(fid)
-        smpl_param_batch = frame_smpl_params.unsqueeze(0)
-        smpl_param_forward = smpl_param_batch if frame_reliable else smpl_param_batch.detach()
+        if frame_smpl_params is None:
+            smpl_param_forward = None
+        else:
+            smpl_param_forward = frame_smpl_params if frame_reliable else frame_smpl_params.detach()
 
         # Forward pass: mask refinement
         mask_output = self.progressive_sam.process_batch(
             fid=fid,
             image=images[0],
-            smpl_params=smpl_param_forward[0],
+            smpl_params=smpl_param_forward,
             w2c=w2c[0],
             K=K[0],
             scene_splats=self.all_gs,

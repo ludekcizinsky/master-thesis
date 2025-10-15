@@ -602,7 +602,7 @@ class ProgressiveSAMManager:
         self.checkpoint_dir = Path(checkpoint_dir) / "progressive_sam"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        self.enabled = bool(mask_cfg.get("enabled", False)) and len(self.tids) > 0
+        self.enabled = bool(mask_cfg.get("enabled", False)) # and len(self.tids) > 0
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
         self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
         self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
@@ -845,7 +845,7 @@ class ProgressiveSAMManager:
         return lowest_fid
 
     def save(self, iteration: int) -> None:
-        if not self.enabled:
+        if not self.enabled or len(self.tids) == 0:
             return
         total_iter = int(iteration) + int(self.base_iteration)
         payload = {

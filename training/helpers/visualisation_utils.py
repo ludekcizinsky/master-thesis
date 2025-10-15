@@ -549,7 +549,7 @@ class VisualisationManager:
                     )
 
             orbit_path = self.trn_viz_dir / f"orbit_epoch{current_epoch:03d}_fid{fid:04d}.mp4"
-            try:
+            if smpl_param_forward is not None:
                 save_orbit_visualization(
                     scene_splats=self.scene_splats,
                     smpl_params=smpl_param_forward.detach(),
@@ -561,8 +561,6 @@ class VisualisationManager:
                     sh_degree=self.sh_degree,
                     out_path=orbit_path,
                 )
-            except Exception as exc:
-                print(f"--- WARN: Failed to produce orbit visualization for epoch {current_epoch}, fid {fid}: {exc}")
 
         pose_overlay_condition = (
             self.cfg.visualise_cam_preds

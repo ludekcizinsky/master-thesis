@@ -33,7 +33,7 @@ def _prep_splats_for_render(
     lbs_weights: torch.Tensor = None, # [P, M, 24]
     clamp_sigma: tuple = (1e-4, 1.0),
     dtype: torch.dtype = torch.float32,
-    device: torch.device | str | None = None,
+    device: str = "cuda"
 ):
 
     # Static (background)
@@ -161,11 +161,10 @@ def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree):
     # Prep splats
     p = _prep_splats_for_render(
         all_gs=all_gs,
-        smpl_param=smpl_param[0], # assume batch size 1 for now, TODO: future work
+        smpl_param=smpl_param, 
         lbs_weights=lbs_weights,
         clamp_sigma=(1e-4, 1.0),
         dtype=torch.float32,
-        device=smpl_param.device,
     )
 
     # Render
