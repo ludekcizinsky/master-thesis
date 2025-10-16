@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=v1_runs
+#SBATCH --job-name=v2_runs
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=05:00:00
+#SBATCH --time=02:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -17,16 +17,10 @@ conda activate thesis
 cd /home/cizinsky/master-thesis
 
 # Full scene (default setup)
+GROUP_NAME=dev
 # - dynamic
-python training/run.py scene_name=football_high_res tids=[0] train_bg=false resume=false logger.tags=[v1] group_name=v1_default
-python training/run.py scene_name=football_high_res tids=[1] train_bg=false resume=false logger.tags=[v1] group_name=v1_default
+# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME
 # - static
-python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=false logger.tags=[v1] opacity_reg=0.001 scale_reg=0.01 cloud_downsample=10 gs_refine_every=100 gs_refine_stop_iter=15000 group_name=v1_default
-
-# - joint  dynamic+static
-python training/run.py scene_name=football_high_res tids=[0,1] train_bg=true resume=true logger.tags=[v1] opacity_reg=0.001 scale_reg=0.01 cloud_downsample=10 gs_refine_every=500 gs_refine_start_iter=5000 gs_refine_stop_iter=7000 group_name=v1_default
-
-# Post training visualization
-python training/visualize_scene.py render_bg=true render_tids=[0,1]
-python training/visualize_scene.py render_bg=false render_tids=[0,1]
-python training/visualize_scene.py render_bg=true render_tids=[]
+# python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME
+# - dynamic+static
+python training/run.py scene_name=football_high_res tids=[0,1] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=4000

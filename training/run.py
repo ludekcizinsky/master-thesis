@@ -131,9 +131,12 @@ class Trainer:
             param_tensor = self.smpl_params[snapshot_fid].detach().clone()
             self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
             self.last_pose_overlay_epoch = -1
+        else:
+            self.smpl_snapshot_frame = None
+            self.smpl_snapshot_params = None
 
         # Init Visualisation manager responsible for periodic visualizations
-        self.pose_overlay_period = 5
+        self.pose_overlay_period = 10
         self.last_pose_overlay_epoch: int = -1
         self.visualisation_manager = VisualisationManager(
             cfg=self.cfg,
