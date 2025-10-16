@@ -7,7 +7,7 @@ from omegaconf import DictConfig, OmegaConf
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -250,6 +250,26 @@ class Trainer:
             packed=self.cfg.packed
         )
 
+        # Clear any gradients stored on auxiliary tensors returned in info to avoid
+        # keeping cloned grad buffers alive across iterations.
+        def _clear_aux_grads(entry: Any) -> None:
+            if isinstance(entry, torch.Tensor):
+                entry.grad = None
+            elif isinstance(entry, dict):
+                for value in entry.values():
+                    _clear_aux_grads(value)
+            elif isinstance(entry, (list, tuple)):
+                for item in entry:
+                    _clear_aux_grads(item)
+
+        if isinstance(info, tuple) and len(info) == 2:
+            static_info, dynamic_infos = info
+            _clear_aux_grads(static_info)
+            _clear_aux_grads(dynamic_infos)
+        else:
+            _clear_aux_grads(info)
+        info = None
+
 
         # Update skinning weights
         if len(self.cfg.tids) > 0:
@@ -297,13 +317,25 @@ class Trainer:
         return log_values
 
     def _log_epoch_memory(self, epoch: int) -> None:
+
+        # GPU memory
+        if torch.cuda.is_available():
+            allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
+            print(f"--- DEBUG: epoch {epoch:03d} torch.cuda.memory_summary (abbreviated=False)")
+            print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
+        else:
+            allocated_gb = 0.0
+            reserved_gb = 0.0
+
+        # RAM usage
         if psutil is not None:
             process = psutil.Process(os.getpid())
             rss_gb = process.memory_info().rss / (1024 ** 3)
         else:
             usage = resource.getrusage(resource.RUSAGE_SELF)
             rss_gb = usage.ru_maxrss / (1024 ** 2)
-        print(f"--- FYI: epoch {epoch:03d} RSS {rss_gb:.2f} GB")
+        print(f"--- FYI: epoch {epoch:03d} RSS {rss_gb:.2f} GB, GPU allocated {allocated_gb:.2f} GB, reserved {reserved_gb:.2f} GB")
 
     def train_loop(self, iters: int = 2000):
         iteration = 0
