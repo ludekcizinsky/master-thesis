@@ -17,9 +17,9 @@ conda activate thesis
 cd /home/cizinsky/master-thesis
 
 # Full scene (default setup)
-GROUP_NAME=dev
+GROUP_NAME=v2_default
 # - dynamic
-# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME
+# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false logger.tags=[v2] group_name=$GROUP_NAME
 # - static
 # python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME
 # - dynamic+static
