@@ -260,7 +260,6 @@ class Trainer:
             gt_render=gt_render,
             pred_render=pred_render,
             pred_original=pred_original,
-            viz_entries=None, # TODO: resolve this
             fid=fid,
             current_epoch=self.current_epoch,
             smpl_param_forward=smpl_param_forward,

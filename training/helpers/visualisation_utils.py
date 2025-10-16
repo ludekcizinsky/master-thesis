@@ -13,6 +13,7 @@ import imageio.v2 as imageio
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed
+from training.helpers.progressive_sam import ProgressiveSAMManager
 
 
 def save_mask_refinement_figure(
@@ -505,7 +506,6 @@ class VisualisationManager:
         gt_render: torch.Tensor,
         pred_render: torch.Tensor,
         pred_original: torch.Tensor,
-        viz_entries: List[Dict[str, Any]],
         fid: int,
         current_epoch: int,
         smpl_param_forward: torch.Tensor,
@@ -527,6 +527,7 @@ class VisualisationManager:
         should_log_epoch = current_epoch % 10 == 0
         should_log_frame = fid == 35
         if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
+            # Prediction vs gt visualization
             save_loss_visualization(
                 gt_masked=gt_render,
                 prediction_masked=pred_render,
@@ -534,18 +535,34 @@ class VisualisationManager:
                 out_path=self.trn_viz_dir / f"lossviz_epoch{current_epoch:03d}_fid{fid:04d}.png",
             )
 
-            if viz_entries:
-                for idx, entry in enumerate(viz_entries):
-                    out_path = self.trn_viz_dir / f"maskref_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
-                    save_mask_refinement_figure(
-                        image_np,
-                        entry["initial"],
-                        entry["refined"],
-                        entry["pos"],
-                        entry["neg"],
-                        out_path,
-                    )
+            # SMPL mask refinement visualization
+            cache_entry = ProgressiveSAMManager._load_entry_from_disk(
+                self.progressive_sam.checkpoint_dir, fid=fid, device='cpu'
+            )
+            viz_entries = []
+            for idx_h in range(cache_entry.refined.shape[0]):
+                viz_entries.append(
+                    {
+                        "initial": cache_entry.initial[idx_h].numpy(),
+                        "refined": cache_entry.refined[idx_h].numpy(),
+                        "pos": cache_entry.vis_pos[idx_h],
+                        "neg": cache_entry.vis_neg[idx_h],
+                    }
+                )
 
+
+            for idx, entry in enumerate(viz_entries):
+                out_path = self.trn_viz_dir / f"maskref_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
+                save_mask_refinement_figure(
+                    image_np,
+                    entry["initial"],
+                    entry["refined"],
+                    entry["pos"],
+                    entry["neg"],
+                    out_path,
+                )
+
+            # Orbit visualization
             orbit_path = self.trn_viz_dir / f"orbit_epoch{current_epoch:03d}_fid{fid:04d}.mp4"
             if smpl_param_forward is not None:
                 save_orbit_visualization(
