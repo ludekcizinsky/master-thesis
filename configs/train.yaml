@@ -33,11 +33,12 @@ gs_refine_every: 300      # frequency of applying the densification strategy
 gs_refine_stop_iter: 7500 # stop applying the densification strategy after these many iterations
 gs_refine_start_iter: 500 # default is normally 500
 
+# --- SMPL optimisation settings
+max_smpl_optim_epoch: 20
+
 # --- Loss and regularization weights
 l1_lambda: 0.8
 ssim_lambda: 0.2
-unmasked_l1_lambda: 0.8
-unmasked_ssim_lambda: 0.2
 opacity_reg: 0.001
 scale_reg: 0.001
 lbs_knn: 30
@@ -47,6 +48,7 @@ mask_refinement:
   alpha_threshold: 0.2
   loss_weight: 0.01
   rebuild_every_epochs: 10
+  rebuild_max_epoch: 20
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda

@@ -582,6 +582,7 @@ class ProgressiveSAMManager:
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
         self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
         self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
+        self.rebuild_max_epoch = max(int(mask_cfg.get("rebuild_max_epoch", 20)), 1)
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
 
         # paths
@@ -603,7 +604,7 @@ class ProgressiveSAMManager:
         self.base_iteration: int = 0
 
     def should_update(self, epoch: int) -> bool:
-        return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs
+        return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs and epoch <= self.rebuild_max_epoch
 
     def _save_entry_to_disk(self, entry: SamMaskEntry, fid: int) -> None:
         payload = {
@@ -748,18 +749,17 @@ class ProgressiveSAMManager:
         return lowest_fid
 
     def _save_state(self) -> None:
-        total_iter = int(self.base_iteration) + 1
+        self.base_iteration += 1
         payload = {
-            "iteration": total_iter,
+            "iteration": self.base_iteration,
             "frame_iou_scores": self.frame_iou_scores,
             "reliable_frames": self.reliable_frames,
             "unreliable_frames": self.unreliable_frames,
             "iou_threshold": self.iou_threshold,
-            "last_update_epoch": self.last_update_epoch,
         }
         path = self.checkpoint_dir / f"progressive_sam.pt"
         torch.save(payload, path)
-        print(f"--- FYI: Saved Progressive SAM checkpoint to {path}")
+        print(f"--- FYI: Saved Progressive SAM checkpoint to {path} with iteration {self.base_iteration}.")
 
     def _load_state(self, path: Path) -> None:
         data = torch.load(path, map_location=self.device, weights_only=False)
@@ -767,11 +767,11 @@ class ProgressiveSAMManager:
         self.reliable_frames = [int(v) for v in data.get("reliable_frames", [])]
         self.unreliable_frames = [int(v) for v in data.get("unreliable_frames", [])]
         self.iou_threshold = data.get("iou_threshold", None)
-        self.last_update_epoch = int(data.get("last_update_epoch", -1))
+        self.last_update_epoch = 0
         self._reliable_frame_set = set(self.reliable_frames)
         self._unreliable_frame_set = set(self.unreliable_frames)
-        self.base_iter = max(int(data.get("iteration", 0)), 0)
-        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iter}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}. And IoU threshold: {self.iou_threshold}.")
+        self.base_iteration = max(int(data.get("iteration", 0)), 0)
+        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iteration}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}. And IoU threshold: {self.iou_threshold}.")
 
     def clear_ckpt_dir(self) -> None:
         """

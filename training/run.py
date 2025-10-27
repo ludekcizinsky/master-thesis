@@ -37,6 +37,7 @@ class Trainer:
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         self.current_epoch = 0
+        self.is_smpl_optim_enabled = self.current_epoch < cfg.max_smpl_optim_epoch
         print(f"--- FYI: using device {self.device}")
 
         # Checkpoint manager
@@ -53,7 +54,6 @@ class Trainer:
             self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
 
         # Setup experiment dirs
-        preprocess_path = Path(cfg.preprocess_dir)
         if internal_run_id is not None:
             run_name, run_id = internal_run_id.split("_")
             self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
@@ -154,8 +154,10 @@ class Trainer:
         frame_reliable = self.progressive_sam.is_frame_reliable(fid)
         if frame_smpl_params is None:
             smpl_param_forward = None
+        elif frame_reliable and self.is_smpl_optim_enabled:
+            smpl_param_forward = frame_smpl_params
         else:
-            smpl_param_forward = frame_smpl_params if frame_reliable else frame_smpl_params.detach()
+            smpl_param_forward = frame_smpl_params.detach()
 
         # Forward pass: render
         colors, _, info = render_splats(
@@ -372,6 +374,9 @@ class Trainer:
                         break
 
                 epoch += 1
+                self.is_smpl_optim_enabled = self.current_epoch < self.cfg.max_smpl_optim_epoch
+                if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.max_smpl_optim_epoch):
+                    print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
             self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
