@@ -53,16 +53,6 @@ class SamMaskEntry:
     vis_neg: List[Optional[np.ndarray]]
     iou_scores: List[float]
 
-
-@dataclass
-class ProgressiveSamBatchOutput:
-    human_masks: Tensor
-    mask_loss: Tensor
-    alpha_stack: Optional[Tensor]
-    viz_entries: List[Dict[str, Any]]
-    iou_scores: Optional[List[float]] = None
-
-
 @contextmanager
 def suppress_sam_logging(level: int = logging.WARNING):
     logger = logging.getLogger()
@@ -192,7 +182,7 @@ CATEGORY_JOINTS = {
     "chest": {0, 3, 6, 9},
     "head": {12, 15},
 }
-POINTS_PER_CATEGORY = 2
+POINTS_PER_CATEGORY = 10
 
 
 def _build_category_indices(joint_labels: np.ndarray) -> dict[str, np.ndarray]:

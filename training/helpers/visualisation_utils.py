@@ -16,6 +16,43 @@ from training.helpers.smpl_utils import canon_to_posed
 from training.helpers.progressive_sam import ProgressiveSAMManager
 
 
+def save_alpha_heatmap(
+    alpha_map: torch.Tensor,
+    out_path: Path,
+    human_idx: int = 0,
+    cmap: str = "viridis",
+) -> Path:
+    """
+    Save a heatmap visualisation of an alpha map for a single human.
+
+    Args:
+        alpha_map: Alpha tensor of shape [H, W] (or [H, W, 1]) in [0, 1].
+        out_path: Destination path for the PNG file.
+        human_idx: Optional identifier to include in the figure title.
+        cmap: Matplotlib colormap to use for the heatmap.
+    """
+    alpha_np = alpha_map.squeeze().detach().cpu().float().numpy()
+    alpha_np = np.clip(alpha_np, 0.0, 1.0)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    im = ax.imshow(alpha_np, cmap=cmap, vmin=0.0, vmax=1.0)
+    ax.set_title(f"Alpha heatmap (human {human_idx})")
+    ax.set_axis_off()
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Alpha value", rotation=270, labelpad=12)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+    return out_path
+
+
+
 def save_mask_refinement_figure(
     image: np.ndarray,
     initial_mask: np.ndarray,
@@ -560,6 +597,16 @@ class VisualisationManager:
                     entry["pos"],
                     entry["neg"],
                     out_path,
+                )
+            
+            # Visualize alpha maps
+            alpha_maps = cache_entry.alpha
+            for idx, alpha_map in enumerate(alpha_maps):
+                out_path = self.trn_viz_dir / f"alpha_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
+                save_alpha_heatmap(
+                    alpha_map=alpha_map,
+                    out_path=out_path,
+                    human_idx=idx,
                 )
 
             # Orbit visualization
