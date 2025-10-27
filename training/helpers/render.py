@@ -85,33 +85,6 @@ def _prep_splats_for_render(
 
     return all_pack
 
-def _register_subset_grad_hook(parent: torch.Tensor, child: torch.Tensor, start: int, end: int) -> None:
-    """Mirror gradients from `parent` into the derived `child` slice.
-
-    The densification strategy expects gradients on the per-model slices produced by
-    `_parse_info`. These slices are created after the forward pass and are therefore
-    not part of the autograd graph. By registering a hook on the parent tensor we can
-    copy the relevant slice of the parent's gradient into the child tensor after the
-    backward pass finishes.
-    """
-    if not (isinstance(parent, torch.Tensor) and isinstance(child, torch.Tensor)):
-        return
-    if not (parent.requires_grad and child.requires_grad):
-        return
-
-    slice_spec = (slice(None), slice(start, end))
-
-    def _hook(grad: torch.Tensor) -> torch.Tensor:
-        if grad is not None:
-            grad_slice = grad[slice_spec + (Ellipsis,)].clone()
-            if child.grad is None:
-                child.grad = grad_slice
-            else:
-                child.grad = child.grad + grad_slice
-        return grad
-
-    parent.register_hook(_hook)
-
 def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
     # TODO: polish this function, currently a bit hacky
 
@@ -135,8 +108,11 @@ def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
             value = info.get(key, None)
             if value is not None:
                 start_idx, end_idx = prev_n_gs, prev_n_gs + curr_n_gs
+                if value.requires_grad:
+                    value.retain_grad()
                 subset = value[:, start_idx:end_idx]
-                _register_subset_grad_hook(value, subset, start_idx, end_idx)
+                setattr(subset, "_parent_tensor", value)
+                setattr(subset, "_parent_slice", (start_idx, end_idx))
                 new_info[key] = subset
             else:
                 new_info[key] = None

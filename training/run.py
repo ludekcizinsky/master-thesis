@@ -227,6 +227,23 @@ class Trainer:
         # Backprop
         loss.backward()
 
+        def _assign_subset_grads(entry: Any) -> None:
+            if isinstance(entry, torch.Tensor):
+                parent = getattr(entry, "_parent_tensor", None)
+                slc = getattr(entry, "_parent_slice", None)
+                if parent is not None and slc is not None and parent.grad is not None:
+                    start, end = slc
+                    grad_view = parent.grad[(slice(None), slice(start, end))]
+                    entry.grad = grad_view
+            elif isinstance(entry, dict):
+                for value in entry.values():
+                    _assign_subset_grads(value)
+            elif isinstance(entry, (list, tuple)):
+                for item in entry:
+                    _assign_subset_grads(item)
+
+        _assign_subset_grads(info)
+
         # Update weights step
         static_optims = [self.all_optimisers.static] if self.all_gs.static is not None else []
         all_optims = static_optims + self.all_optimisers.dynamic
