@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
 from training.helpers.geom_utils import load_K_Rt_from_P
@@ -155,3 +155,25 @@ class FullSceneDataset(Dataset):
             "W": self.W,
             "H": self.H,
         }
+
+
+
+def build_dataset(cfg, mask_path: Path) -> Dataset:
+    dataset = FullSceneDataset(
+        preprocess_dir=Path(cfg.preprocess_dir),
+        tids=cfg.tids,
+        mask_path=mask_path,
+        cloud_downsample=cfg.cloud_downsample,
+        train_bg=cfg.train_bg,
+    )
+    return dataset
+
+def build_dataloader(cfg, dataset: Dataset) -> DataLoader:
+    dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=cfg.num_workers
+    )
+    print(f"--- FYI: DataLoader created with num_workers={cfg.num_workers}.")
+    return dataloader

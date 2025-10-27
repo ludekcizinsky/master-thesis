@@ -605,16 +605,6 @@ class ProgressiveSAMManager:
     def should_update(self, epoch: int) -> bool:
         return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs
 
-    def reset_state(self) -> None:
-        self.frame_iou_scores = {}
-        self.reliable_frames = []
-        self.unreliable_frames = []
-        self.iou_threshold = None
-        self._reliable_frame_set.clear()
-        self._unreliable_frame_set.clear()
-        self.last_update_epoch = -1
-        self.base_iteration = 0
-
     def _save_entry_to_disk(self, entry: SamMaskEntry, fid: int) -> None:
         payload = {
             "fid": int(fid),
@@ -698,7 +688,6 @@ class ProgressiveSAMManager:
         epoch: int,
     ) -> None:
 
-        self.reset_state()
         predictor = self._ensure_predictor()
 
         n_samples = len(dataset)
@@ -782,7 +771,7 @@ class ProgressiveSAMManager:
         self._reliable_frame_set = set(self.reliable_frames)
         self._unreliable_frame_set = set(self.unreliable_frames)
         self.base_iter = max(int(data.get("iteration", 0)), 0)
-        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iter}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}.")
+        print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iter}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}. And IoU threshold: {self.iou_threshold}.")
 
     def clear_ckpt_dir(self) -> None:
         """
@@ -790,7 +779,7 @@ class ProgressiveSAMManager:
         """
         if not self.checkpoint_dir.exists():
             return
-        files = list(self.checkpoint_dir.glob("progressive_sam_*.pt"))
+        files = list(self.checkpoint_dir.glob("*.pt"))
         for file_path in files:
             try:
                 file_path.unlink()
@@ -806,7 +795,6 @@ class ProgressiveSAMManager:
         else:
             if self.tids:
                 self.clear_ckpt_dir()
-            self.reset_state()
             self.update_masks(dataset, scene_splats, lbs_weights, epoch)
 
     def _build_mask_entry(

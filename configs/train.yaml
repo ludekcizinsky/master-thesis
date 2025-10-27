@@ -11,6 +11,7 @@ preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/footb
 train_dir: ${output_dir}/training
 
 # --- Training settings
+num_workers: 4  # number of data loading workers
 iters: 30000
 save_freq: 1000 # frequency of checkpointing
 resume: false
@@ -43,9 +44,9 @@ lbs_knn: 30
 
 mask_refinement:
   enabled: true
-  alpha_threshold: 0.4
+  alpha_threshold: 0.2
   loss_weight: 0.01
-  rebuild_every_epochs: 10000
+  rebuild_every_epochs: 10
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda

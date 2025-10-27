@@ -1,7 +1,6 @@
 import hydra
 import os
 import sys
-import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -10,24 +9,17 @@ os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-import resource
+from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 import wandb
-try:
-    import psutil  # type: ignore
-except ImportError:
-    psutil = None
-
 from tqdm import tqdm
 
 from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights
-from training.helpers.dataset import FullSceneDataset
+from training.helpers.dataset import build_dataset, build_dataloader
 from training.helpers.model_init import create_splats_with_optimizers, init_trainable_smpl_params
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
@@ -72,13 +64,9 @@ class Trainer:
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
         # Load dataset and create dataloader
-        self.dataset = FullSceneDataset(
-            preprocess_path,
-            cfg.tids,  # list of tids to train on
-            mask_path=self.checkpoint_dir / "progressive_sam",
-            cloud_downsample=cfg.cloud_downsample,
-            train_bg=cfg.train_bg,
-        )
+        mask_path = self.checkpoint_dir / "progressive_sam"
+        self.dataset = build_dataset(cfg, mask_path=mask_path)
+
         if len(self.dataset) > 0:
             self.orbit_reference_w2c = self.dataset.pose_all[0].clone()
         else:
@@ -119,7 +107,7 @@ class Trainer:
         )
 
         # Create dataloader
-        self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=4)
+        self.loader = build_dataloader(cfg, self.dataset)
 
         # Define trainable SMPL parameters and optimizer
         self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(
@@ -333,27 +321,6 @@ class Trainer:
 
         return log_values
 
-    def _log_epoch_memory(self, epoch: int) -> None:
-
-        # GPU memory
-        if torch.cuda.is_available():
-            allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
-            reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
-            print(f"--- DEBUG: epoch {epoch:03d} torch.cuda.memory_summary (abbreviated=False)")
-            print(torch.cuda.memory_summary(device=self.device, abbreviated=False))
-        else:
-            allocated_gb = 0.0
-            reserved_gb = 0.0
-
-        # RAM usage
-        if psutil is not None:
-            process = psutil.Process(os.getpid())
-            rss_gb = process.memory_info().rss / (1024 ** 3)
-        else:
-            usage = resource.getrusage(resource.RUSAGE_SELF)
-            rss_gb = usage.ru_maxrss / (1024 ** 2)
-        print(f"--- FYI: epoch {epoch:03d} RSS {rss_gb:.2f} GB, GPU allocated {allocated_gb:.2f} GB, reserved {reserved_gb:.2f} GB")
-
     def train_loop(self, iters: int = 2000):
         iteration = 0
         epoch = 0
@@ -362,20 +329,22 @@ class Trainer:
             while iteration < iters:
                 self.current_epoch = epoch
                 if self.progressive_sam.should_update(epoch):
-                    self.progressive_sam.update_masks(
-                        self.dataset,
-                        self.all_gs,
-                        self.lbs_weights,
-                        epoch=epoch,
-                        lbs_knn=int(self.cfg.lbs_knn),
-                        device=self.device,
-                    )
+                    self.progressive_sam.update_masks(self.dataset, self.all_gs, self.lbs_weights, epoch=epoch)
                     snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
                     if snapshot_fid is not None and snapshot_fid in self.smpl_params:
                         self.smpl_snapshot_frame = snapshot_fid
                         param_tensor = self.smpl_params[snapshot_fid].detach().clone()
                         self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
                         self.last_pose_overlay_epoch = -1
+                    
+                    self.loader = build_dataloader(self.cfg, self.dataset)
+                    psam_logs = {
+                        "progressive_sam/num_reliable_frames": len(self.progressive_sam.reliable_frames),
+                        "progressive_sam/num_unreliable_frames": len(self.progressive_sam.unreliable_frames),
+                        "progressive_sam/reliability_threshold": self.progressive_sam.iou_threshold,
+                    }
+                else:
+                    psam_logs = {}
 
                 for batch in self.loader:
                     iteration += 1
@@ -392,6 +361,8 @@ class Trainer:
                     # Log to wandb
                     logs["iteration"] = iteration
                     logs["epoch"] = epoch
+                    if psam_logs:
+                        logs.update(psam_logs)
                     wandb.log(logs)
 
                     if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
