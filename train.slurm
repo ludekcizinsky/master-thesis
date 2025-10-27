@@ -24,3 +24,5 @@ GROUP_NAME=v2_default
 # python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME
 # - dynamic+static
 python training/run.py scene_name=football_high_res tids=[0,1] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=4000
+
+# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000
