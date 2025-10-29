@@ -4,9 +4,9 @@ set -e
 # parameter setup
 folder_path="/scratch/izar/cizinsky/multiply-output/preprocessing" # absolute path of preprocessing folder
 source="custom" # "custom" if use custom data
-seq="pushups_smpl" # name of the sequence
+seq="taichi" # name of the sequence
 seq_path="/home/cizinsky/zurihack/iphone_vids/$seq.mov" # path to the seq
-number=1 # number of people
+number=2 # number of people
 rm -rf ~/.cache/torch/kernels/* # remove cached torch kernels to avoid this weird error saying Torch.prod produces RuntimeError: CUDA driver error: invalid
 
 source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
@@ -17,10 +17,10 @@ aitviewer_env="aitv"
 multiply_env="multiply"
 cd $folder_path
 
-echo "---- Extracting frames from the video"
-mkdir $folder_path/raw_data/$seq
-mkdir $folder_path/raw_data/$seq/frames
-ffmpeg -y -i "$seq_path" -vf fps=15 -vsync 0 "$folder_path/raw_data/$seq/frames/%04d.png"
+# echo "---- Extracting frames from the video"
+# mkdir $folder_path/raw_data/$seq
+# mkdir $folder_path/raw_data/$seq/frames
+# ffmpeg -y -i "$seq_path" -vf fps=15 -vsync 0 "$folder_path/raw_data/$seq/frames/%04d.png"
 
 echo "---- Running Trace"
 conda activate $trace_env
@@ -58,9 +58,9 @@ python normalize_cameras_trace.py --input_cameras_file $folder_path/data/$seq/ca
                             --output_cameras_file $folder_path/data/$seq/cameras_normalize.npz \
                             --max_human_sphere_file $folder_path/data/$seq/max_human_sphere.npy
 
-echo "---- Running unidepth to obtain per frame depth maps"
-export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
-CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
---scene-name $seq \
---img-path $folder_path/data/$seq/image \
---outdir $folder_path/data/$seq/unidepth
+# echo "---- Running unidepth to obtain per frame depth maps"
+# export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
+# CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
+# --scene-name $seq \
+# --img-path $folder_path/data/$seq/image \
+# --outdir $folder_path/data/$seq/unidepth
