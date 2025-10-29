@@ -16,6 +16,13 @@ from training.smpl_deformer.smpl_server import SMPLServer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# parse args (sequence name)
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--sequence", type=str, required=True, help="Name of the sequence to visualize.")
+args = parser.parse_args()
+sequence_name = args.sequence
+
 # ---- Helpers
 def canon_to_posed(smpl_server, smpl_params, verts_c, weights_c):
     """Transform vertices from canonical to posed space using LBS.
@@ -60,9 +67,9 @@ def load_unidepth_pointcloud(npz_path, downsample: int = 1):
     return pts, cols
 
 # ---- Load data
-preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi")
+preprocess_dir = Path(f"/scratch/izar/cizinsky/multiply-output/preprocessing/data/{sequence_name}")
 tids = [0, 1]  # List of tids to include
-masks_path = preprocess_dir / "progressive_sam"
+masks_path = preprocess_dir / "sam2_masks"
 ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids, train_bg=True, mask_path=masks_path)
 
 # SMPL canonical data

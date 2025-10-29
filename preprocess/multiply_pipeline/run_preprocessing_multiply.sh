@@ -4,7 +4,7 @@ set -e
 # parameter setup
 folder_path="/scratch/izar/cizinsky/multiply-output/preprocessing" # absolute path of preprocessing folder
 source="custom" # "custom" if use custom data
-seq="taichi" # name of the sequence
+seq="football_high_res" # name of the sequence
 number=2 # number of people
 rm -rf ~/.cache/torch/kernels/* # remove cached torch kernels to avoid this weird error saying Torch.prod produces RuntimeError: CUDA driver error: invalid
 
@@ -63,7 +63,7 @@ CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
 echo "---- Running mask refinement with SAM"
 conda deactivate && conda activate thesis
 cd /home/cizinsky/master-thesis
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true
+python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true
 
 echo "---- Converting unidepth to point clouds"
 conda deactivate && conda activate thesis
@@ -74,7 +74,7 @@ python unidepth_to_cloud.py \
   --mask_dir       /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/sam2_masks \
   --output_npz /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth_cloud_static_scaled.npz \
   --max_frames 30 \
-  --depth_scale 0.4
+  --depth_scale 0.2
 
 # echo "---- Running visualization of joined results"
-python joined_viz.py
+python joined_viz.py --sequence $seq
