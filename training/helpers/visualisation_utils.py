@@ -601,7 +601,7 @@ class VisualisationManager:
 
         should_log_epoch = current_epoch % 10 == 0
         should_log_frame = fid == 35
-        if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds:
+        if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds and smpl_param_forward is not None:
             # Prediction vs gt visualization
             save_loss_visualization(
                 gt_masked=gt_render,
@@ -649,18 +649,17 @@ class VisualisationManager:
 
             # Orbit visualization
             orbit_path = self.trn_viz_dir / f"orbit_epoch{current_epoch:03d}_fid{fid:04d}.mp4"
-            if smpl_param_forward is not None:
-                save_orbit_visualization(
-                    scene_splats=self.scene_splats,
-                    smpl_params=smpl_param_forward.detach(),
-                    lbs_weights=self.lbs_weights,
-                    base_w2c=w2c.to(self.device),
-                    K=K.to(self.device),
-                    image_size=(H, W),
-                    device=self.device,
-                    sh_degree=self.sh_degree,
-                    out_path=orbit_path,
-                )
+            save_orbit_visualization(
+                scene_splats=self.scene_splats,
+                smpl_params=smpl_param_forward.detach(),
+                lbs_weights=self.lbs_weights,
+                base_w2c=w2c.to(self.device),
+                K=K.to(self.device),
+                image_size=(H, W),
+                device=self.device,
+                sh_degree=self.sh_degree,
+                out_path=orbit_path,
+            )
 
         pose_overlay_condition = (
             self.cfg.visualise_cam_preds
