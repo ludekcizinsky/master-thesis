@@ -75,6 +75,10 @@ shN_lr: 1.25e-4
 # LR for SMPL pose parameters
 smpl_lr: 1.0e-3
 
+# --- Visualization settings
+eval_depth_vis_min: 1.5 # if set, use this min depth for visualisation
+eval_depth_vis_max: 3.5 # if set, use this max depth for visualisation
+
 # --- Wandb logging settings
 logger:
   project: master-thesis

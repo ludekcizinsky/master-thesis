@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Sequence, List, Dict, Any
 
+from omegaconf import DictConfig
 import torch
 from PIL import Image
 
@@ -9,12 +10,49 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import imageio.v2 as imageio
+import cv2
 
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed
 from training.helpers.progressive_sam import ProgressiveSAMManager
 
+
+def colourise_depth(depth_tensor: torch.Tensor, cfg: DictConfig) -> np.ndarray:
+    """Create a JET-coloured depth visualisation similar to MultiPly outputs."""
+    depth_np = depth_tensor.detach().cpu().numpy().squeeze(-1)
+
+    # Identify valid samples (ignore negatives/NaNs that typically denote background)
+    valid_mask = np.isfinite(depth_np) & (depth_np > 0)
+
+    vis_min_cfg = getattr(cfg, "eval_depth_vis_min", None)
+    vis_max_cfg = getattr(cfg, "eval_depth_vis_max", None)
+    min_depth_val = float(depth_np[valid_mask].min())
+    max_depth_val = float(depth_np[valid_mask].max())
+
+    if valid_mask.any():
+        vis_min = float(vis_min_cfg) if vis_min_cfg is not None else min_depth_val
+        vis_max = float(vis_max_cfg) if vis_max_cfg is not None else max_depth_val
+    else:
+        # Fallback range if all pixels invalid
+        vis_min = float(vis_min_cfg) if vis_min_cfg is not None else 0.0
+        vis_max = float(vis_max_cfg) if vis_max_cfg is not None else 1.0
+
+    if vis_max - vis_min < 1e-6:
+        vis_max = vis_min + 1e-3
+
+    depth_vis = np.copy(depth_np)
+    # Treat invalid pixels as far distance so they collapse to the deepest colour
+    depth_vis[~valid_mask] = vis_max
+    depth_vis = np.clip(depth_vis, vis_min, vis_max)
+    depth_vis = (depth_vis - vis_min) / (vis_max - vis_min + 1e-8)
+
+    depth_uint8 = np.clip(depth_vis * 255.0, 0, 255).astype(np.uint8)
+    # Invert then apply the JET colormap, matching MultiPly's visual style
+    depth_colour_bgr = cv2.applyColorMap(255 - depth_uint8, cv2.COLORMAP_JET)
+    depth_colour_rgb = cv2.cvtColor(depth_colour_bgr, cv2.COLOR_BGR2RGB)
+
+    return depth_colour_rgb
 
 def save_alpha_heatmap(
     alpha_map: torch.Tensor,

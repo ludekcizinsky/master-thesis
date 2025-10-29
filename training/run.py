@@ -31,7 +31,7 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import ModelCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
-from training.helpers.visualisation_utils import VisualisationManager
+from training.helpers.visualisation_utils import VisualisationManager, colourise_depth
 
 from fused_ssim import fused_ssim
 
@@ -208,7 +208,6 @@ class Trainer:
         colors, depths = renders[..., 0:3], renders[..., 3:4]
 
         return colors, depths
-
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         # Parse batch
@@ -412,8 +411,8 @@ class Trainer:
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
 
                 # save the depth map
-                depth_np = (depths[0].cpu().numpy().squeeze(-1) * 255).astype("uint8")
-                depth_pil = Image.fromarray(depth_np)
+                depth_viz = colourise_depth(depths[0], self.cfg)
+                depth_pil = Image.fromarray(depth_viz)
                 depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
 
 
