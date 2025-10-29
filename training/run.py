@@ -9,7 +9,7 @@ os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -18,9 +18,13 @@ import wandb
 from tqdm import tqdm
 
 from training.helpers.trainer_init import init_logging
-from training.helpers.smpl_utils import update_skinning_weights
+from training.helpers.smpl_utils import update_skinning_weights, filter_dynamic_splats
 from training.helpers.dataset import build_dataset, build_dataloader
-from training.helpers.model_init import create_splats_with_optimizers, init_trainable_smpl_params
+from training.helpers.model_init import (
+    SceneSplats,
+    create_splats_with_optimizers,
+    init_trainable_smpl_params,
+)
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import ModelCheckpointManager
@@ -138,8 +142,8 @@ class Trainer:
             pose_overlay_period=self.pose_overlay_period,
         )
 
-    def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
-        # Parse batch
+
+    def _parse_batch(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
         human_masks = batch["human_mask"].to(self.device)  # [B,P,H,W]
         K = batch["K"].to(self.device)           # [B,3,3]
@@ -149,15 +153,66 @@ class Trainer:
         fid_tensor = batch["fid"]
         fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
 
-        # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
+        return images, human_masks, K, w2c, H, W, fid
+
+    def _get_frame_smpl_params(self, fid: int, frame_reliable: bool) -> Optional[torch.Tensor]:
         frame_smpl_params = self.smpl_params.get(fid)
-        frame_reliable = self.progressive_sam.is_frame_reliable(fid)
         if frame_smpl_params is None:
             smpl_param_forward = None
         elif frame_reliable and self.is_smpl_optim_enabled:
             smpl_param_forward = frame_smpl_params
         else:
             smpl_param_forward = frame_smpl_params.detach()
+
+        return smpl_param_forward
+
+    def evaluate(self, batch: Dict[str, Any], tids: List[int], render_bg: bool):
+        # Parse batch
+        images, human_masks, K, w2c, H, W, fid = self._parse_batch(batch)
+
+        # Track which dynamic splat sets correspond to the requested tids
+        smpl_param_forward = self._get_frame_smpl_params(fid, frame_reliable=True)
+        selected_indices, smpl_param_forward, lbs_weights = filter_dynamic_splats(
+            all_gs=self.all_gs,
+            all_lbs_weights = self.lbs_weights,
+            smpl_params=smpl_param_forward,
+            sel_tids=tids,
+            cfg_tids=self.cfg.tids,
+        )
+
+        # Prepare the splats to render based on requested tids/background
+        static_component = self.all_gs.static if render_bg and self.all_gs.static is not None else None
+        # Only include dynamic splats if we actually selected a matching SMPL slice
+        dynamic_components = (
+            [self.all_gs.dynamic[idx] for idx in selected_indices] if smpl_param_forward is not None else []
+        )
+
+        if static_component is None and len(dynamic_components) == 0:
+            raise RuntimeError("No splats selected for rendering. Enable background rendering or provide valid tids.")
+
+        gs_to_render = SceneSplats(
+            static=static_component,
+            dynamic=dynamic_components,
+            smpl_c_info=self.all_gs.smpl_c_info,
+        )
+
+        with torch.no_grad():
+            colors, _, _ = render_splats(
+                gs_to_render, smpl_param_forward, 
+                lbs_weights, w2c, K, H, W, 
+                sh_degree=self.cfg.sh_degree
+            )
+
+        return colors
+
+
+    def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
+        # Parse batch
+        images, human_masks, K, w2c, H, W, fid = self._parse_batch(batch)
+
+        # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
+        frame_reliable = self.progressive_sam.is_frame_reliable(fid)
+        smpl_param_forward = self._get_frame_smpl_params(fid, frame_reliable)
 
         # Forward pass: render
         colors, alphas, info = render_splats(

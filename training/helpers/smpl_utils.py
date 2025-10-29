@@ -2,6 +2,8 @@ import torch
 from torch.nn import functional as F
 from training.helpers.model_init import SceneSplats
 
+from typing import List, Optional
+
 
 
 def update_skinning_weights(all_gs: SceneSplats, k: int = 4, eps: float = 1e-6, p: float = 1.0, device="cuda", dtype=torch.float32) -> torch.Tensor:
@@ -73,3 +75,44 @@ def canon_to_posed(smpl_server, smpl_params, verts_c, lbs_weights, device="cuda"
     verts_p = x_p_h[:, :, :3] / x_p_h[:, :, 3:4]
 
     return verts_p
+
+
+def filter_dynamic_splats(all_gs: SceneSplats, all_lbs_weights: List[torch.Tensor], smpl_params: Optional[torch.Tensor], sel_tids: List[int], cfg_tids: List[int]):
+
+    selected_indices: List[int] = []
+    selected_smpl_params: Optional[torch.Tensor]
+    selected_lbs_weights: List[torch.Tensor]
+
+    if len(sel_tids) > 0:
+        if len(all_gs.dynamic) == 0:
+            raise RuntimeError("Dynamic tids requested but no dynamic splats are available.")
+
+        # Map tid -> index into cfg.tids so we can fetch the correct SMPL slice/LBS weights
+        tid_lookup = {int(tid_cfg): idx for idx, tid_cfg in enumerate(cfg_tids)}
+        missing_tids: List[int] = []
+        for tid in sel_tids:
+            tid_int = int(tid)
+            idx = tid_lookup.get(tid_int)
+            if idx is None or idx >= len(all_gs.dynamic):
+                missing_tids.append(tid_int)
+                continue
+            selected_indices.append(idx)
+
+        if missing_tids:
+            print(f"--- FYI: Skipping unavailable tids {missing_tids} during evaluation.")
+
+        # Select SMPL params and LBS weights for selected tids
+        if selected_indices:
+            index_tensor = torch.as_tensor(selected_indices, device=smpl_params.device, dtype=torch.long)
+            selected_smpl_params = torch.index_select(smpl_params, 0, index_tensor)
+            if all_lbs_weights is None:
+                raise RuntimeError("LBS weights are missing while rendering dynamic splats.")
+            selected_lbs_weights = [all_lbs_weights[idx] for idx in selected_indices]
+        else:
+            selected_smpl_params = None
+            selected_lbs_weights = []
+    else:
+        selected_smpl_params = None
+        selected_lbs_weights = []
+    
+    return selected_indices, selected_smpl_params, selected_lbs_weights

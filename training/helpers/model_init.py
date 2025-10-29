@@ -230,10 +230,7 @@ def init_3dgs_humans(
 ) -> Tuple[nn.ParameterDict, Dict]:
 
     smpl_c_info = init_smpl_server(device)
-    smpl_server = smpl_c_info["smpl_server"]
     verts_c = smpl_c_info["verts_c"]
-    weights_c = smpl_c_info["weights_c"]
-
     M = verts_c.shape[0]
 
     # means (canonical)
