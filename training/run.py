@@ -400,7 +400,7 @@ class Trainer:
         # not the refined masks
         eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
 
-        # Individual human evaluations
+        # --- Individual human evaluations
         tid_video_metrics = dict()
         for tid in selected_tids:
             save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}" / f"epoch_{epoch:04d}"
@@ -439,10 +439,56 @@ class Trainer:
             tid_video_metrics[tid] = tid_metrics_across_frames
         
         # aggregate across tids
-        final_metrics = aggregate_global_tids_metric_dicts(tid_video_metrics)
-        print(f"--- Evaluation results at epoch {epoch} for TIDs {selected_tids}:")
-        for metric_name, value in final_metrics.items():
-            print(f"    {metric_name}: {value:.4f}")
+        individual_tid_metrics_across_frames = aggregate_global_tids_metric_dicts(tid_video_metrics)
+
+        # --- Joined human evaluation (all selected tids together)
+        save_qual_dir = self.experiment_dir / "visualizations" / "all" / f"epoch_{epoch:04d}"
+        save_qual_rgb_dir = save_qual_dir / "rgb"
+        save_qual_depth_dir = save_qual_dir / "depth"
+        os.makedirs(save_qual_rgb_dir, exist_ok=True)
+        os.makedirs(save_qual_depth_dir, exist_ok=True)
+
+        joined_tid_metrics = list()
+        for batch in eval_dataloader:
+            images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
+            human_masks_joined = (human_masks.sum(dim=1).clamp(0.0, 1.0))  # [B,H,W] 
+            colors, depths = self.evaluate(batch, selected_tids, render_bg=False)
+
+            # Compute quantitative metrics
+            metrics = compute_all_metrics(
+                images=images,
+                masks=human_masks_joined,
+                renders=colors,
+            )
+            joined_tid_metrics.append(metrics)
+
+            # save the rendered image
+            img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
+            img_pil = Image.fromarray(img_np)
+            img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
+
+            # save the depth map
+            depth_viz = colourise_depth(depths[0], self.cfg)
+            depth_pil = Image.fromarray(depth_viz)
+            depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
+        
+        # Aggregate metrics 
+        joined_tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(joined_tid_metrics)
+
+        # Log to wandb
+        dict_to_log = {}
+        for metric_name, value in individual_tid_metrics_across_frames.items():
+            dict_to_log[f"eval/individual_tids/{metric_name}"] = value
+        for metric_name, value in joined_tid_metrics_across_frames.items():
+            dict_to_log[f"eval/joined_tids/{metric_name}"] = value
+        dict_to_log["epoch"] = epoch
+
+        print(f"--- Joined TIDs Evaluation results at epoch {epoch} for TIDs {selected_tids}:")
+        for key, value in dict_to_log.items():
+            print(f"    {key}: {value:.4f}")
+
+        wandb.log(dict_to_log)
+
 
     def train_loop(self, iters: int = 2000):
         iteration = 0
