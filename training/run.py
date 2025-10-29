@@ -111,7 +111,8 @@ class Trainer:
             device=self.device,
             default_lbs_knn=int(cfg.lbs_knn),
             checkpoint_dir=self.checkpoint_dir,
-            preprocessing_dir=Path(cfg.preprocess_dir) if cfg.is_preprocessing else None,
+            preprocessing_dir=Path(cfg.preprocess_dir),
+            is_preprocessing=cfg.is_preprocessing, 
         )
         self.progressive_sam.init_state(
             cfg.resume, self.dataset, 

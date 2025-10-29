@@ -2,6 +2,7 @@ import math
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import torch
@@ -563,7 +564,8 @@ class ProgressiveSAMManager:
         device: torch.device,
         default_lbs_knn: int,
         checkpoint_dir: Path,
-        preprocessing_dir: Optional[Path] = None,
+        preprocessing_dir: Path,
+        is_preprocessing: bool = False,
     ) -> None:
         # cfg
         mask_cfg = mask_cfg or {}
@@ -575,9 +577,11 @@ class ProgressiveSAMManager:
         self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
         self.rebuild_max_epoch = max(int(mask_cfg.get("rebuild_max_epoch", 20)), 1)
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
+        self.preprocessing_dir = preprocessing_dir
+        self.is_preprocessing = is_preprocessing
 
         # paths
-        if preprocessing_dir is not None:
+        if is_preprocessing:
             self.checkpoint_dir = preprocessing_dir / "sam2_masks"
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         else:
@@ -784,13 +788,16 @@ class ProgressiveSAMManager:
 
 
     def init_state(self, resume: bool, dataset, scene_splats: SceneSplats, lbs_weights, epoch: int) -> None:
-        if resume:
+        if self.is_preprocessing:
+            print(f"--- FYI: Initializing Progressive SAM preprocessing state in {self.checkpoint_dir}.")
+            self.update_masks(dataset, scene_splats, lbs_weights, epoch)
+        elif resume:
             ckpt_path = self.checkpoint_dir / "progressive_sam.pt"
             self._load_state(ckpt_path)
         else:
-            if self.tids:
+            if len(self.tids) > 0:
                 self.clear_ckpt_dir()
-            self.update_masks(dataset, scene_splats, lbs_weights, epoch)
+            shutil.copytree(self.preprocessing_dir / "sam2_masks", self.checkpoint_dir, dirs_exist_ok=True)
 
     def _build_mask_entry(
         self,
