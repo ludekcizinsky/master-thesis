@@ -6,7 +6,7 @@ import torch.nn as nn
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
-from utils.smpl_deformer.smpl_server import SMPLServer
+from training.smpl_deformer.smpl_server import SMPLServer
 from gsplat.strategy import DefaultStrategy
 
 from dataclasses import dataclass, field
