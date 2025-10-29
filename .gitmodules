@@ -1,0 +1,3 @@
+[submodule "submodules/Human3R"]
+	path = submodules/Human3R
+	url = git@github.com:ludekcizinsky/Human3R.git
