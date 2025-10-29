@@ -4,10 +4,11 @@ group_name: dev
 # --- Debugging and visualization
 debug: False # if true -> disable wandb logging
 visualise_cam_preds: True
+is_preprocessing: False  # if true -> save sam masks to preprocessing folder
 
 # --- Input / output paths
 output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
-preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/football_high_res
+preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/${scene_name}  # path to the preprocessing folder
 train_dir: ${output_dir}/training
 
 # --- Training settings

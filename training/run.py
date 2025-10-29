@@ -111,6 +111,7 @@ class Trainer:
             device=self.device,
             default_lbs_knn=int(cfg.lbs_knn),
             checkpoint_dir=self.checkpoint_dir,
+            preprocessing_dir=Path(cfg.preprocess_dir) if cfg.is_preprocessing else None,
         )
         self.progressive_sam.init_state(
             cfg.resume, self.dataset, 
@@ -563,6 +564,8 @@ def main(cfg: DictConfig):
     init_logging(cfg)
     trainer = Trainer(cfg)
     print("✅ Trainer initialized.\n")
+    if cfg.is_preprocessing:
+        return
 
     print("ℹ️ Starting training")
     trainer.train_loop(iters=cfg.iters)

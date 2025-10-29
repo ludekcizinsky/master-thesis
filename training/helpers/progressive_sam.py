@@ -563,6 +563,7 @@ class ProgressiveSAMManager:
         device: torch.device,
         default_lbs_knn: int,
         checkpoint_dir: Path,
+        preprocessing_dir: Optional[Path] = None,
     ) -> None:
         # cfg
         mask_cfg = mask_cfg or {}
@@ -576,8 +577,12 @@ class ProgressiveSAMManager:
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
 
         # paths
-        self.checkpoint_dir = checkpoint_dir / "progressive_sam"
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if preprocessing_dir is not None:
+            self.checkpoint_dir = preprocessing_dir / "sam2_masks"
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.checkpoint_dir = checkpoint_dir / "progressive_sam"
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # sam2
         self.predictor: Optional["SAM2ImagePredictor"] = None

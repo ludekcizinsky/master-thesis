@@ -52,13 +52,18 @@ multiply_env="multiply"
                             # --output_cameras_file $folder_path/data/$seq/cameras_normalize.npz \
                             # --max_human_sphere_file $folder_path/data/$seq/max_human_sphere.npy
 
-# echo "---- Running unidepth to obtain per frame depth maps"
-# conda activate mega_sam
-# export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
-# CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
-# --scene-name $seq \
-# --img-path $folder_path/data/$seq/image \
-# --outdir $folder_path/data/$seq/unidepth
+echo "---- Running unidepth to obtain per frame depth maps"
+conda activate mega_sam
+export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
+CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
+--scene-name $seq \
+--img-path $folder_path/data/$seq/image \
+--outdir $folder_path/data/$seq/unidepth
+
+echo "---- Running mask refinement with SAM"
+conda deactivate && conda activate thesis
+cd /home/cizinsky/master-thesis
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true
 
 echo "---- Converting unidepth to point clouds"
 conda deactivate && conda activate thesis
@@ -66,7 +71,10 @@ cd /home/cizinsky/master-thesis/preprocess/multiply_pipeline
 python unidepth_to_cloud.py \
   --preprocess_dir /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq \
   --unidepth_dir   /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth \
-  --mask_dir       /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/mask \
+  --mask_dir       /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/sam2_masks \
   --output_npz /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth_cloud_static_scaled.npz \
   --max_frames 30 \
-  --depth_scale 0.2
+  --depth_scale 0.4
+
+# echo "---- Running visualization of joined results"
+python joined_viz.py

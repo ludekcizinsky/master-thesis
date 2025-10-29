@@ -3,7 +3,7 @@ import os
 import time
 
 import torch
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from pathlib import Path
 from training.helpers.dataset import FullSceneDataset
@@ -11,7 +11,7 @@ import viser.transforms as tf
 import viser
 import numpy as np
 import torch.nn.functional as F
-from utils.smpl_deformer.smpl_server import SMPLServer
+from training.smpl_deformer.smpl_server import SMPLServer
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -60,9 +60,10 @@ def load_unidepth_pointcloud(npz_path, downsample: int = 1):
     return pts, cols
 
 # ---- Load data
-preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/pushups_smpl")  # Path to preprocessing output
-tids = [0]  # List of tids to include
-ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids, train_bg=False)
+preprocess_dir = Path("/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi")
+tids = [0, 1]  # List of tids to include
+masks_path = preprocess_dir / "progressive_sam"
+ds = FullSceneDataset(preprocess_dir=preprocess_dir, tids=tids, train_bg=True, mask_path=masks_path)
 
 # SMPL canonical data
 smpl_server = SMPLServer().eval()
@@ -70,6 +71,9 @@ with torch.no_grad():
     verts_c = smpl_server.verts_c[0]
     weights_c = smpl_server.weights_c[0]
     face_indices = smpl_server.faces
+
+# Static point cloud
+pts_world_scaled, colors_scaled = ds.point_cloud
 
 # ---- Viser GUI setup
 server = viser.ViserServer()
@@ -170,6 +174,16 @@ def _(_) -> None:
                 frame_node.visible = (i % stride == 0)
 
 # ---- Add data to scene
+# Static
+server.scene.add_point_cloud(
+    "/scene/point_cloud", 
+    points=pts_world_scaled,
+    colors=colors_scaled,
+    point_size=0.03,
+    point_shape="rounded"
+)
+
+# Dynamic
 server.scene.add_frame(
     "/scene",
     wxyz=tf.SO3.exp(np.array([np.pi / 2.0, 0.0, 0.0])).wxyz,
@@ -189,7 +203,7 @@ for i in range(len(ds)):
     # Add posed mesh
     for tid in tids:
         server.scene.add_mesh_simple(
-            f"/scene/f{i}/mesh_p_{tid}",
+            f"/scene/f{i}/mesh_p_{tid}", 
             vertices=verts_p[tid],
             faces=face_indices,
             color=(100, 100, 100),

@@ -1,5 +1,5 @@
 import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import argparse
 from pathlib import Path
@@ -7,30 +7,7 @@ import numpy as np
 import imageio.v2 as imageio
 import cv2
 import torch
-from training.helpers.dataset import TraceDataset
-
-
-# ---------------------- helpers ----------------------
-
-def load_masks_for_frame(mask_root: Path, stem: str, target_hw):
-    Ht, Wt = target_hw
-    union = np.zeros((Ht, Wt), dtype=np.uint8)
-    for pid in [0, 1]:
-        mpath = None
-        for ext in (".jpg", ".png"):
-            p = mask_root / str(pid) / f"{stem}{ext}"
-            if p.exists():
-                mpath = p
-                break
-        if mpath is None:
-            continue
-        m = imageio.imread(mpath)
-        if m.ndim == 3:
-            m = cv2.cvtColor(m, cv2.COLOR_RGB2GRAY)
-        if (m.shape[0], m.shape[1]) != (Ht, Wt):
-            m = cv2.resize(m, (Wt, Ht), interpolation=cv2.INTER_NEAREST)
-        union = np.maximum(union, (m > 0).astype(np.uint8))
-    return (union == 0)  # True = keep background
+from training.helpers.dataset import FullSceneDataset
 
 
 def w2c_to_c2w(R: np.ndarray, t: np.ndarray):
@@ -87,10 +64,16 @@ def main():
     unidepth_dir = Path(args.unidepth_dir)
     mask_dir = Path(args.mask_dir)
 
-    # --- Trace (poses & intrinsics)
-    ds = TraceDataset(preprocess_dir, tid=0, downscale=1)
-    tr_w2c = torch.stack(ds.pose_all, dim=0).to(torch.float32).cpu().numpy()   # [N,4,4]
-    tr_Ks  = torch.stack(ds.intrinsics_all, dim=0).to(torch.float32).cpu().numpy()
+    # --- Camera information via FullSceneDataset
+    dataset = FullSceneDataset(
+        preprocess_dir=preprocess_dir,
+        tids=[],
+        mask_path=mask_dir,
+        cloud_downsample=1,
+        train_bg=False,
+    )
+    tr_w2c = torch.stack(dataset.pose_all, dim=0).to(torch.float32).cpu().numpy()   # [N,4,4]
+    tr_Ks  = torch.stack(dataset.intrinsics_all, dim=0).to(torch.float32).cpu().numpy()
     K = tr_Ks[0, :3, :3]
 
     # --- Images & depth listing
@@ -132,7 +115,13 @@ def main():
             depth = np.asarray(npz_d["depth"]).astype(np.float32)
         depth = cv2.resize(depth, (W, H), interpolation=cv2.INTER_LINEAR)
 
-        keep = load_masks_for_frame(mask_dir, stem, (H, W))
+        sample = dataset[idx]
+        human_masks = sample["human_mask"].to(dtype=torch.bool)
+        if human_masks.numel() > 0:
+            union = human_masks.any(dim=0).cpu().numpy().astype(bool)
+            keep = np.logical_not(union)
+        else:
+            keep = np.ones((H, W), dtype=bool)
 
         pts, cols, _ = backproject_depth_to_world(
             depth, K, tr_w2c[idx], rgb, keep,
