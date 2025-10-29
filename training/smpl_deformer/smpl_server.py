@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from utils.smpl_deformer.smpl.body_models import SMPL
+from training.smpl_deformer.smpl.body_models import SMPL
 
 class SMPLServer(torch.nn.Module):
     def __init__(self, gender='neutral'):

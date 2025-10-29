@@ -32,6 +32,11 @@ from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import ModelCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
 from training.helpers.visualisation_utils import VisualisationManager, colourise_depth
+from training.helpers.evaluation_metrics import (
+    compute_all_metrics, 
+    aggregate_batch_tid_metric_dicts, 
+    aggregate_global_tids_metric_dicts
+)
 
 from fused_ssim import fused_ssim
 
@@ -391,9 +396,12 @@ class Trainer:
         return log_values
 
     def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
+        # TODO: need to add a way to specify that I want the dataset to be using the masks from preprocessing
+        # not the refined masks
         eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
 
         # Individual human evaluations
+        tid_video_metrics = dict()
         for tid in selected_tids:
             save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
@@ -401,9 +409,20 @@ class Trainer:
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
             os.makedirs(save_qual_depth_dir, exist_ok=True)
 
+            tid_idx = self.cfg.tids.index(tid)
+            tid_metrics = list()
             for batch in eval_dataloader:
-                _, _, _, _, _, _, fid = self._parse_batch(batch)
+                images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
+                tid_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
                 colors, depths = self.evaluate(batch, [tid], render_bg=False)
+
+                # Compute quantitative metrics
+                metrics = compute_all_metrics(
+                    images=images,
+                    masks=tid_masks,
+                    renders=colors,
+                )
+                tid_metrics.append(metrics)
 
                 # save the rendered image
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
@@ -414,7 +433,16 @@ class Trainer:
                 depth_viz = colourise_depth(depths[0], self.cfg)
                 depth_pil = Image.fromarray(depth_viz)
                 depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
-
+            
+            # Aggregate metrics
+            tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
+            tid_video_metrics[tid] = tid_metrics_across_frames
+        
+        # aggregate across tids
+        final_metrics = aggregate_global_tids_metric_dicts(tid_video_metrics)
+        print(f"--- Evaluation results at epoch {epoch} for TIDs {selected_tids}:")
+        for metric_name, value in final_metrics.items():
+            print(f"    {metric_name}: {value:.4f}")
 
     def train_loop(self, iters: int = 2000):
         iteration = 0
