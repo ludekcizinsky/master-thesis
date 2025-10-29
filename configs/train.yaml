@@ -38,7 +38,8 @@ max_smpl_optim_epoch: 20
 
 # --- Loss and regularization weights
 l1_lambda: 0.8
-ssim_lambda: 0.2
+ssim_lambda: 0.8
+alpha_lambda: 0.4
 opacity_reg: 0.001
 scale_reg: 0.001
 lbs_knn: 30

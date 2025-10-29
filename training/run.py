@@ -160,7 +160,7 @@ class Trainer:
             smpl_param_forward = frame_smpl_params.detach()
 
         # Forward pass: render
-        colors, _, info = render_splats(
+        colors, alphas, info = render_splats(
             self.all_gs, smpl_param_forward, 
             self.lbs_weights, w2c, K, H, W, 
             sh_degree=self.cfg.sh_degree
@@ -192,8 +192,17 @@ class Trainer:
             render_for_loss.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
 
-        # - Combined 
-        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
+        # - Alpha
+        alpha_loss = torch.tensor(0.0, device=self.device)
+        if self.cfg.alpha_lambda > 0.0:
+            human_masks_combined = human_masks.sum(dim=1).clamp(0.0, 1.0)  # [B,H,W]
+            alpha_loss = F.mse_loss(
+                alphas.squeeze(-1),
+                human_masks_combined
+            )
+
+        # - Combined
+        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + alpha_loss * self.cfg.alpha_lambda
 
         # - Add Regularizers
         static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
