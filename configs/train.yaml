@@ -20,7 +20,7 @@ tids: [0, 1]
 cloud_downsample: 30
 batch_size: 1  # number of images per batch
 train_bg: false
-eval_every_epochs: 10
+eval_every_epochs: 60
 
 # --- General system settings to control memory usage and speed
 # Device to use for training

@@ -63,7 +63,7 @@ CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
 echo "---- Running mask refinement with SAM"
 conda deactivate && conda activate thesis
 cd /home/cizinsky/master-thesis
-python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true mask_refinement.sam2.max_points=12
+python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true mask_refinement.sam2.max_points=6
 
 echo "---- Converting unidepth to point clouds"
 conda deactivate && conda activate thesis
