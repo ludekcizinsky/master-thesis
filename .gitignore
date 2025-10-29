@@ -211,3 +211,5 @@ __marimo__/
 
 # Ignore outputs in playground
 playground/outputs/
+
+gpu_mem_debug.py

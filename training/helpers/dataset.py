@@ -2,32 +2,34 @@ import os
 from pathlib import Path
 from typing import List
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-from training.helpers.utils import load_image, load_mask
 from training.helpers.geom_utils import load_K_Rt_from_P
+from training.helpers.progressive_sam import ProgressiveSAMManager
+
+from PIL import Image
 
 
 class FullSceneDataset(Dataset):
     """
-    Exposes (frame_id, image, mask, cam_intrinsics, smpl_param) for a chosen track id.
+    Exposes (frame_id, image, cam_intrinsics, smpl_param) for a chosen track id.
 
     Simplifying assumptions:
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int], cloud_downsample: int = 10, train_bg: bool = False):
+    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
         self.train_bg = train_bg
+        self.mask_path = mask_path
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
-        self.mask_dir = self.preprocess_dir / "mask"
 
         # Cache H,W from cam_dicts (assuming constant across frames; we still read per-frame K)
-        first_image = load_image(self.images_dir / "0000.png")
+        first_image = self._load_image(self.images_dir / "0000.png")
         self.H, self.W = first_image.shape[:2]
         print(f"--- FYI: operating on images of size {self.W}x{self.H}.")
 
@@ -44,6 +46,10 @@ class FullSceneDataset(Dataset):
         if self.train_bg:
             self.load_unidepth_pointcloud(downsample=cloud_downsample)
 
+    def _load_image(self, path: Path) -> torch.Tensor:
+        img = Image.open(path).convert("RGB")
+        im = torch.from_numpy(np.array(img)).float() / 255.0  # [H,W,3]
+        return im.contiguous() 
 
     def _load_cameras(self):
 
@@ -97,19 +103,6 @@ class FullSceneDataset(Dataset):
         self.point_cloud = (pts, cols)
         print(f"--- FYI: loaded POINT CLOUD from {npz_path} with {pts.shape[0]} points (downsample={downsample}).")
 
-    def _load_masks(self, tids: List[int], idx: int):
-        masks = []
-        for tid in tids:
-            mask_path = self.mask_dir / str(tid) / f"{idx:04d}.png"
-            if mask_path.exists():
-                mask = load_mask(mask_path)  # [H,W]
-            else:
-                raise FileNotFoundError(f"Mask not found: {mask_path}")
-            masks.append(mask)
-        mask = torch.stack(masks, dim=0)  # [P,H,W] combined mask
-        assert mask.shape[0] == len(tids), f"Mask shape {mask.shape} does not match number of tids {len(tids)}"
-        return mask
-
     def __len__(self):
         return len(self.pose_all)
 
@@ -117,17 +110,15 @@ class FullSceneDataset(Dataset):
 
         # Image
         img_path = self.images_dir / f"{idx:04d}.png"
-        image = load_image(img_path)  # [H,W,3]
+        image = self._load_image(img_path)  # [H,W,3]
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
-        # Masks for each tid
-        # - load masks only for selected tids
-        if len(self.tids) > 0:
-            mask = self._load_masks(self.tids, idx)  # [P,H,W]
-        # - if no tids -> static background training -> load all masks and combine
+        # Human masks
+        mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
+        if mask_entry is not None:
+            human_masks = mask_entry.refined
         else:
-            tids = os.listdir(self.mask_dir)
-            mask = self._load_masks(tids, idx)  # [P,H,W]
+            human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
 
         # Camera 
         # - Extrinsics
@@ -157,10 +148,32 @@ class FullSceneDataset(Dataset):
         return {
             "fid": idx,
             "image": image,     # [H,W,3]
-            "mask": mask,       # [P,H,W]
+            "human_mask": human_masks,  # [P,H,W]
             "K": K,             # [3,3]
             "smpl_param": smpl_params,  # [P,86]
             "M_ext": M_ext,         # [4,4]
             "W": self.W,
             "H": self.H,
         }
+
+
+
+def build_dataset(cfg, mask_path: Path) -> Dataset:
+    dataset = FullSceneDataset(
+        preprocess_dir=Path(cfg.preprocess_dir),
+        tids=cfg.tids,
+        mask_path=mask_path,
+        cloud_downsample=cfg.cloud_downsample,
+        train_bg=cfg.train_bg,
+    )
+    return dataset
+
+def build_dataloader(cfg, dataset: Dataset) -> DataLoader:
+    dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=cfg.num_workers
+    )
+    print(f"--- FYI: DataLoader created with num_workers={cfg.num_workers}.")
+    return dataloader

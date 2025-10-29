@@ -1,72 +1,80 @@
 import hydra
 import os
 import sys
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../submodules/humans4d")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 os.environ["TORCH_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 
 from pathlib import Path
 from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 import wandb
-
 from tqdm import tqdm
 
-from training.helpers.utils import init_logging, save_loss_visualization
+from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights
-from training.helpers.dataset import FullSceneDataset
-from training.helpers.model_init import create_splats_with_optimizers
+from training.helpers.dataset import build_dataset, build_dataloader
+from training.helpers.model_init import create_splats_with_optimizers, init_trainable_smpl_params
 from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
-from training.helpers.checkpointing import GaussianCheckpointManager
+from training.helpers.checkpointing import ModelCheckpointManager
+from training.helpers.progressive_sam import ProgressiveSAMManager
+from training.helpers.visualisation_utils import VisualisationManager
 
 from fused_ssim import fused_ssim
 
 
 class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
+        # Initial param setup
         self.cfg = cfg
         self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+        self.current_epoch = 0
+        self.is_smpl_optim_enabled = self.current_epoch < cfg.max_smpl_optim_epoch
         print(f"--- FYI: using device {self.device}")
 
-        self.dataset = FullSceneDataset(
-            Path(cfg.preprocess_dir),
-            cfg.tids,  # list of tids to train on
-            cloud_downsample=cfg.cloud_downsample,
-            train_bg=cfg.train_bg,
+        # Checkpoint manager
+        self.ckpt_manager = ModelCheckpointManager(
+            Path(cfg.output_dir),
+            cfg.group_name,
+            cfg.tids,
         )
-        self.loader = DataLoader(self.dataset, batch_size=1, shuffle=True, num_workers=0)
-        print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
+        self.checkpoint_dir = self.ckpt_manager.root
 
+        if not cfg.resume:
+            reset_static = bool(cfg.train_bg)
+            reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
+            self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
+
+        # Setup experiment dirs
         if internal_run_id is not None:
             run_name, run_id = internal_run_id.split("_")
             self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
-        self.ckpt_manager = GaussianCheckpointManager(
-            Path(cfg.output_dir),
-            cfg.group_name,
-            cfg.tids,
-        )
-        self.checkpoint_dir = self.ckpt_manager.root
         os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
-
-        if not getattr(cfg, "resume", False):
-            reset_static = bool(cfg.train_bg)
-            reset_tids = list(cfg.tids) if len(cfg.tids) > 0 else []
-            self.ckpt_manager.reset(reset_static=reset_static, reset_tids=reset_tids)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
-        # Define model and optimizers
+        # Load dataset and create dataloader
+        mask_path = self.checkpoint_dir / "progressive_sam"
+        self.dataset = build_dataset(cfg, mask_path=mask_path)
+
+        if len(self.dataset) > 0:
+            self.orbit_reference_w2c = self.dataset.pose_all[0].clone()
+        else:
+            self.orbit_reference_w2c = torch.eye(4)
+
+        print(f"--- FYI: dataset has {len(self.dataset)} samples and using batch size 1")
+
+        # Define 3dgs model of the scene and optimizers
         self.all_gs, self.all_optimisers, self.all_strategies = create_splats_with_optimizers(
             self.device, cfg, self.dataset, checkpoint_manager=self.ckpt_manager
         )
@@ -82,18 +90,78 @@ class Trainer:
             print(f"--- FYI: in total have {len(self.lbs_weights)} sets of skinning weights (one per dynamic splat set)")
         else:
             self.lbs_weights = None
-    
+
+        # Initialize Progressive SAM manager
+        mask_cfg = cfg.mask_refinement
+        mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
+        self.progressive_sam = ProgressiveSAMManager(
+            mask_cfg=mask_container,
+            tids=list(cfg.tids),
+            device=self.device,
+            default_lbs_knn=int(cfg.lbs_knn),
+            checkpoint_dir=self.checkpoint_dir,
+        )
+        self.progressive_sam.init_state(
+            cfg.resume, self.dataset, 
+            self.all_gs, self.lbs_weights, self.current_epoch
+        )
+
+        # Create dataloader
+        self.loader = build_dataloader(cfg, self.dataset)
+
+        # Define trainable SMPL parameters and optimizer
+        self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(
+            self.dataset, cfg, self.device, checkpoint_manager=self.ckpt_manager
+        )
+        snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
+        if snapshot_fid is not None and snapshot_fid in self.smpl_params:
+            self.smpl_snapshot_frame = snapshot_fid
+            param_tensor = self.smpl_params[snapshot_fid].detach().clone()
+            self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
+            self.last_pose_overlay_epoch = -1
+        else:
+            self.smpl_snapshot_frame = None
+            self.smpl_snapshot_params = None
+
+        # Init Visualisation manager responsible for periodic visualizations
+        self.pose_overlay_period = 10
+        self.last_pose_overlay_epoch: int = -1
+        self.visualisation_manager = VisualisationManager(
+            cfg=self.cfg,
+            progressive_sam=self.progressive_sam,
+            trn_viz_dir=self.trn_viz_debug_dir,
+            scene_splats=self.all_gs,
+            lbs_weights=self.lbs_weights,
+            device=self.device,
+            sh_degree=self.cfg.sh_degree,
+            dataset=self.dataset,
+            pose_overlay_period=self.pose_overlay_period,
+        )
+
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
+        # Parse batch
         images = batch["image"].to(self.device)  # [B,H,W,3]
-        K  = batch["K"].to(self.device)      # [B,3,3]
-        w2c = batch["M_ext"].to(self.device)  # [B,4,4]
-        masks  = batch["mask"].to(self.device)   # [B,P,H,W]
-        H, W = batch["image"].shape[1:3] 
-        smpl_param = batch["smpl_param"].to(self.device)  # [B, P, 86]
+        human_masks = batch["human_mask"].to(self.device)  # [B,P,H,W]
+        K = batch["K"].to(self.device)           # [B,3,3]
+        w2c = batch["M_ext"].to(self.device)     # [B,4,4]
+        H, W = batch["image"].shape[1:3]
+        assert images.shape[0] == 1, "Mask refinement currently expects batch size 1."
+        fid_tensor = batch["fid"]
+        fid = int(fid_tensor.item()) if torch.is_tensor(fid_tensor) else int(fid_tensor)
+
+        # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
+        frame_smpl_params = self.smpl_params.get(fid)
+        frame_reliable = self.progressive_sam.is_frame_reliable(fid)
+        if frame_smpl_params is None:
+            smpl_param_forward = None
+        elif frame_reliable and self.is_smpl_optim_enabled:
+            smpl_param_forward = frame_smpl_params
+        else:
+            smpl_param_forward = frame_smpl_params.detach()
 
         # Forward pass: render
         colors, alphas, info = render_splats(
-            self.all_gs, smpl_param, 
+            self.all_gs, smpl_param_forward, 
             self.lbs_weights, w2c, K, H, W, 
             sh_degree=self.cfg.sh_degree
         )
@@ -107,23 +175,34 @@ class Trainer:
         )
 
         # Losses
-        gt_render, pred_render = prepare_input_for_loss(
-            gt_imgs=images, 
-            renders=colors, 
-            human_masks=masks, 
+        gt_render, pred_render, pred_original = prepare_input_for_loss(
+            gt_imgs=images,
+            renders=colors,
+            human_masks=human_masks,
             cfg=self.cfg
         )  # [B,h,w,3], [B,h,w,3] (cropped if needed)
 
+        render_for_loss = pred_original if frame_reliable else pred_render
+
         # - L1
-        l1_loss = F.l1_loss(pred_render, gt_render)
+        l1_loss = F.l1_loss(render_for_loss, gt_render)
 
         # - SSIM
         ssim_loss = 1.0 - fused_ssim(
-            pred_render.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
+            render_for_loss.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
 
-        # - Combined 
-        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda 
+        # - Alpha
+        alpha_loss = torch.tensor(0.0, device=self.device)
+        if self.cfg.alpha_lambda > 0.0:
+            human_masks_combined = human_masks.sum(dim=1).clamp(0.0, 1.0)  # [B,H,W]
+            alpha_loss = F.mse_loss(
+                alphas.squeeze(-1),
+                human_masks_combined
+            )
+
+        # - Combined
+        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + alpha_loss * self.cfg.alpha_lambda
 
         # - Add Regularizers
         static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
@@ -147,6 +226,23 @@ class Trainer:
         # Backprop
         loss.backward()
 
+        def _assign_subset_grads(entry: Any) -> None:
+            if isinstance(entry, torch.Tensor):
+                parent = getattr(entry, "_parent_tensor", None)
+                slc = getattr(entry, "_parent_slice", None)
+                if parent is not None and slc is not None and parent.grad is not None:
+                    start, end = slc
+                    grad_view = parent.grad[(slice(None), slice(start, end))]
+                    entry.grad = grad_view
+            elif isinstance(entry, dict):
+                for value in entry.values():
+                    _assign_subset_grads(value)
+            elif isinstance(entry, (list, tuple)):
+                for item in entry:
+                    _assign_subset_grads(item)
+
+        _assign_subset_grads(info)
+
         # Update weights step
         static_optims = [self.all_optimisers.static] if self.all_gs.static is not None else []
         all_optims = static_optims + self.all_optimisers.dynamic
@@ -154,6 +250,11 @@ class Trainer:
             for opt in optimizers.values():
                 opt.step()
                 opt.zero_grad(set_to_none=True)
+
+        if self.smpl_param_optimizer is not None:
+            if frame_reliable:
+                self.smpl_param_optimizer.step()
+            self.smpl_param_optimizer.zero_grad(set_to_none=True)
 
 
         # Adaptive densification step
@@ -165,21 +266,51 @@ class Trainer:
             packed=self.cfg.packed
         )
 
+        # Clear any gradients stored on auxiliary tensors returned in info to avoid
+        # keeping cloned grad buffers alive across iterations.
+        def _clear_aux_grads(entry: Any) -> None:
+            if isinstance(entry, torch.Tensor):
+                entry.grad = None
+            elif isinstance(entry, dict):
+                for value in entry.values():
+                    _clear_aux_grads(value)
+            elif isinstance(entry, (list, tuple)):
+                for item in entry:
+                    _clear_aux_grads(item)
+
+        if isinstance(info, tuple) and len(info) == 2:
+            static_info, dynamic_infos = info
+            _clear_aux_grads(static_info)
+            _clear_aux_grads(dynamic_infos)
+        else:
+            _clear_aux_grads(info)
+        info = None
+
 
         # Update skinning weights
         if len(self.cfg.tids) > 0:
             with torch.no_grad():
                 new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
-                self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]  # redundant but explicit
+                self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]
+                self.visualisation_manager.lbs_weights = self.lbs_weights
 
-        # Periodic debug visualization
-        if (it_number % 500 == 0 and self.cfg.visualise_cam_preds) or (it_number == 1):
-            save_loss_visualization(
-                image_input=images,
-                gt=gt_render,
-                prediction=colors,
-                out_path=self.trn_viz_debug_dir / f"lossviz_it{it_number:05d}.png"
-            )
+        # Visualizations
+        self.last_pose_overlay_epoch = self.visualisation_manager.run_visualisation_step(
+            gt_render=gt_render,
+            pred_render=pred_render,
+            pred_original=pred_original,
+            fid=fid,
+            current_epoch=self.current_epoch,
+            smpl_param_forward=smpl_param_forward,
+            w2c=w2c[0],
+            K=K[0],
+            H=H,
+            W=W,
+            smpl_snapshot_frame=self.smpl_snapshot_frame,
+            smpl_snapshot_params=self.smpl_snapshot_params,
+            smpl_params_per_frame=self.smpl_params,
+            last_pose_overlay_epoch=self.last_pose_overlay_epoch,
+        )
 
         # Log values
         log_values = {
@@ -202,31 +333,62 @@ class Trainer:
         return log_values
 
     def train_loop(self, iters: int = 2000):
-        it = 0
+        iteration = 0
+        epoch = 0
+
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
-            while it < iters:
+            while iteration < iters:
+                self.current_epoch = epoch
+                if self.progressive_sam.should_update(epoch):
+                    self.progressive_sam.update_masks(self.dataset, self.all_gs, self.lbs_weights, epoch=epoch)
+                    snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
+                    if snapshot_fid is not None and snapshot_fid in self.smpl_params:
+                        self.smpl_snapshot_frame = snapshot_fid
+                        param_tensor = self.smpl_params[snapshot_fid].detach().clone()
+                        self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
+                        self.last_pose_overlay_epoch = -1
+                    
+                    self.loader = build_dataloader(self.cfg, self.dataset)
+                    psam_logs = {
+                        "progressive_sam/num_reliable_frames": len(self.progressive_sam.reliable_frames),
+                        "progressive_sam/num_unreliable_frames": len(self.progressive_sam.unreliable_frames),
+                        "progressive_sam/reliability_threshold": self.progressive_sam.iou_threshold,
+                    }
+                else:
+                    psam_logs = {}
+
                 for batch in self.loader:
-                    it += 1
-                    logs = self.step(batch, it)
+                    iteration += 1
+                    logs = self.step(batch, iteration)
 
                     # Update progress bar
                     pbar.update(1)
                     pbar.set_postfix({
                         "loss": f"{logs['loss/combined']:.4f}",
+                        "epoch": epoch,
+                        "n_gs": logs.get("splats/num_gs_total", 0),
                     })
 
                     # Log to wandb
-                    logs["iteration"] = it
+                    logs["iteration"] = iteration
+                    logs["epoch"] = epoch
+                    if psam_logs:
+                        logs.update(psam_logs)
                     wandb.log(logs)
 
-                    if self.cfg.save_freq > 0 and (it % self.cfg.save_freq == 0):
-                        self.ckpt_manager.save(self.all_gs, it)
+                    if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
+                        self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
 
-                    if it >= iters:
+                    if iteration >= iters:
                         break
 
-        if self.cfg.save_freq > 0 and it % self.cfg.save_freq != 0:
-            self.ckpt_manager.save(self.all_gs, it)
+                epoch += 1
+                self.is_smpl_optim_enabled = self.current_epoch < self.cfg.max_smpl_optim_epoch
+                if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.max_smpl_optim_epoch):
+                    print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
+
+        if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
+            self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
         
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)

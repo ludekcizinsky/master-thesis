@@ -77,22 +77,25 @@ def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, human_m
     # input shapes: [B,H,W,3], [B,H,W,3], [B,P,H,W]
     # case 1: full image supervision
     if len(cfg.tids) > 0 and cfg.train_bg:
-        return gt_imgs, renders
+        return gt_imgs, renders, renders
     # case 2: static bg only - mask out all humans and keep only background
     elif len(cfg.tids) == 0 and cfg.train_bg:
+        original_renders = renders.clone()
         bg_mask = (1.0 - human_masks.sum(dim=1)).clamp(0.0, 1.0)  # [B,H,W]
         gt_imgs *= bg_mask.unsqueeze(-1)
         renders *= bg_mask.unsqueeze(-1)
-        return gt_imgs, renders
+        return gt_imgs, renders, original_renders
     # case 3: dynamic only (keep only target people, mask out rest)
-    elif len(cfg.tids) > 0 and not cfg.train_bg: 
+    elif len(cfg.tids) > 0 and not cfg.train_bg:
+        original_renders = renders.clone()
         # keep only target people and mask out rest
         joined_human_masks = human_masks.sum(dim=1).clamp(0.0, 1.0)  # [B,H,W]
         gt_imgs *= joined_human_masks.unsqueeze(-1)
         renders *= joined_human_masks.unsqueeze(-1)
         # crop to bbox of target people
         gt_imgs, renders = bbox_img_crop(gt_imgs, renders, joined_human_masks)
-        return gt_imgs, renders
+        _, original_renders_crop = bbox_img_crop(gt_imgs, original_renders, joined_human_masks)
+        return gt_imgs, renders, original_renders_crop
     else:
         raise ValueError("Invalid cfg: cannot train without bg and without humans.")
 

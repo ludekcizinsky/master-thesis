@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -7,8 +7,8 @@ import torch.nn as nn
 from training.helpers.model_init import SceneSplats
 
 
-class GaussianCheckpointManager:
-    """Handles persistence of static and human 3DGS parameter sets."""
+class ModelCheckpointManager:
+    """Handles persistence of static and human 3DGS parameter sets as well as SMPL parameters."""
 
     def __init__(
         self,
@@ -29,14 +29,23 @@ class GaussianCheckpointManager:
         self.static_dir.mkdir(parents=True, exist_ok=True)
         for directory in self.human_dirs.values():
             directory.mkdir(parents=True, exist_ok=True)
+        self.smpl_dir = self.root / "smpl"
+        self.smpl_dir.mkdir(parents=True, exist_ok=True)
 
         self.base_iterations: dict = {"static": 0}
         for tid in self.tids:
             self.base_iterations[("human", tid)] = 0
+        self.smpl_base_iteration: int = 0
 
         print(f"--- FYI: checkpoint root dir: {self.root}")
 
-    def save(self, scene_splats: SceneSplats, iteration: int) -> None:
+    def save(
+        self,
+        scene_splats: SceneSplats,
+        iteration: int,
+        *,
+        smpl_params: Optional[Dict[int, nn.Parameter]] = None,
+    ) -> None:
         """Persist current gaussian parameters to disk."""
         if scene_splats.static is not None:
             base_iter = int(self.base_iterations.get("static", 0))
@@ -49,6 +58,14 @@ class GaussianCheckpointManager:
                 tid=None,
                 base_iteration=base_iter,
                 session_iteration=iteration,
+            )
+
+        if len(smpl_params) > 0:
+            base_iter = int(self.smpl_base_iteration)
+            total_iter = int(iteration) + base_iter
+            self._save_smpl_params(
+                params=smpl_params,
+                iteration=total_iter,
             )
 
         if len(scene_splats.dynamic) != len(self.tids):
@@ -117,6 +134,13 @@ class GaussianCheckpointManager:
         self.base_iterations[("human", tid)] = int(iteration) if iteration is not None else 0
         return params, iteration
 
+    def load_smpl(
+        self, device: torch.device | str
+    ) -> Tuple[Optional[Dict[int, nn.Parameter]], Optional[int]]:
+        params, iteration = self._load_smpl_params(device=device)
+        self.smpl_base_iteration = int(iteration) if iteration is not None else 0
+        return params, iteration
+
     def _load_param_dict_from_dir(
         self, target_dir: Path, device: torch.device | str
     ) -> Tuple[Optional[nn.ParameterDict], Optional[int]]:
@@ -139,6 +163,50 @@ class GaussianCheckpointManager:
             iteration = int(iteration)
 
         return param_dict, iteration
+
+    def _load_smpl_params(
+        self, device: torch.device | str
+    ) -> Tuple[Optional[Dict[int, nn.Parameter]], Optional[int]]:
+        ckpt_path = self._latest_checkpoint_path(self.smpl_dir)
+        if ckpt_path is None:
+            return None, None
+
+        payload = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        params = payload.get("params")
+        if params is None:
+            raise ValueError(f"Checkpoint {ckpt_path} missing 'params' entry.")
+
+        smpl_params: Dict[int, nn.Parameter] = {}
+        for fid, tensor in params.items():
+            restored = nn.Parameter(tensor.to(device=device).contiguous())
+            restored.requires_grad_(True)
+            smpl_params[int(fid)] = restored
+
+        iteration = payload.get("iteration")
+        if iteration is not None:
+            iteration = int(iteration)
+
+        return smpl_params, iteration
+
+    def _save_smpl_params(
+        self,
+        *,
+        params: Dict[int, nn.Parameter],
+        iteration: int,
+    ) -> None:
+        self.smpl_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f"iter_{iteration:06d}.pt"
+        file_path = self.smpl_dir / file_name
+
+        payload = {
+            "iteration": iteration,
+            "params": {int(fid): tensor.detach().cpu() for fid, tensor in params.items()},
+        }
+
+        torch.save(payload, file_path)
+
+        latest_path = self.smpl_dir / "latest.txt"
+        latest_path.write_text(file_name)
 
     @staticmethod
     def _latest_checkpoint_path(target_dir: Path) -> Optional[Path]:
@@ -175,3 +243,6 @@ class GaussianCheckpointManager:
             directory.mkdir(parents=True, exist_ok=True)
             self._clear_directory(directory)
             self.base_iterations[("human", tid)] = 0
+
+        self._clear_directory(self.smpl_dir)
+        self.smpl_base_iteration = 0
