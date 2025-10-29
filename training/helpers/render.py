@@ -132,7 +132,7 @@ def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
 
     return static_info, dynamic_info
 
-def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree):
+def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree, render_mode="RGB"):
 
     # Prep splats
     p = _prep_splats_for_render(
@@ -146,7 +146,7 @@ def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree):
     # Render
     colors, alphas, info = rasterization(
         p["means"], p["quats"], p["scales"], p["opacity"], p["colors"],
-        w2c, K, W, H, sh_degree=sh_degree, packed=False
+        w2c, K, W, H, sh_degree=sh_degree, packed=False, render_mode=render_mode
     )
 
     # Parse info per model

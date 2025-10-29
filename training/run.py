@@ -199,13 +199,15 @@ class Trainer:
             smpl_c_info=self.all_gs.smpl_c_info,
         )
 
-        colors, _, _ = render_splats(
+        renders, _, _ = render_splats(
             gs_to_render, smpl_param_forward, 
             lbs_weights, w2c, K, H, W, 
-            sh_degree=self.cfg.sh_degree
+            sh_degree=self.cfg.sh_degree,
+            render_mode="RGB+ED"
         )
+        colors, depths = renders[..., 0:3], renders[..., 3:4]
 
-        return colors
+        return colors, depths
 
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
@@ -394,16 +396,25 @@ class Trainer:
 
         # Individual human evaluations
         for tid in selected_tids:
-            save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}"
-            os.makedirs(save_qual_dir, exist_ok=True)
+            save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}" / f"epoch_{epoch:04d}"
+            save_qual_rgb_dir = save_qual_dir / "rgb"
+            save_qual_depth_dir = save_qual_dir / "depth"
+            os.makedirs(save_qual_rgb_dir, exist_ok=True)
+            os.makedirs(save_qual_depth_dir, exist_ok=True)
+
             for batch in eval_dataloader:
                 _, _, _, _, _, _, fid = self._parse_batch(batch)
-                colors = self.evaluate(batch, [tid], render_bg=False)
+                colors, depths = self.evaluate(batch, [tid], render_bg=False)
 
                 # save the rendered image
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                 img_pil = Image.fromarray(img_np)
-                img_pil.save(save_qual_dir / f"epoch_{epoch}_frame_{fid:04d}.png")
+                img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
+
+                # save the depth map
+                depth_np = (depths[0].cpu().numpy().squeeze(-1) * 255).astype("uint8")
+                depth_pil = Image.fromarray(depth_np)
+                depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
 
 
     def train_loop(self, iters: int = 2000):
