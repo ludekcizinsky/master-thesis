@@ -17,6 +17,8 @@ import torch.nn.functional as F
 import wandb
 from tqdm import tqdm
 
+from PIL import Image
+
 from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights, filter_dynamic_splats
 from training.helpers.dataset import build_dataset, build_dataloader
@@ -166,9 +168,10 @@ class Trainer:
 
         return smpl_param_forward
 
+    @torch.no_grad()
     def evaluate(self, batch: Dict[str, Any], tids: List[int], render_bg: bool):
         # Parse batch
-        images, human_masks, K, w2c, H, W, fid = self._parse_batch(batch)
+        _, _, K, w2c, H, W, fid = self._parse_batch(batch)
 
         # Track which dynamic splat sets correspond to the requested tids
         smpl_param_forward = self._get_frame_smpl_params(fid, frame_reliable=True)
@@ -196,12 +199,11 @@ class Trainer:
             smpl_c_info=self.all_gs.smpl_c_info,
         )
 
-        with torch.no_grad():
-            colors, _, _ = render_splats(
-                gs_to_render, smpl_param_forward, 
-                lbs_weights, w2c, K, H, W, 
-                sh_degree=self.cfg.sh_degree
-            )
+        colors, _, _ = render_splats(
+            gs_to_render, smpl_param_forward, 
+            lbs_weights, w2c, K, H, W, 
+            sh_degree=self.cfg.sh_degree
+        )
 
         return colors
 
@@ -387,6 +389,23 @@ class Trainer:
 
         return log_values
 
+    def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
+        eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
+
+        # Individual human evaluations
+        for tid in selected_tids:
+            save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}"
+            os.makedirs(save_qual_dir, exist_ok=True)
+            for batch in eval_dataloader:
+                _, _, _, _, _, _, fid = self._parse_batch(batch)
+                colors = self.evaluate(batch, [tid], render_bg=False)
+
+                # save the rendered image
+                img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
+                img_pil = Image.fromarray(img_np)
+                img_pil.save(save_qual_dir / f"epoch_{epoch}_frame_{fid:04d}.png")
+
+
     def train_loop(self, iters: int = 2000):
         iteration = 0
         epoch = 0
@@ -441,6 +460,13 @@ class Trainer:
                 self.is_smpl_optim_enabled = self.current_epoch < self.cfg.max_smpl_optim_epoch
                 if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.max_smpl_optim_epoch):
                     print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
+                
+                if self.cfg.eval_every_epochs > 0 and (epoch % self.cfg.eval_every_epochs == 0) and epoch > 0:
+                    self.evaluation_loop(
+                        selected_tids=list(self.cfg.tids),
+                        render_bg=False,
+                        epoch=epoch,
+                    )
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
             self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)

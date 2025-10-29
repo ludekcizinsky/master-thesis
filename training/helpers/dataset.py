@@ -168,11 +168,11 @@ def build_dataset(cfg, mask_path: Path) -> Dataset:
     )
     return dataset
 
-def build_dataloader(cfg, dataset: Dataset) -> DataLoader:
+def build_dataloader(cfg, dataset: Dataset, is_eval: bool = False) -> DataLoader:
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=True,
+        shuffle=not is_eval,
         num_workers=cfg.num_workers
     )
     print(f"--- FYI: DataLoader created with num_workers={cfg.num_workers}.")
