@@ -72,7 +72,7 @@ def bbox_img_crop(gt_imgs: torch.Tensor, renders: torch.Tensor, masks: torch.Ten
 
 
 
-def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, human_masks: torch.Tensor, cfg):
+def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, human_masks: torch.Tensor, cfg, dynamic_only=False):
 
     # input shapes: [B,H,W,3], [B,H,W,3], [B,P,H,W]
     # case 1: full image supervision
@@ -86,7 +86,7 @@ def prepare_input_for_loss(gt_imgs: torch.Tensor, renders: torch.Tensor, human_m
         renders *= bg_mask.unsqueeze(-1)
         return gt_imgs, renders, original_renders
     # case 3: dynamic only (keep only target people, mask out rest)
-    elif len(cfg.tids) > 0 and not cfg.train_bg:
+    elif (len(cfg.tids) > 0 and not cfg.train_bg) or dynamic_only:
         original_renders = renders.clone()
         # keep only target people and mask out rest
         joined_human_masks = human_masks.sum(dim=1).clamp(0.0, 1.0)  # [B,H,W]

@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=v2_runs
+#SBATCH --job-name=v3_runs
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -17,12 +17,32 @@ conda activate thesis
 cd /home/cizinsky/master-thesis
 
 # Full scene (default setup)
-GROUP_NAME=v2_default
-# - dynamic
-# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false logger.tags=[v2] group_name=$GROUP_NAME
-# - static
-# python training/run.py scene_name=football_high_res tids=[] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME
-# - dynamic+static
-# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=true resume=true logger.tags=[v2] group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=4000
+# GROUP_NAME=v3_default
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false logger.tags=[v3] group_name=$GROUP_NAME
+# python training/run.py scene_name=taichi tids=[] train_bg=true resume=true logger.tags=[v3] group_name=$GROUP_NAME
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true logger.tags=[v3] group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=8000
 
-python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000
+# Early stop iter
+# GROUP_NAME=v3_earlystop
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v3, early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000
+# python training/run.py scene_name=taichi tids=[] train_bg=true resume=true 'logger.tags=[v3, early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true 'logger.tags=[v3, early_stop]' group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=8000
+
+# Long stop iter
+# GROUP_NAME=v3_longstop
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v3, long_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+# python training/run.py scene_name=taichi tids=[] train_bg=true resume=true 'logger.tags=[v3, long_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true 'logger.tags=[v3, long_stop]' group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=8000
+
+# Human long, static short
+# GROUP_NAME=v3_humanlong_staticshort
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v3, human_long, static_short]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+# python training/run.py scene_name=taichi tids=[] train_bg=true resume=true 'logger.tags=[v3, human_long, static_short]' group_name=$GROUP_NAME gs_refine_stop_iter=5000
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true 'logger.tags=[v3, human_long, static_short]' group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=8000
+
+# Full scene - joined optimisation - loss also on dynamic only
+GROUP_NAME=v3_fullscene_joinedloss
+python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, dynamic_only_loss, full_scene_loss]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+
+# --- dev
+# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000

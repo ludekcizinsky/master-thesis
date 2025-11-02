@@ -12,15 +12,15 @@ preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/${sce
 train_dir: ${output_dir}/training
 
 # --- Training settings
-num_workers: 4  # number of data loading workers
+num_workers: 8  # number of data loading workers
 iters: 30000
-save_freq: 1000 # frequency of checkpointing
+save_freq: 5000 # frequency of checkpointing
 resume: false
 tids: [0, 1]
 cloud_downsample: 30
 batch_size: 1  # number of images per batch
 train_bg: false
-eval_every_epochs: 60
+eval_every_epochs: 50
 
 # --- General system settings to control memory usage and speed
 # Device to use for training
@@ -31,9 +31,9 @@ downscale: 1
 packed: False 
 
 # --- 3DGS settings
-gs_refine_every: 300      # frequency of applying the densification strategy
-gs_refine_stop_iter: 7500 # stop applying the densification strategy after these many iterations
-gs_refine_start_iter: 500 # default is normally 500
+gs_refine_every: 200      # frequency of applying the densification strategy
+gs_refine_stop_iter: 10000 # stop applying the densification strategy after these many iterations
+gs_refine_start_iter: 1000 # default is normally 500
 
 # --- SMPL optimisation settings
 max_smpl_optim_epoch: 20
@@ -50,7 +50,7 @@ mask_refinement:
   enabled: true
   alpha_threshold: 0.2
   loss_weight: 0.01
-  rebuild_every_epochs: 100
+  rebuild_every_epochs: 1000000
   rebuild_max_epoch: 200
   sam2:
     model_id: facebook/sam2.1-hiera-large
