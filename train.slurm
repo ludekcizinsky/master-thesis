@@ -41,8 +41,28 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true 'logger.tags=[v3, human_long, static_short]' group_name=$GROUP_NAME gs_refine_start_iter=2000 gs_refine_stop_iter=8000
 
 # Full scene - joined optimisation - loss also on dynamic only
-GROUP_NAME=v3_fullscene_joinedloss
-python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, dynamic_only_loss, full_scene_loss]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+# GROUP_NAME=v3_fullscene_joinedloss
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, dynamic_only_loss, full_scene_loss]' group_name=$GROUP_NAME gs_refine_stop_iter=15000
+
+# Progressive sam enabled
+# GROUP_NAME=v3_psam_rebuild25
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, psam_rebuild25]' group_name=$GROUP_NAME gs_refine_stop_iter=15000 mask_refinement.rebuild_every_epochs=25
+
+# psam50
+# GROUP_NAME=v3_psam_rebuild50
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, psam_rebuild50]' group_name=$GROUP_NAME gs_refine_stop_iter=15000 mask_refinement.rebuild_every_epochs=50
+
+# psam10
+# GROUP_NAME=v3_psam_rebuild10
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, psam_rebuild10]' group_name=$GROUP_NAME gs_refine_stop_iter=15000 mask_refinement.rebuild_every_epochs=10
+
+# psamm rebuild25 and rebuild mach epoch 1000
+# GROUP_NAME=v3_psam_rebuild25_max1000
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, psam_rebuild25]' group_name=$GROUP_NAME gs_refine_stop_iter=15000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000
+
+# psam early stop
+# GROUP_NAME=v3_psam_early_stop
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=false 'logger.tags=[v3, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=7500 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000
 
 # --- dev
 # python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000
