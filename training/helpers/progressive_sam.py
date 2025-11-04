@@ -687,9 +687,17 @@ class ProgressiveSAMManager:
         print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
     def _save_visualization_of_entry(self, image: np.ndarray, entry: SamMaskEntry, fid: int, epoch: int) -> None:
-        vis_dir_epoch = self.vis_dir / f"epoch_{(epoch + 1):04d}"
+        vis_dir_epoch = self.vis_dir / f"epoch_{epoch + 1:04d}"
         vis_dir_epoch.mkdir(parents=True, exist_ok=True)
-        out_path = vis_dir_epoch / f"{fid:04d}.png"
+        scores_array = np.asarray(entry.iou_scores, dtype=np.float32) if entry.iou_scores else np.asarray([])
+        if scores_array.size > 0:
+            avg_iou = float(np.mean(scores_array))
+            avg_iou_str = f"{avg_iou:.2f}"
+        else:
+            avg_iou = float("nan")
+            avg_iou_str = "nan"
+
+        out_path = vis_dir_epoch / f"avg_{avg_iou_str}_{fid:04d}.png"
 
         num_tracks = int(entry.refined.shape[0])
         if num_tracks == 0:
@@ -703,6 +711,17 @@ class ProgressiveSAMManager:
             refined_mask = entry.refined[idx_h].cpu().numpy()
             positive_pts = entry.vis_pos[idx_h]
             negative_pts = entry.vis_neg[idx_h]
+
+            iou_score: Optional[float]
+            if idx_h < len(entry.iou_scores) and entry.iou_scores[idx_h] is not None:
+                iou_score = float(entry.iou_scores[idx_h])
+            else:
+                iou_score = None
+            title_suffix = ""
+            if iou_score is not None and not math.isnan(iou_score):
+                title_suffix = f" (IoU: {iou_score:.2f})"
+            else:
+                title_suffix = " (IoU: N/A)"
 
             ax_prompts = axes[idx_h, 0]
             ax_overlay = axes[idx_h, 1]
@@ -735,7 +754,7 @@ class ProgressiveSAMManager:
                 legend_items.append("negative")
             if legend_items:
                 ax_prompts.legend(loc="upper right")
-            ax_prompts.set_title("SAM2 Input Prompts")
+            ax_prompts.set_title(f"SAM2 Input Prompts{title_suffix}")
             ax_prompts.set_axis_off()
             ax_prompts.text(
                 0.02,
@@ -752,7 +771,7 @@ class ProgressiveSAMManager:
             ax_overlay.imshow(image)
             ax_overlay.imshow(initial_mask.astype(float), cmap="Reds", alpha=0.4)
             ax_overlay.imshow(refined_mask.astype(float), cmap="Blues", alpha=0.6)
-            ax_overlay.set_title("Refined Mask Overlay")
+            ax_overlay.set_title(f"Refined Mask Overlay{title_suffix}")
             ax_overlay.set_axis_off()
 
             red_patch = matplotlib.patches.Patch(color="red", alpha=0.4, label="Initial Mask")
@@ -763,6 +782,116 @@ class ProgressiveSAMManager:
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
 
+    def _save_epoch_iou_plot(self, processed_fids: Sequence[int], epoch: int) -> None:
+        if not processed_fids:
+            return
+
+        frame_ids = sorted({int(fid) for fid in processed_fids})
+        frame_scores = [self.frame_iou_scores.get(fid, []) for fid in frame_ids]
+        max_tracks = max((len(scores) for scores in frame_scores), default=0)
+        if max_tracks == 0:
+            return
+
+        frame_averages: List[float] = []
+        pooled_scores: List[float] = []
+        for scores in frame_scores:
+            valid_scores = [
+                float(score)
+                for score in scores
+                if score is not None and not math.isnan(float(score))
+            ]
+            if valid_scores:
+                frame_averages.append(float(np.mean(valid_scores)))
+                pooled_scores.extend(valid_scores)
+            else:
+                frame_averages.append(float("nan"))
+
+        vis_dir_epoch = self.vis_dir / f"epoch_{epoch + 1:04d}"
+        vis_dir_epoch.mkdir(parents=True, exist_ok=True)
+        out_path = vis_dir_epoch / "iou_scores.png"
+        hist_path = vis_dir_epoch / "iou_histograms.png"
+
+        x = np.arange(len(frame_ids), dtype=np.float32)
+        bar_width = 0.8 / max_tracks
+
+        fig, ax = plt.subplots(figsize=(max(8.0, 1.5 * len(frame_ids)), 5.0))
+
+        for track_idx in range(max_tracks):
+            track_scores = []
+            for scores in frame_scores:
+                if track_idx < len(scores):
+                    score = scores[track_idx]
+                    track_scores.append(float(score) if score is not None else np.nan)
+                else:
+                    track_scores.append(np.nan)
+            scores_array = np.asarray(track_scores, dtype=np.float32)
+            offsets = x + (track_idx - (max_tracks - 1) / 2.0) * bar_width
+            ax.bar(offsets, scores_array, width=bar_width, label=f"tid {track_idx:02d}")
+
+        avg_array = np.asarray(frame_averages, dtype=np.float32)
+        if avg_array.size > 0 and np.any(~np.isnan(avg_array)):
+            ax.plot(
+                x,
+                avg_array,
+                color="black",
+                marker="o",
+                linewidth=1.5,
+                label="Frame Avg IoU",
+            )
+
+        if pooled_scores:
+            global_median = float(np.median(np.asarray(pooled_scores, dtype=np.float32)))
+            ax.axhline(
+                global_median,
+                color="orange",
+                linestyle="--",
+                linewidth=1.2,
+                label=f"Global Median {global_median:.2f}",
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"{fid:04d}" for fid in frame_ids], rotation=45, ha="right")
+        ax.set_xlabel("Frame ID")
+        ax.set_ylabel("IoU Score")
+        ax.set_title("Per-frame IoU Scores")
+        ax.set_ylim(0.0, 1.0)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.3)
+        ax.legend(loc="upper right", ncol=min(4, max_tracks))
+
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+
+        # Build per-track histograms
+        track_score_lists: List[List[float]] = [[] for _ in range(max_tracks)]
+        for scores in frame_scores:
+            for track_idx in range(max_tracks):
+                if track_idx < len(scores):
+                    value = scores[track_idx]
+                    if value is not None and not math.isnan(float(value)):
+                        track_score_lists[track_idx].append(float(value))
+
+        if any(track_score_lists):
+            fig, ax = plt.subplots(figsize=(8.0, 5.0))
+            bins = np.linspace(0.0, 1.0, 21)
+            for track_idx, track_values in enumerate(track_score_lists):
+                if track_values:
+                    ax.hist(
+                        track_values,
+                        bins=bins,
+                        alpha=0.55,
+                        label=f"tid {track_idx:02d}",
+                        edgecolor="black",
+                        linewidth=0.4,
+                    )
+            ax.set_xlabel("IoU Score")
+            ax.set_ylabel("Frequency")
+            ax.set_title("IoU Distribution per Track")
+            ax.legend(loc="upper right")
+            fig.tight_layout()
+            fig.savefig(hist_path, dpi=150)
+            plt.close(fig)
+
     def update_masks(
         self,
         dataset,
@@ -772,10 +901,9 @@ class ProgressiveSAMManager:
     ) -> None:
 
         predictor = self._ensure_predictor()
-        vis_dir_epoch = self.vis_dir / f"epoch_{epoch:04d}"
-        vis_dir_epoch.mkdir(parents=True, exist_ok=True)
 
         n_samples = len(dataset)
+        processed_fids: List[int] = []
         with torch.no_grad():
             for idx in tqdm(range(n_samples), desc=f"Rebuilding SAM mask cache (epoch {epoch})"):
                 sample = dataset[idx]
@@ -802,9 +930,11 @@ class ProgressiveSAMManager:
 
                 entry, iou_scores = self._build_mask_entry(refined_results, self.device)
                 self.frame_iou_scores[fid] = iou_scores
+                processed_fids.append(fid)
                 self._save_entry_to_disk(entry, fid)
                 self._save_visualization_of_entry(image_np, entry, fid, epoch)
 
+        self._save_epoch_iou_plot(processed_fids, epoch)
         self.last_update_epoch = epoch
         self._update_reliability_stats()
         self._save_state()
