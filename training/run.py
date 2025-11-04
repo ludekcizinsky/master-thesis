@@ -247,10 +247,10 @@ class Trainer:
             cfg=self.cfg
         )  # [B,h,w,3], [B,h,w,3] (cropped if needed)
 
-        render_for_loss = pred_original if frame_reliable else pred_render
+        render_for_loss = pred_original # if frame_reliable else pred_render
 
         if len(self.cfg.tids) > 0 and self.cfg.train_bg:
-            gt_render_dyn, pred_render_dyn, _ = prepare_input_for_loss(
+            gt_render_dyn, pred_render_dyn, pred_original_dyn = prepare_input_for_loss(
                 gt_imgs=images,
                 renders=colors,
                 human_masks=human_masks,
@@ -258,20 +258,20 @@ class Trainer:
                 dynamic_only=True
             )
         else:
-            gt_render_dyn = pred_render_dyn = None
+            gt_render_dyn = pred_render_dyn = pred_original_dyn = None
 
         # - L1
         l1_loss = F.l1_loss(render_for_loss, gt_render)
-        if gt_render_dyn is not None and pred_render_dyn is not None:
-            l1_loss += F.l1_loss(pred_render_dyn, gt_render_dyn)
+        if gt_render_dyn is not None and pred_original_dyn is not None:
+            l1_loss += F.l1_loss(pred_original_dyn, gt_render_dyn)
 
         # - SSIM
         ssim_loss = 1.0 - fused_ssim(
             render_for_loss.permute(0, 3, 1, 2), gt_render.permute(0, 3, 1, 2), padding="valid"
         )
-        if gt_render_dyn is not None and pred_render_dyn is not None:
+        if gt_render_dyn is not None and pred_original_dyn is not None:
             ssim_loss += 1.0 - fused_ssim(
-                pred_render_dyn.permute(0, 3, 1, 2), gt_render_dyn.permute(0, 3, 1, 2), padding="valid"
+                pred_original_dyn.permute(0, 3, 1, 2), gt_render_dyn.permute(0, 3, 1, 2), padding="valid"
             )
 
         # - Alpha
