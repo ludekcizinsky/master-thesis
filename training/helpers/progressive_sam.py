@@ -100,7 +100,7 @@ def _render_alpha_mask(
     alpha_threshold: float,
     sh_degree: int,
     device: torch.device,
-) -> Tuple[Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor]:
     H, W = image_size
 
     single_scene = SceneSplats(
@@ -111,7 +111,7 @@ def _render_alpha_mask(
     smpl_param = smpl_params[dynamic_index].unsqueeze(0).to(device)
     lbs_weight = [lbs_weights[dynamic_index]]
 
-    colors, alphas, _ = render_splats(
+    renders, alphas, _ = render_splats(
         single_scene,
         smpl_param,
         lbs_weight,
@@ -120,13 +120,19 @@ def _render_alpha_mask(
         H,
         W,
         sh_degree=sh_degree,
+        render_mode="RGB+ED",
     )
+
+    render_map = renders[0].detach()
+    if render_map.shape[-1] < 4:
+        raise RuntimeError("Depth channel missing from render output; ensure render_mode includes depth.")
+    depth_map = render_map[..., 3].to(dtype=torch.float32)
 
     alpha_map = alphas[0].detach()
     if alpha_map.ndim == 3 and alpha_map.shape[-1] == 1:
         alpha_map = alpha_map[..., 0]
     mask = (alpha_map > alpha_threshold).to(dtype=torch.bool)
-    return mask.cpu(), alpha_map.cpu()
+    return mask.cpu(), alpha_map.cpu(), depth_map.cpu()
 
 
 def _pose_body_vertices(
@@ -411,6 +417,7 @@ def get_sam_masks(
 
     masks: List[Tensor] = []
     alphas: List[Tensor] = []
+    depths: List[Tensor] = []
 
     H, W = image_size
     K_3x3 = K[:3, :3] if K.shape[0] == 4 else K
@@ -418,7 +425,7 @@ def get_sam_masks(
 
     with torch.no_grad():
         for idx in range(len(all_gs.dynamic)):
-            mask, alpha_map = _render_alpha_mask(
+            mask, alpha_map, depth_map = _render_alpha_mask(
                 idx,
                 all_gs,
                 smpl_params,
@@ -432,6 +439,27 @@ def get_sam_masks(
             )
             masks.append(mask)
             alphas.append(alpha_map)
+            depths.append(depth_map)
+
+        mask_stack = torch.stack([m.to(dtype=torch.bool) for m in masks], dim=0)
+        depth_stack = torch.stack([d.to(dtype=torch.float32) for d in depths], dim=0)
+        depth_stack = torch.where(
+            torch.isnan(depth_stack),
+            torch.full_like(depth_stack, float("inf")),
+            depth_stack,
+        )
+        depth_with_background = torch.where(
+            mask_stack,
+            depth_stack,
+            torch.full_like(depth_stack, float("inf")),
+        )
+        front_depth, _ = depth_with_background.min(dim=0)
+        valid_front = torch.isfinite(front_depth)
+        depth_epsilon = 5e-3
+        for idx in range(len(masks)):
+            depth_map = depths[idx]
+            visible_mask = masks[idx] & valid_front & (depth_map <= front_depth + depth_epsilon)
+            masks[idx] = visible_mask
 
         posed_vertices = _pose_body_vertices(all_gs, smpl_params.to(render_device), render_device)
         keypoints = [
