@@ -11,13 +11,15 @@ import numpy as np
 from torch import Tensor
 import logging
 from tqdm import tqdm
-
+import matplotlib
+import matplotlib.pyplot as plt
 from hydra.core.global_hydra import GlobalHydra
 
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed, update_skinning_weights
 from training.helpers.geom_utils import project_points
+
 
 
 @dataclass
@@ -564,8 +566,9 @@ class ProgressiveSAMManager:
         device: torch.device,
         default_lbs_knn: int,
         checkpoint_dir: Path,
+        training_dir: Path,
         preprocessing_dir: Path,
-        is_preprocessing: bool = False,
+        is_preprocessing: bool = False, 
     ) -> None:
         # cfg
         mask_cfg = mask_cfg or {}
@@ -587,6 +590,9 @@ class ProgressiveSAMManager:
         else:
             self.checkpoint_dir = checkpoint_dir / "progressive_sam"
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self.vis_dir = training_dir / "visualizations" / "progressive_sam"
+        self.vis_dir.mkdir(parents=True, exist_ok=True)
 
         # sam2
         self.predictor: Optional["SAM2ImagePredictor"] = None
@@ -680,6 +686,83 @@ class ProgressiveSAMManager:
 
         print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
+    def _save_visualization_of_entry(self, image: np.ndarray, entry: SamMaskEntry, fid: int, epoch: int) -> None:
+        vis_dir_epoch = self.vis_dir / f"epoch_{(epoch + 1):04d}"
+        vis_dir_epoch.mkdir(parents=True, exist_ok=True)
+        out_path = vis_dir_epoch / f"{fid:04d}.png"
+
+        num_tracks = int(entry.refined.shape[0])
+        if num_tracks == 0:
+            return
+
+        fig_height = max(4.0, 5.0 * num_tracks)
+        fig, axes = plt.subplots(num_tracks, 2, figsize=(12, fig_height), squeeze=False)
+
+        for idx_h in range(num_tracks):
+            initial_mask = entry.initial[idx_h].cpu().numpy()
+            refined_mask = entry.refined[idx_h].cpu().numpy()
+            positive_pts = entry.vis_pos[idx_h]
+            negative_pts = entry.vis_neg[idx_h]
+
+            ax_prompts = axes[idx_h, 0]
+            ax_overlay = axes[idx_h, 1]
+
+            ax_prompts.imshow(image)
+            ax_prompts.imshow(initial_mask.astype(float), cmap="Greens", alpha=0.35)
+            legend_items: List[str] = []
+            if positive_pts is not None and positive_pts.size > 0:
+                ax_prompts.scatter(
+                    positive_pts[:, 0],
+                    positive_pts[:, 1],
+                    s=45,
+                    c="lime",
+                    marker="o",
+                    edgecolors="black",
+                    linewidths=0.6,
+                    label="positive",
+                )
+                legend_items.append("positive")
+            if negative_pts is not None and negative_pts.size > 0:
+                ax_prompts.scatter(
+                    negative_pts[:, 0],
+                    negative_pts[:, 1],
+                    s=45,
+                    c="red",
+                    marker="x",
+                    linewidths=1.2,
+                    label="negative",
+                )
+                legend_items.append("negative")
+            if legend_items:
+                ax_prompts.legend(loc="upper right")
+            ax_prompts.set_title("SAM2 Input Prompts")
+            ax_prompts.set_axis_off()
+            ax_prompts.text(
+                0.02,
+                0.98,
+                f"tid {idx_h:02d}",
+                transform=ax_prompts.transAxes,
+                fontsize=10,
+                fontweight="bold",
+                va="top",
+                ha="left",
+                bbox={"facecolor": "white", "alpha": 0.6, "edgecolor": "none", "pad": 2},
+            )
+
+            ax_overlay.imshow(image)
+            ax_overlay.imshow(initial_mask.astype(float), cmap="Reds", alpha=0.4)
+            ax_overlay.imshow(refined_mask.astype(float), cmap="Blues", alpha=0.6)
+            ax_overlay.set_title("Refined Mask Overlay")
+            ax_overlay.set_axis_off()
+
+            red_patch = matplotlib.patches.Patch(color="red", alpha=0.4, label="Initial Mask")
+            blue_patch = matplotlib.patches.Patch(color="blue", alpha=0.6, label="Refined Mask")
+            ax_overlay.legend(handles=[red_patch, blue_patch], loc="upper right")
+
+        fig.tight_layout(pad=0.3, h_pad=0.7)
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+
     def update_masks(
         self,
         dataset,
@@ -689,6 +772,8 @@ class ProgressiveSAMManager:
     ) -> None:
 
         predictor = self._ensure_predictor()
+        vis_dir_epoch = self.vis_dir / f"epoch_{epoch:04d}"
+        vis_dir_epoch.mkdir(parents=True, exist_ok=True)
 
         n_samples = len(dataset)
         with torch.no_grad():
@@ -718,6 +803,7 @@ class ProgressiveSAMManager:
                 entry, iou_scores = self._build_mask_entry(refined_results, self.device)
                 self.frame_iou_scores[fid] = iou_scores
                 self._save_entry_to_disk(entry, fid)
+                self._save_visualization_of_entry(image_np, entry, fid, epoch)
 
         self.last_update_epoch = epoch
         self._update_reliability_stats()

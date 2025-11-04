@@ -113,6 +113,7 @@ class Trainer:
             checkpoint_dir=self.checkpoint_dir,
             preprocessing_dir=Path(cfg.preprocess_dir),
             is_preprocessing=cfg.is_preprocessing, 
+            training_dir=self.experiment_dir,
         )
         self.progressive_sam.init_state(
             cfg.resume, self.dataset, 
