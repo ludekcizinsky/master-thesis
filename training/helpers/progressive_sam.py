@@ -183,38 +183,16 @@ def _point_in_mask(u: int, v: int, mask: Tensor) -> bool:
     return bool(mask[v, u].item())
 
 
-CATEGORY_JOINTS = {
-    "feet": {7, 8, 10, 11},
-    "legs": {1, 2, 4, 5, 7, 8},
-    "hands": {20, 21, 22, 23},
-    "arms": {16, 17, 18, 19, 20, 21},
-    "chest": {0, 3, 6, 9},
-    "head": {12, 15},
-}
-POINTS_PER_CATEGORY = 10
-
-
-def _build_category_indices(joint_labels: np.ndarray) -> dict[str, np.ndarray]:
-    category_indices: dict[str, np.ndarray] = {}
-    for name, joint_ids in CATEGORY_JOINTS.items():
-        mask = np.isin(joint_labels, list(joint_ids))
-        category_indices[name] = np.where(mask)[0]
-    return category_indices
-
-
 def _sample_from_category(
     indices: np.ndarray,
     uv_coords: Tensor,
     include_mask: Optional[Tensor],
     exclude_masks: Sequence[Tensor],
-    count: int,
 ) -> List[List[int]]:
-    selected: List[List[int]] = []
-    if indices.size == 0:
-        return selected
-    H = include_mask.shape[0] if include_mask is not None else None
-    W = include_mask.shape[1] if include_mask is not None else None
     candidates: List[List[int]] = []
+    if indices.size == 0:
+        return candidates
+
     for vid in indices.tolist():
         if vid >= uv_coords.shape[0]:
             continue
@@ -227,16 +205,7 @@ def _sample_from_category(
             continue
         candidates.append([u, v])
 
-    if not candidates:
-        return selected
-
-    if len(candidates) <= count:
-        return candidates
-
-    chosen_idx = np.linspace(0, len(candidates) - 1, num=count, dtype=int)
-    for idx in chosen_idx:
-        selected.append(candidates[idx])
-    return selected
+    return candidates
 
 
 def _default_positive_points(
@@ -277,26 +246,30 @@ def _collect_prompt_points(
     idx: int,
     keypoints: Sequence[Tensor],
     masks: Sequence[Tensor],
-    image_size: Tuple[int, int],
-    category_vertices: dict[str, np.ndarray],
+    *,
+    positive_joint_indices: Sequence[int],
+    negative_joint_indices: Optional[Sequence[int]] = None,
 ) -> Tuple[Tensor, Tensor]:
-    H, W = image_size
+    negative_joint_indices = (
+        list(negative_joint_indices)
+        if negative_joint_indices is not None
+        else list(range(keypoints[0].shape[0]))
+    )
+
     target_kp = keypoints[idx]
     target_mask = masks[idx]
 
     other_masks = [masks[j] for j in range(len(masks)) if j != idx]
 
     positive_pts: List[List[int]] = []
-    for indices in category_vertices.values():
-        positive_pts.extend(
-            _sample_from_category(
-                indices,
-                target_kp,
-                target_mask,
-                other_masks,
-                POINTS_PER_CATEGORY,
-            )
+    positive_pts.extend(
+        _sample_from_category(
+            np.asarray(positive_joint_indices, dtype=np.int64),
+            target_kp,
+            target_mask,
+            other_masks,
         )
+    )
     if not positive_pts:
         positive_pts = _default_positive_points(target_kp, target_mask, other_masks)
 
@@ -305,16 +278,14 @@ def _collect_prompt_points(
         if j == idx:
             continue
         own_mask = masks[j]
-        for indices in category_vertices.values():
-            negative_pts.extend(
-                _sample_from_category(
-                    indices,
-                    kp,
-                    own_mask,
-                    [target_mask],
-                    POINTS_PER_CATEGORY,
-                )
+        negative_pts.extend(
+            _sample_from_category(
+                np.asarray(negative_joint_indices, dtype=np.int64),
+                kp,
+                own_mask,
+                [target_mask],
             )
+        )
         if not negative_pts:
             negative_pts.extend(_default_negative_points(kp, target_mask, own_mask))
 
@@ -342,13 +313,14 @@ def _downsample_points(points: Optional[np.ndarray], max_points: int) -> Optiona
 
 def _prepare_point_arrays(
     result: SamMaskResult,
-    max_points: int,
+    max_pos_points: int,
+    max_neg_points: int,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     pos = result.positive_points.cpu().numpy() if result.positive_points.numel() > 0 else None
     neg = result.negative_points.cpu().numpy() if result.negative_points.numel() > 0 else None
 
-    pos_ds = _downsample_points(pos, max_points)
-    neg_ds = _downsample_points(neg, max_points)
+    pos_ds = _downsample_points(pos, max_pos_points)
+    neg_ds = _downsample_points(neg, max_neg_points)
 
     if pos_ds is None and neg_ds is None:
         return None, None, pos_ds, neg_ds
@@ -461,23 +433,35 @@ def get_sam_masks(
             visible_mask = masks[idx] & valid_front & (depth_map <= front_depth + depth_epsilon)
             masks[idx] = visible_mask
 
-        posed_vertices = _pose_body_vertices(all_gs, smpl_params.to(render_device), render_device)
-        keypoints = [
-            _project_vertices(verts, w2c_4x4.to(render_device), K_3x3.to(render_device)).cpu()
-            for verts in posed_vertices
-        ]
+        smpl_server = all_gs.smpl_c_info["smpl_server"].to(render_device)
+        w2c_device = w2c_4x4.to(render_device)
+        K_device = K_3x3.to(render_device)
+        joint_projections: List[Tensor] = []
+        joint_count: Optional[int] = None
+        for idx in range(len(all_gs.dynamic)):
+            smpl_output = smpl_server(
+                smpl_params[idx].unsqueeze(0).to(render_device),
+                absolute=False,
+            )
+            joints_world = smpl_output["smpl_jnts"][0]
+            if joint_count is None:
+                joint_count = int(joints_world.shape[0])
+            joint_uv = _project_vertices(joints_world, w2c_device, K_device).cpu()
+            joint_projections.append(joint_uv)
 
-        joint_labels = torch.argmax(all_gs.smpl_c_info["weights_c"], dim=1).cpu().numpy()
-        category_vertices = _build_category_indices(joint_labels)
+        if joint_count is not None:
+            positive_joint_indices = list(range(min(24, joint_count)))
+        else:
+            positive_joint_indices = []
 
         results: List[SamMaskResult] = []
         for idx in range(len(all_gs.dynamic)):
             pos_pts, neg_pts = _collect_prompt_points(
                 idx,
-                keypoints,
+                joint_projections,
                 masks,
-                (H, W),
-                category_vertices,
+                positive_joint_indices=positive_joint_indices,
+                negative_joint_indices=positive_joint_indices,
             )
             results.append(
                 SamMaskResult(
@@ -497,11 +481,12 @@ def refine_masks_with_predictor(
     *,
     multimask_output: bool,
     use_initial_mask: bool,
-    max_points: int,
+    max_pos_points: int,
+    max_neg_points: int,
 ) -> List[RefinedMaskResult]:
     refined: List[RefinedMaskResult] = []
     for result in sam_results:
-        point_coords, point_labels, pos_vis, neg_vis = _prepare_point_arrays(result, max_points)
+        point_coords, point_labels, pos_vis, neg_vis = _prepare_point_arrays(result, max_pos_points, max_neg_points)
 
         mask_input = None
         if use_initial_mask:
@@ -576,12 +561,15 @@ def compute_refined_masks(
         device=device,
     )
 
+    max_pos_points = int(predictor_cfg.get("max_pos_points", 24))
+    max_neg_points = int(predictor_cfg.get("max_neg_points", 10))
     refined = refine_masks_with_predictor(
         sam_results,
         predictor,
         multimask_output=bool(predictor_cfg.get("multimask_output", False)),
         use_initial_mask=bool(predictor_cfg.get("use_initial_mask", True)),
-        max_points=int(predictor_cfg.get("max_points", 50)),
+        max_pos_points=max_pos_points,
+        max_neg_points=max_neg_points,
     )
     return refined
 

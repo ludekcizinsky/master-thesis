@@ -57,7 +57,8 @@ mask_refinement:
     device: cuda
     mask_threshold: 0.0
     multimask_output: false
-    max_points: 12
+    max_pos_points: 24
+    max_neg_points: 10
     use_initial_mask: true
 
 # --- Learning rates for the model parameters
