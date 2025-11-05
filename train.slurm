@@ -70,5 +70,9 @@ python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 
 # python training/run.py scene_name=taichi tids=[] train_bg=true resume=true 'logger.tags=[v3, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=10000000 mask_refinement.rebuild_max_epoch=1000 iters=15000
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=true resume=true 'logger.tags=[v3, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=400 mask_refinement.rebuild_every_epochs=10000000 mask_refinement.rebuild_max_epoch=1000 iters=15000
 
+# testing new psam
+GROUP_NAME=v4_new_psam
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v4, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000
+
 # --- dev
 # python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000

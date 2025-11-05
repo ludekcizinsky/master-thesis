@@ -48,7 +48,8 @@ lbs_knn: 30
 
 mask_refinement:
   enabled: true
-  alpha_threshold: 0.2
+  alpha_threshold: 0.7
+  alpha_threshold_warmup_refinements: 0
   loss_weight: 0.01
   rebuild_every_epochs: 1000000
   rebuild_max_epoch: 200
@@ -57,8 +58,8 @@ mask_refinement:
     device: cuda
     mask_threshold: 0.0
     multimask_output: false
-    max_pos_points: 24
-    max_neg_points: 10
+    max_pos_points: 27
+    max_neg_points: 37 # 27 + 10 random ones
     use_initial_mask: true
 
 # --- Learning rates for the model parameters

@@ -15,6 +15,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 from hydra.core.global_hydra import GlobalHydra
 
+RNG = np.random.default_rng(42)
+
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed, update_skinning_weights
@@ -250,10 +252,12 @@ def _collect_prompt_points(
     positive_joint_indices: Sequence[int],
     negative_joint_indices: Optional[Sequence[int]] = None,
 ) -> Tuple[Tensor, Tensor]:
+    max_joints_available = keypoints[0].shape[0]
+    positive_joint_indices = list(positive_joint_indices)[: min(27, max_joints_available)]
     negative_joint_indices = (
-        list(negative_joint_indices)
+        list(negative_joint_indices)[: min(27, max_joints_available)]
         if negative_joint_indices is not None
-        else list(range(keypoints[0].shape[0]))
+        else list(range(min(27, max_joints_available)))
     )
 
     target_kp = keypoints[idx]
@@ -274,6 +278,23 @@ def _collect_prompt_points(
         positive_pts = _default_positive_points(target_kp, target_mask, other_masks)
 
     negative_pts: List[List[int]] = []
+
+    # random background pixels as initial negatives
+    mask_np = target_mask.cpu().numpy().astype(np.float32)
+    neg_background: List[List[int]] = []
+    attempts = 0
+    max_attempts = 200
+    while len(neg_background) < 10 and attempts < max_attempts:
+        attempts += 1
+        u = int(RNG.integers(0, mask_np.shape[1]))
+        v = int(RNG.integers(0, mask_np.shape[0]))
+        if mask_np[v, u] > 0.5:
+            continue
+        if any(_point_in_mask(u, v, other) for other in other_masks):
+            continue
+        neg_background.append([u, v])
+    negative_pts.extend(neg_background)
+
     for j, kp in enumerate(keypoints):
         if j == idx:
             continue
@@ -450,7 +471,7 @@ def get_sam_masks(
             joint_projections.append(joint_uv)
 
         if joint_count is not None:
-            positive_joint_indices = list(range(min(24, joint_count)))
+            positive_joint_indices = list(range(min(27, joint_count)))
         else:
             positive_joint_indices = []
 
@@ -491,7 +512,33 @@ def refine_masks_with_predictor(
         mask_input = None
         if use_initial_mask:
             mask_np = result.mask.numpy().astype(np.float32)
-            mask_tensor = torch.from_numpy(mask_np)[None, None, :, :]
+            nonzero = np.argwhere(mask_np > 0.5)
+            if nonzero.size > 0:
+                y_min = int(nonzero[:, 0].min())
+                y_max = int(nonzero[:, 0].max())
+                x_min = int(nonzero[:, 1].min())
+                x_max = int(nonzero[:, 1].max())
+                height = max(y_max - y_min + 1, 1)
+                width = max(x_max - x_min + 1, 1)
+                margin_y = max(int(0.03 * height), 1)
+                margin_x = max(int(0.03 * width), 1)
+                y_min = max(0, y_min - margin_y)
+                x_min = max(0, x_min - margin_x)
+                y_max = min(mask_np.shape[0] - 1, y_max + margin_y)
+                x_max = min(mask_np.shape[1] - 1, x_max + margin_x)
+                bounding_box = np.array([x_min, y_min, x_max, y_max], dtype=np.float32)
+            else:
+                bounding_box = None
+
+            height, width = mask_np.shape
+            max_dim = max(height, width)
+            canvas = np.zeros((max_dim, max_dim), dtype=np.float32)
+            if height >= width:
+                canvas[:height, :width] = mask_np
+            else:
+                offset = max_dim - width
+                canvas[:height, offset:offset + width] = mask_np
+            mask_tensor = torch.from_numpy(canvas)[None, None, :, :]
             target_size = predictor.model.sam_prompt_encoder.mask_input_size
             if mask_tensor.shape[-2:] != target_size:
                 mask_tensor = F.interpolate(
@@ -500,14 +547,30 @@ def refine_masks_with_predictor(
                     mode="bilinear",
                     align_corners=False,
                 )
-            mask_input = mask_tensor.cpu().numpy()
+            mask_input = torch.special.logit(mask_tensor.clamp(1e-6, 1 - 1e-6))
+            mask_input = mask_input.cpu().numpy()
+        else:
+            bounding_box = None
 
-        refined_masks, scores, _ = predictor.predict(
+        box_input = bounding_box[None, :] if bounding_box is not None else None
+
+        refined_masks, scores, logits = predictor.predict(
             point_coords=point_coords,
             point_labels=point_labels,
             mask_input=mask_input,
+            box=box_input,
             multimask_output=multimask_output,
             )
+
+        if point_coords is not None:
+            for _ in range(2):
+                refined_masks, scores, logits = predictor.predict(
+                    point_coords=point_coords,
+                    point_labels=point_labels,
+                    mask_input=logits,
+                    box=box_input,
+                    multimask_output=multimask_output,
+                )
 
         if refined_masks.ndim == 3:
             idx = 0
@@ -593,6 +656,7 @@ class ProgressiveSAMManager:
         self.default_lbs_knn = int(default_lbs_knn)
         self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
         self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
+        self.alpha_threshold_warmup = max(int(mask_cfg.get("alpha_threshold_warmup_refinements", 0)), 0)
         self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
         self.rebuild_max_epoch = max(int(mask_cfg.get("rebuild_max_epoch", 20)), 1)
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
@@ -623,9 +687,18 @@ class ProgressiveSAMManager:
         self._reliable_frame_set: set[int] = set()
         self._unreliable_frame_set: set[int] = set()
         self.base_iteration: int = 0
+        self.rebuild_iteration: int = 0
 
     def should_update(self, epoch: int) -> bool:
         return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs and epoch <= self.rebuild_max_epoch
+
+    def _current_alpha_threshold(self) -> float:
+        if self.alpha_threshold_warmup <= 0:
+            return self.alpha_threshold
+        if self.rebuild_iteration >= self.alpha_threshold_warmup:
+            return self.alpha_threshold
+        fraction = (self.rebuild_iteration + 1) / float(self.alpha_threshold_warmup)
+        return float(self.alpha_threshold) * max(min(fraction, 1.0), 0.0)
 
     def _save_entry_to_disk(self, entry: SamMaskEntry, fid: int) -> None:
         payload = {
@@ -918,6 +991,8 @@ class ProgressiveSAMManager:
 
         predictor = self._ensure_predictor()
 
+        current_alpha_threshold = self._current_alpha_threshold()
+
         n_samples = len(dataset)
         processed_fids: List[int] = []
         with torch.no_grad():
@@ -936,7 +1011,7 @@ class ProgressiveSAMManager:
                         w2c=sample["M_ext"].to(self.device),
                         K=sample["K"].to(self.device),
                         image_size=(int(sample["H"]), int(sample["W"])),
-                        alpha_threshold=self.alpha_threshold,
+                        alpha_threshold=current_alpha_threshold,
                         predictor=predictor,
                         predictor_cfg=self.predictor_cfg,
                         lbs_weights=lbs_weights,
@@ -953,6 +1028,7 @@ class ProgressiveSAMManager:
         self._save_epoch_iou_plot(processed_fids, epoch)
         self.last_update_epoch = epoch
         self._update_reliability_stats()
+        self.rebuild_iteration += 1
         self._save_state()
 
     def is_frame_reliable(self, fid: int) -> bool:
@@ -987,6 +1063,7 @@ class ProgressiveSAMManager:
             "reliable_frames": self.reliable_frames,
             "unreliable_frames": self.unreliable_frames,
             "iou_threshold": self.iou_threshold,
+            "rebuild_iteration": self.rebuild_iteration,
         }
         path = self.checkpoint_dir / f"progressive_sam.pt"
         torch.save(payload, path)
@@ -1002,6 +1079,7 @@ class ProgressiveSAMManager:
         self._reliable_frame_set = set(self.reliable_frames)
         self._unreliable_frame_set = set(self.unreliable_frames)
         self.base_iteration = max(int(data.get("iteration", 0)), 0)
+        self.rebuild_iteration = int(data.get("rebuild_iteration", 0))
         print(f"--- FYI: Loaded Progressive SAM checkpoint from {path} and with base iteration {self.base_iteration}. Reliable frames: {len(self.reliable_frames)}, Unreliable frames: {len(self.unreliable_frames)}. And IoU threshold: {self.iou_threshold}.")
 
     def clear_ckpt_dir(self) -> None:
