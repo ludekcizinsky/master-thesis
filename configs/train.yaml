@@ -36,9 +36,9 @@ gs_refine_stop_iter: 10000 # stop applying the densification strategy after thes
 gs_refine_start_iter: 1000 # default is normally 500
 
 # --- SMPL optimisation settings
-pose_correction_epoch: 10
-pose_opt_start_epoch: 10
-pose_opt_end_epoch: 200
+pose_correction_epoch: 500
+pose_opt_start_epoch: 200
+pose_opt_end_epoch: 1000
 pose_opt_interval: 10
 pose_opt_duration: 1
 pose_lr_scale: 0.1
@@ -59,8 +59,8 @@ mask_refinement:
   alpha_threshold: 0.7
   alpha_threshold_warmup_refinements: 3
   loss_weight: 0.01
-  rebuild_every_epochs: 1000000
-  rebuild_max_epoch: 200
+  rebuild_every_epochs: 50
+  rebuild_max_epoch: 10000000 # effectively no limit
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda

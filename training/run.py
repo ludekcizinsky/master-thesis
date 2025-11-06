@@ -428,7 +428,7 @@ class Trainer:
             smpl_frame_params = self.smpl_params.get(int(fid))
             if smpl_frame_params is not None:
                 orbit_out_path = (
-                    self.experiment_dir / "visualizations" / "orbit" / f"iter_{it_number:06d}.mp4"
+                    self.experiment_dir / "visualizations" / "orbit" / f"epoch_{self.current_epoch:04d}.mp4"
                 )
                 save_orbit_visualization(
                     scene_splats=self.all_gs,
@@ -451,6 +451,7 @@ class Trainer:
             "loss/scale_reg": float(scale_reg_loss.item()),
             "smpl_optim/step": 1.0 if smpl_optim_performed else 0.0,
             "smpl_optim/grad_norm": smpl_grad_norm,
+            "epoch": self.current_epoch,
         }
 
         total_n_gs = 0
