@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 from PIL import Image
 
+import math
 from training.helpers.trainer_init import init_logging
 from training.helpers.smpl_utils import update_skinning_weights, filter_dynamic_splats
 from training.helpers.dataset import build_dataset, build_dataloader
@@ -344,6 +345,15 @@ class Trainer:
 
         _assign_subset_grads(info)
 
+        smpl_grad_norm = 0.0
+        if allow_smpl_grad:
+            total_sq = 0.0
+            for param in self.smpl_params.values():
+                if param.grad is not None:
+                    total_sq += param.grad.detach().pow(2).sum().item()
+            if total_sq > 0.0:
+                smpl_grad_norm = math.sqrt(total_sq)
+
         # Update weights step
         static_optims = [self.all_optimisers.static] if self.all_gs.static is not None else []
         all_optims = static_optims + self.all_optimisers.dynamic
@@ -440,6 +450,7 @@ class Trainer:
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
             "smpl_optim/step": 1.0 if smpl_optim_performed else 0.0,
+            "smpl_optim/grad_norm": smpl_grad_norm,
         }
 
         total_n_gs = 0
