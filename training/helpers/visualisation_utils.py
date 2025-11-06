@@ -1,9 +1,12 @@
 from pathlib import Path
 from typing import Optional, Sequence, List, Dict, Any
+import os
+
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 from omegaconf import DictConfig
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 import matplotlib
 matplotlib.use("Agg")
@@ -11,11 +14,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import imageio.v2 as imageio
 import cv2
+from tqdm import tqdm
 
 from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed
-from training.helpers.progressive_sam import ProgressiveSAMManager
+from training.smpl_deformer.smpl_server import SMPLServer
+import pyrender
+import trimesh
 
 
 def colourise_depth(depth_tensor: torch.Tensor, cfg: DictConfig) -> np.ndarray:
@@ -89,82 +95,6 @@ def save_alpha_heatmap(
 
     return out_path
 
-
-
-def save_mask_refinement_figure(
-    image: np.ndarray,
-    initial_mask: np.ndarray,
-    refined_mask: np.ndarray,
-    positive_pts: Optional[np.ndarray],
-    negative_pts: Optional[np.ndarray],
-    out_path: Path,
-) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-
-    axes[0].imshow(image)
-    axes[0].imshow(initial_mask.astype(float), cmap="Greens", alpha=0.35)
-    legend_items = []
-    if positive_pts is not None and positive_pts.size > 0:
-        axes[0].scatter(
-            positive_pts[:, 0],
-            positive_pts[:, 1],
-            s=45,
-            c="lime",
-            marker="o",
-            edgecolors="black",
-            linewidths=0.6,
-            label="positive",
-        )
-        legend_items.append("positive")
-    if negative_pts is not None and negative_pts.size > 0:
-        axes[0].scatter(
-            negative_pts[:, 0],
-            negative_pts[:, 1],
-            s=45,
-            c="red",
-            marker="x",
-            linewidths=1.2,
-            label="negative",
-        )
-        legend_items.append("negative")
-    if legend_items:
-        axes[0].legend(loc="upper right")
-    axes[0].set_title("SAM2 Input Prompts")
-    axes[0].set_axis_off()
-
-    axes[1].imshow(image)
-    axes[1].imshow(initial_mask.astype(float), cmap="Reds", alpha=0.4)
-    axes[1].imshow(refined_mask.astype(float), cmap="Blues", alpha=0.6)
-    axes[1].set_title("Refined Mask Overlay")
-    axes[1].set_axis_off()
-
-    # add legend for red and blue overlays
-    red_patch = matplotlib.patches.Patch(color="red", alpha=0.4, label="Initial Mask")
-    blue_patch = matplotlib.patches.Patch(color="blue", alpha=0.6, label="Refined Mask")
-    axes[1].legend(handles=[red_patch, blue_patch], loc="upper right")
-
-    fig.tight_layout(pad=0.2)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-
-
-@torch.no_grad()
-def save_loss_visualization(
-    gt_masked: torch.Tensor,        # [B, H,W, 3], 0–1
-    prediction_masked: torch.Tensor,    # [B, H,W, 3], predicted image in [0,1]
-    prediction_original: torch.Tensor,  # [B, H,W, 3], predicted image in [0,1]
-    out_path: str,
-):
-
-    comparison = torch.cat([gt_masked, prediction_masked, prediction_original], dim=2)  # [B,H,3W,3]
-    comparison = comparison[0]  # Take first in batch
-
-    # Convert to uint8 for saving
-    img = (comparison.cpu().numpy() * 255.0).astype(np.uint8)
-    Image.fromarray(img).save(out_path)
-
-    return out_path
 
 
 def _pose_body_vertices(
@@ -441,246 +371,209 @@ def save_orbit_visualization(
 
 
 @torch.no_grad()
-def save_smpl_pose_overlay(
-    *,
-    image_np: np.ndarray,
-    scene_splats: SceneSplats,
-    initial_params: torch.Tensor,
-    current_params: torch.Tensor,
-    w2c: torch.Tensor,
-    K: torch.Tensor,
-    device: torch.device,
-    out_path: Path,
-) -> Path:
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    img_uint8 = np.clip(image_np, 0, 255).astype(np.uint8)
-
-    init_vertices = _pose_body_vertices(scene_splats, initial_params, device)
-    curr_vertices = _pose_body_vertices(scene_splats, current_params, device)
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
-    ax.imshow(img_uint8)
-
-    init_label_added = False
-    curr_label_added = False
-
-    for verts in init_vertices:
-        if verts.numel() == 0:
-            continue
-        uv = _project_world_to_pixels(verts, w2c, K)
-        if uv.size == 0:
-            continue
-        ax.scatter(
-            uv[:, 0],
-            uv[:, 1],
-            s=0.75,
-            c="#ff4d4d",
-            alpha=0.25,
-            linewidths=0,
-            label="Initial pose" if not init_label_added else None,
-        )
-        init_label_added = True
-
-    for verts in curr_vertices:
-        if verts.numel() == 0:
-            continue
-        uv = _project_world_to_pixels(verts, w2c, K)
-        if uv.size == 0:
-            continue
-        ax.scatter(
-            uv[:, 0],
-            uv[:, 1],
-            s=0.5,
-            c="#32cd32",
-            alpha=0.25,
-            linewidths=0,
-            label="Current pose" if not curr_label_added else None,
-        )
-        curr_label_added = True
-
-    if init_label_added or curr_label_added:
-        legend = ax.legend(loc="upper right")
-        for handle in legend.legend_handles:
-            handle.set_sizes([50])
-
-    ax.set_axis_off()
-    fig.tight_layout(pad=0.1)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    return out_path
-
-
-@torch.no_grad()
-def save_pose_progress_overlay(
-    *,
+def save_epoch_smpl_overlays(
     dataset,
-    scene_splats: SceneSplats,
-    frame_id: int,
-    initial_params_list: Sequence[torch.Tensor],
-    current_params: torch.Tensor,
-    device: torch.device,
+    smpl_params_per_frame: Dict[int, torch.Tensor],
+    experiment_dir: Path,
     epoch: int,
-    out_dir: Path,
-) -> Path:
-    sample = dataset[frame_id]
+    *,
+    device: torch.device,
+    gender: str = "neutral",
+    alpha: float = 0.6,
+) -> None:
+    """
+    Render SMPL meshes for every frame and composite them over the input RGB frames.
 
-    image_np = sample["image"].cpu().numpy()
-    image_np = np.clip(image_np, 0.0, 1.0)
-    image_np = (image_np * 255.0).astype(np.uint8)
-    image_np = np.ascontiguousarray(image_np)
+    Args:
+        dataset: FullSceneDataset (or compatible object) providing images, cameras, and SMPL params.
+        smpl_params_per_frame: Mapping fid -> [num_people, 86] SMPL parameter tensor.
+        experiment_dir: Root experiment directory.
+        epoch: Current epoch index (used in the output filename).
+        device: Torch device for rendering.
+        gender: SMPL gender model to use (default: "neutral").
+        alpha: Blending weight applied to the rendered SMPL colours.
+    """
+    if len(dataset) == 0 or not smpl_params_per_frame:
+        return
 
-    K = sample["K"].to(device)
-    w2c = sample["M_ext"].to(device)
+    smpl_server = SMPLServer(gender=gender).to(device)
+    smpl_server.eval()
 
-    initial_params = torch.stack(initial_params_list, dim=0).to(device, dtype=torch.float32)
-    current_params = current_params.detach().to(device, dtype=torch.float32)
+    image_height = getattr(dataset, "H", None)
+    image_width = getattr(dataset, "W", None)
+    if image_height is None or image_width is None:
+        sample = dataset[0]
+        image_height = int(sample["H"])
+        image_width = int(sample["W"])
 
-    out_path = Path(out_dir) / f"pose_overlay_epoch{epoch:03d}_fid{frame_id:04d}.png"
-    return save_smpl_pose_overlay(
-        image_np=image_np,
-        scene_splats=scene_splats,
-        initial_params=initial_params,
-        current_params=current_params,
-        w2c=w2c,
-        K=K,
+    colour_palette = torch.tensor(
+        [
+            [0.84, 0.37, 0.37, 0.9],
+            [0.37, 0.66, 0.84, 0.9],
+            [0.45, 0.80, 0.46, 0.9],
+            [0.83, 0.66, 0.37, 0.9],
+            [0.59, 0.44, 0.84, 0.9],
+            [0.84, 0.44, 0.75, 0.9],
+        ],
+        dtype=torch.float32,
         device=device,
-        out_path=out_path,
     )
 
+    out_root = Path(experiment_dir) / "visualizations" / "smpl"
+    out_root.mkdir(parents=True, exist_ok=True)
 
-class VisualisationManager:
-    def __init__(
-        self,
-        *,
-        cfg,
-        progressive_sam,
-        trn_viz_dir: Path,
-        scene_splats: SceneSplats,
-        lbs_weights,
-        device: torch.device,
-        sh_degree: int,
-        dataset,
-        pose_overlay_period: int,
-    ) -> None:
-        self.cfg = cfg
-        self.progressive_sam = progressive_sam
-        self.trn_viz_dir = Path(trn_viz_dir)
-        self.scene_splats = scene_splats
-        self.lbs_weights = lbs_weights
-        self.device = device
-        self.sh_degree = sh_degree
-        self.dataset = dataset
-        self.pose_overlay_period = max(int(pose_overlay_period), 1)
+    renderer = pyrender.OffscreenRenderer(viewport_width=image_width, viewport_height=image_height)
 
-    @torch.no_grad()
-    def run_visualisation_step(
-        self,
-        *,
-        gt_render: torch.Tensor,
-        pred_render: torch.Tensor,
-        pred_original: torch.Tensor,
-        fid: int,
-        current_epoch: int,
-        smpl_param_forward: torch.Tensor,
-        w2c: torch.Tensor,
-        K: torch.Tensor,
-        H: int,
-        W: int,
-        smpl_snapshot_frame: Optional[int],
-        smpl_snapshot_params: Optional[Sequence[torch.Tensor]],
-        smpl_params_per_frame: Dict[int, torch.Tensor],
-        last_pose_overlay_epoch: int,
-    ) -> int:
-        updated_overlay_epoch = last_pose_overlay_epoch
+    for fid in tqdm(range(len(dataset)), desc=f"Saving SMPL overlays for epoch {epoch:04d}"):
+        smpl_params = smpl_params_per_frame.get(fid)
+        if smpl_params is None:
+            continue
 
-        sample = self.dataset[fid]
-        image_np = sample["image"].cpu().numpy()
-        image_np = np.clip(image_np, 0.0, 1.0)
+        frame_data = dataset[fid]
+        image = frame_data["image"].detach().cpu().numpy()
+        K = frame_data["K"].cpu().numpy()
+        w2c_cv = frame_data["M_ext"].cpu().numpy()
 
-        should_log_epoch = current_epoch % 10 == 0
-        should_log_frame = fid == 35
-        if should_log_epoch and should_log_frame and self.cfg.visualise_cam_preds and smpl_param_forward is not None:
-            # Prediction vs gt visualization
-            save_loss_visualization(
-                gt_masked=gt_render,
-                prediction_masked=pred_render,
-                prediction_original=pred_original,
-                out_path=self.trn_viz_dir / f"lossviz_epoch{current_epoch:03d}_fid{fid:04d}.png",
-            )
+        smpl_tensor = smpl_params.detach().to(device)
+        if smpl_tensor.ndim == 1:
+            smpl_tensor = smpl_tensor.unsqueeze(0)
 
-            # SMPL mask refinement visualization
-            cache_entry = ProgressiveSAMManager._load_entry_from_disk(
-                self.progressive_sam.checkpoint_dir, fid=fid, device='cpu'
-            )
-            viz_entries = []
-            for idx_h in range(cache_entry.refined.shape[0]):
-                viz_entries.append(
-                    {
-                        "initial": cache_entry.initial[idx_h].numpy(),
-                        "refined": cache_entry.refined[idx_h].numpy(),
-                        "pos": cache_entry.vis_pos[idx_h],
-                        "neg": cache_entry.vis_neg[idx_h],
-                    }
-                )
+        smpl_output = smpl_server(smpl_tensor, absolute=True)
 
+        verts_tensor = smpl_output["smpl_verts"]
+        faces_data = smpl_output["smpl_faces"]
 
-            for idx, entry in enumerate(viz_entries):
-                out_path = self.trn_viz_dir / f"maskref_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
-                save_mask_refinement_figure(
-                    image_np,
-                    entry["initial"],
-                    entry["refined"],
-                    entry["pos"],
-                    entry["neg"],
-                    out_path,
-                )
-            
-            # Visualize alpha maps
-            alpha_maps = cache_entry.alpha
-            for idx, alpha_map in enumerate(alpha_maps):
-                out_path = self.trn_viz_dir / f"alpha_epoch{current_epoch:03d}_fid{fid:04d}_human{idx:02d}.png"
-                save_alpha_heatmap(
-                    alpha_map=alpha_map,
-                    out_path=out_path,
-                    human_idx=idx,
-                )
+        verts = verts_tensor.detach().cpu().numpy()
+        if isinstance(faces_data, torch.Tensor):
+            faces = faces_data.detach().cpu().numpy().astype(np.int32)
+        else:
+            faces = np.asarray(faces_data, dtype=np.int32)
 
-            # Orbit visualization
-            orbit_path = self.trn_viz_dir / f"orbit_epoch{current_epoch:03d}_fid{fid:04d}.mp4"
-            save_orbit_visualization(
-                scene_splats=self.scene_splats,
-                smpl_params=smpl_param_forward.detach(),
-                lbs_weights=self.lbs_weights,
-                base_w2c=w2c.to(self.device),
-                K=K.to(self.device),
-                image_size=(H, W),
-                device=self.device,
-                sh_degree=self.sh_degree,
-                out_path=orbit_path,
-            )
+        scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.2, 0.2, 0.2])
+        mesh_objects: List[pyrender.Mesh] = []
+        cv_to_gl = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+        w2c_gl = cv_to_gl @ w2c_cv
+        for person_idx in range(verts.shape[0]):
+            verts_np = verts[person_idx]
+            colour = colour_palette[person_idx % colour_palette.shape[0]].cpu().numpy()
+            vertex_colors = np.tile(colour, (verts_np.shape[0], 1))
+            tri_mesh = trimesh.Trimesh(vertices=verts_np, faces=faces, vertex_colors=vertex_colors, process=False)
+            mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=False)
+            mesh_objects.append(mesh)
+            scene.add(mesh)
 
-        pose_overlay_condition = (
-            self.cfg.visualise_cam_preds
-            and fid == smpl_snapshot_frame
-            and current_epoch % self.pose_overlay_period == 0
-            and current_epoch != last_pose_overlay_epoch
-        )
-        if pose_overlay_condition:
-            try:
-                save_pose_progress_overlay(
-                    dataset=self.dataset,
-                    scene_splats=self.scene_splats,
-                    frame_id=smpl_snapshot_frame,
-                    initial_params_list=smpl_snapshot_params,
-                    current_params=smpl_params_per_frame[smpl_snapshot_frame],
-                    device=self.device,
-                    epoch=current_epoch,
-                    out_dir=self.trn_viz_dir,
-                )
-                updated_overlay_epoch = current_epoch
-            except Exception as exc:
-                print(f"--- WARN: Failed to produce SMPL pose overlay for epoch {current_epoch}, fid {fid}: {exc}")
+        light = pyrender.DirectionalLight(color=np.ones(3), intensity=2.0)
+        scene.add(light, pose=np.eye(4))
 
-        return updated_overlay_epoch
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        cam = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, znear=0.01, zfar=100.0)
+        c2w_gl = np.linalg.inv(w2c_gl)
+        scene.add(cam, pose=c2w_gl)
+
+        color_rgb, depth = renderer.render(scene, flags=pyrender.constants.RenderFlags.FLAT)
+        render_rgb = color_rgb.astype(np.float32) / 255.0
+        mask = (depth > 0).astype(np.float32)[..., None]
+        if mask.max() <= 0.0:
+            mask = (np.linalg.norm(render_rgb, axis=-1, keepdims=True) > 1e-6).astype(np.float32)
+        alpha_mask = alpha * mask
+
+        pose_rgba = np.concatenate([render_rgb, mask], axis=-1)
+
+        image_rgb = np.clip(image, 0.0, 1.0)
+        composite = image_rgb * (1.0 - alpha_mask) + render_rgb * alpha_mask
+        composite_np = (np.clip(composite, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        poses_np = np.clip(pose_rgba, 0.0, 1.0)
+        poses_np[..., :3] *= 255.0
+        poses_np[..., 3] *= 255.0
+        poses_np = poses_np.astype(np.uint8)
+
+        frame_dir = out_root / f"frame_{fid:04d}"
+        overlay_dir = frame_dir / "overlay"
+        poses_only_dir = frame_dir / "poses_only"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        poses_only_dir.mkdir(parents=True, exist_ok=True)
+
+        overlay_path = overlay_dir / f"epoch_{epoch:04d}.png"
+        poses_only_path = poses_only_dir / f"epoch_{epoch:04d}.png"
+
+        Image.fromarray(composite_np).save(overlay_path)
+        Image.fromarray(poses_np, mode="RGBA").save(poses_only_path)
+
+        person_current_paths: List[Path] = []
+        for person_idx, mesh in enumerate(mesh_objects):
+            scene_person = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.2, 0.2, 0.2])
+            scene_person.add(mesh)
+            scene_person.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.0), pose=np.eye(4))
+            scene_person.add(pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, znear=0.01, zfar=100.0), pose=c2w_gl)
+
+            person_rgb, person_depth = renderer.render(scene_person, flags=pyrender.constants.RenderFlags.FLAT)
+            person_render = person_rgb.astype(np.float32) / 255.0
+            person_mask = (person_depth > 0).astype(np.float32)[..., None]
+            if person_mask.max() <= 0.0:
+                person_mask = (np.linalg.norm(person_render, axis=-1, keepdims=True) > 1e-6).astype(np.float32)
+            person_rgba = np.concatenate([person_render, person_mask], axis=-1)
+            person_np = np.clip(person_rgba, 0.0, 1.0)
+            person_np[..., :3] *= 255.0
+            person_np[..., 3] *= 255.0
+            person_np = person_np.astype(np.uint8)
+
+            person_dir = poses_only_dir / f"person_{person_idx:02d}"
+            person_dir.mkdir(parents=True, exist_ok=True)
+            person_path = person_dir / f"epoch_{epoch:04d}.png"
+            Image.fromarray(person_np, mode="RGBA").save(person_path)
+            person_current_paths.append(person_path)
+
+        comparison_rows: List[np.ndarray] = []
+        for person_idx, person_path in enumerate(person_current_paths):
+            person_dir = person_path.parent
+            epoch_files = sorted(person_dir.glob("epoch_*.png"))
+            if len(epoch_files) < 2:
+                continue
+            baseline_path = epoch_files[0]
+            if baseline_path == person_path:
+                continue
+            baseline_img = np.array(Image.open(baseline_path).convert("RGBA")).astype(np.float32) / 255.0
+            current_img = np.array(Image.open(person_path).convert("RGBA")).astype(np.float32) / 255.0
+
+            baseline_alpha = baseline_img[..., 3:4]
+            current_alpha = current_img[..., 3:4]
+
+            current_rgba = np.zeros_like(current_img)
+            current_rgba[..., 2] = current_alpha[..., 0]
+            current_rgba[..., 3] = current_alpha[..., 0]
+
+            baseline_rgba = np.zeros_like(baseline_img)
+            baseline_rgba[..., 0] = baseline_alpha[..., 0]
+            baseline_rgba[..., 3] = baseline_alpha[..., 0]
+
+            overlay_rgb = baseline_rgba[..., :3] * baseline_alpha + current_rgba[..., :3] * (1.0 - baseline_alpha)
+            overlay_alpha = baseline_alpha + current_rgba[..., 3:4] * (1.0 - baseline_alpha)
+
+            overlay_rgba = np.concatenate([overlay_rgb, overlay_alpha], axis=-1)
+            overlay_rgba = np.clip(overlay_rgba * 255.0, 0.0, 255.0).astype(np.uint8)
+
+            row_height, row_width = overlay_rgba.shape[:2]
+            label_height = 24
+            row_with_label = np.zeros((row_height + label_height, row_width, 4), dtype=np.uint8)
+            row_with_label[label_height:, :, :] = overlay_rgba
+
+            label_canvas = row_with_label[:label_height, :, :]
+            label_canvas[:, :, 3] = 255
+            text_img = Image.fromarray(label_canvas, mode="RGBA")
+            draw = ImageDraw.Draw(text_img)
+            label_text = f"Person {person_idx:02d}: baseline=red, current=blue"
+            draw.text((5, 5), label_text, fill=(255, 255, 255, 255), anchor="la")
+            row_with_label[:label_height, :, :] = np.array(text_img)
+
+            comparison_rows.append(row_with_label)
+
+        if comparison_rows:
+            comparison_img = np.concatenate(comparison_rows, axis=0)
+            comparison_dir = frame_dir / "comparison"
+            comparison_dir.mkdir(parents=True, exist_ok=True)
+            comparison_path = comparison_dir / f"epoch_{epoch:04d}.png"
+            Image.fromarray(comparison_img, mode="RGBA").save(comparison_path)
+
+    renderer.delete()

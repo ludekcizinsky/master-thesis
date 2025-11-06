@@ -157,7 +157,7 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_ma
 
     tids = list(cfg.tids)
     if len(tids) == 0:
-        return {}, None
+        return {}, []
 
     def _init_from_dataset() -> tuple[dict[int, nn.Parameter], list[nn.Parameter]]:
         smpl_params: dict[int, nn.Parameter] = {}
@@ -207,13 +207,8 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_ma
         smpl_params, params_list = _init_from_dataset()
         print("--- FYI: Initializing SMPL params from dataset.")
 
-    smpl_param_optimizer = (
-        torch.optim.Adam(params_list, lr=cfg.smpl_lr) if params_list else None
-    )
-    if smpl_param_optimizer is not None:
-        smpl_param_optimizer.zero_grad(set_to_none=True)
-
-    return smpl_params, smpl_param_optimizer
+    # Return both the mapping (for frame lookup) and the list (for optimiser construction)
+    return smpl_params, params_list
 
 
 @torch.no_grad()

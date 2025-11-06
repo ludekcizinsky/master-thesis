@@ -3,7 +3,7 @@ group_name: dev
 
 # --- Debugging and visualization
 debug: False # if true -> disable wandb logging
-visualise_cam_preds: True
+debug_vis_freq: 10
 is_preprocessing: False  # if true -> save sam masks to preprocessing folder
 
 # --- Input / output paths
@@ -36,7 +36,15 @@ gs_refine_stop_iter: 10000 # stop applying the densification strategy after thes
 gs_refine_start_iter: 1000 # default is normally 500
 
 # --- SMPL optimisation settings
-max_smpl_optim_epoch: 20
+pose_correction_epoch: 10
+pose_opt_start_epoch: 10
+pose_opt_end_epoch: 200
+pose_opt_interval: 10
+pose_opt_duration: 1
+pose_lr_scale: 0.1
+save_pose_overlays_every_epoch: 10
+pose_overlay_alpha: 0.85
+smpl_gender: neutral
 
 # --- Loss and regularization weights
 l1_lambda: 0.8

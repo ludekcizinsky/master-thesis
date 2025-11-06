@@ -9,10 +9,12 @@ os.environ["HF_HOME"] = "/scratch/izar/cizinsky/.cache"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 
 from pathlib import Path
+import shutil
 from typing import Dict, Any, List, Optional
 
 import torch
 import torch.nn.functional as F
+import torch.optim as optim
 
 import wandb
 from tqdm import tqdm
@@ -31,7 +33,7 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import ModelCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
-from training.helpers.visualisation_utils import VisualisationManager, colourise_depth
+from training.helpers.visualisation_utils import colourise_depth, save_orbit_visualization, save_epoch_smpl_overlays
 from training.helpers.evaluation_metrics import (
     compute_all_metrics, 
     aggregate_batch_tid_metric_dicts, 
@@ -45,10 +47,18 @@ class Trainer:
     def __init__(self, cfg: DictConfig, internal_run_id: str = None):
         # Initial param setup
         self.cfg = cfg
-        self.visualise_cam_preds = cfg.visualise_cam_preds
         self.device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
         self.current_epoch = 0
-        self.is_smpl_optim_enabled = self.current_epoch < cfg.max_smpl_optim_epoch
+        self.is_smpl_optim_enabled = self.current_epoch < cfg.pose_opt_end_epoch
+        # Cache pose optimisation schedule so we can decide which optimiser to run each step
+        self.debug_vis_freq = int(cfg.get("debug_vis_freq", 0))
+        self.pose_correction_epoch = int(cfg.pose_correction_epoch)
+        self.pose_opt_start_epoch = int(cfg.pose_opt_start_epoch)
+        self.pose_opt_end_epoch = int(cfg.pose_opt_end_epoch)
+        self.pose_opt_interval = int(cfg.pose_opt_interval)
+        self.pose_opt_duration = int(cfg.pose_opt_duration)
+        self.pose_lr_scale = float(cfg.pose_lr_scale)
+        self._previous_smpl_params: Dict[int, torch.Tensor] = {}
         print(f"--- FYI: using device {self.device}")
 
         # Checkpoint manager
@@ -70,13 +80,21 @@ class Trainer:
             self.experiment_dir = Path(cfg.train_dir) /  f"{run_name}_{run_id}"
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
-        self.trn_viz_debug_dir = self.experiment_dir / "visualizations" / "debug"
-        os.makedirs(self.trn_viz_debug_dir, exist_ok=True)
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
+
+        if self.cfg.save_pose_overlays_every_epoch > 0:
+            baseline_dir = Path(self.cfg.preprocess_dir) / "baseline_smpl_vis"
+            if not baseline_dir.exists():
+                raise FileNotFoundError(f"Baseline SMPL visualisations not found: {baseline_dir}")
+            target_dir = self.experiment_dir / "visualizations" / "smpl"
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.copytree(baseline_dir, target_dir)
 
         # Load dataset and create dataloader
         mask_path = self.checkpoint_dir / "progressive_sam"
         self.dataset = build_dataset(cfg, mask_path=mask_path)
+        self._orbit_debug_frame = len(self.dataset) // 2 if len(self.dataset) > 0 else None
 
         if len(self.dataset) > 0:
             self.orbit_reference_w2c = self.dataset.pose_all[0].clone()
@@ -123,35 +141,21 @@ class Trainer:
         # Create dataloader
         self.loader = build_dataloader(cfg, self.dataset)
 
-        # Define trainable SMPL parameters and optimizer
-        self.smpl_params, self.smpl_param_optimizer = init_trainable_smpl_params(
+        # Define trainable SMPL parameters and optimizers
+        self.smpl_params, smpl_param_list = init_trainable_smpl_params(
             self.dataset, cfg, self.device, checkpoint_manager=self.ckpt_manager
         )
-        snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
-        if snapshot_fid is not None and snapshot_fid in self.smpl_params:
-            self.smpl_snapshot_frame = snapshot_fid
-            param_tensor = self.smpl_params[snapshot_fid].detach().clone()
-            self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
-            self.last_pose_overlay_epoch = -1
+        if smpl_param_list:
+            # One optimiser continues updating all parameters, the other is restricted to SMPL-only passes
+            self.smpl_joint_optimizer = optim.Adam(smpl_param_list, lr=self.cfg.smpl_lr)
+            self.smpl_pose_optimizer = optim.Adam(
+                smpl_param_list, lr=self.cfg.smpl_lr * self.pose_lr_scale
+            )
+            self.smpl_joint_optimizer.zero_grad(set_to_none=True)
+            self.smpl_pose_optimizer.zero_grad(set_to_none=True)
         else:
-            self.smpl_snapshot_frame = None
-            self.smpl_snapshot_params = None
-
-        # Init Visualisation manager responsible for periodic visualizations
-        self.pose_overlay_period = 10
-        self.last_pose_overlay_epoch: int = -1
-        self.visualisation_manager = VisualisationManager(
-            cfg=self.cfg,
-            progressive_sam=self.progressive_sam,
-            trn_viz_dir=self.trn_viz_debug_dir,
-            scene_splats=self.all_gs,
-            lbs_weights=self.lbs_weights,
-            device=self.device,
-            sh_degree=self.cfg.sh_degree,
-            dataset=self.dataset,
-            pose_overlay_period=self.pose_overlay_period,
-        )
-
+            self.smpl_joint_optimizer = None
+            self.smpl_pose_optimizer = None
 
     def _parse_batch(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
@@ -165,16 +169,22 @@ class Trainer:
 
         return images, human_masks, K, w2c, H, W, fid
 
-    def _get_frame_smpl_params(self, fid: int, frame_reliable: bool) -> Optional[torch.Tensor]:
+    def _in_pose_only_window(self) -> bool:
+        """Return True when the schedule requests SMPL-only optimisation."""
+        if self.pose_opt_end_epoch <= self.pose_opt_start_epoch:
+            return False
+        if self.current_epoch < self.pose_opt_start_epoch or self.current_epoch >= self.pose_opt_end_epoch:
+            return False
+        interval = self.pose_opt_interval if self.pose_opt_interval > 0 else 1
+        duration = max(1, self.pose_opt_duration)
+        position = (self.current_epoch - self.pose_opt_start_epoch) % interval
+        return position < duration
+
+    def _get_frame_smpl_params(self, fid: int, allow_grad: bool) -> Optional[torch.Tensor]:
         frame_smpl_params = self.smpl_params.get(fid)
         if frame_smpl_params is None:
-            smpl_param_forward = None
-        elif frame_reliable and self.is_smpl_optim_enabled:
-            smpl_param_forward = frame_smpl_params
-        else:
-            smpl_param_forward = frame_smpl_params.detach()
-
-        return smpl_param_forward
+            return None
+        return frame_smpl_params if allow_grad else frame_smpl_params.detach()
 
     @torch.no_grad()
     def evaluate(self, batch: Dict[str, Any], tids: List[int], render_bg: bool):
@@ -182,7 +192,7 @@ class Trainer:
         _, _, K, w2c, H, W, fid = self._parse_batch(batch)
 
         # Track which dynamic splat sets correspond to the requested tids
-        smpl_param_forward = self._get_frame_smpl_params(fid, frame_reliable=True)
+        smpl_param_forward = self._get_frame_smpl_params(fid, allow_grad=False)
         selected_indices, smpl_param_forward, lbs_weights = filter_dynamic_splats(
             all_gs=self.all_gs,
             all_lbs_weights = self.lbs_weights,
@@ -223,7 +233,15 @@ class Trainer:
 
         # Confidence guided SMPL parameter optimization (optimise only for reliable frames)
         frame_reliable = self.progressive_sam.is_frame_reliable(fid)
-        smpl_param_forward = self._get_frame_smpl_params(fid, frame_reliable)
+        pose_only_window = self._in_pose_only_window()
+        # Before pose correction we still tweak unreliable frames, but only through SMPL updates
+        delayed_pose_window = (not frame_reliable) and (self.current_epoch < self.pose_correction_epoch)
+        allow_smpl_grad = (
+            self.is_smpl_optim_enabled and (frame_reliable or pose_only_window or delayed_pose_window)
+        )
+        smpl_param_forward = self._get_frame_smpl_params(fid, allow_grad=allow_smpl_grad)
+        # Pause Gaussian updates while we are running SMPL-only refinement
+        should_update_gaussians = not (pose_only_window or delayed_pose_window)
 
         # Forward pass: render
         colors, alphas, info = render_splats(
@@ -331,13 +349,24 @@ class Trainer:
         all_optims = static_optims + self.all_optimisers.dynamic
         for optimizers in all_optims:
             for opt in optimizers.values():
-                opt.step()
+                if should_update_gaussians:
+                    opt.step()
                 opt.zero_grad(set_to_none=True)
 
-        if self.smpl_param_optimizer is not None:
-            if frame_reliable:
-                self.smpl_param_optimizer.step()
-            self.smpl_param_optimizer.zero_grad(set_to_none=True)
+        smpl_optim_performed = False
+        if allow_smpl_grad:
+            if pose_only_window and self.smpl_pose_optimizer is not None:
+                # Dedicated SMPL-only pass (shape frozen)
+                self.smpl_pose_optimizer.step()
+                smpl_optim_performed = True
+            elif (frame_reliable or delayed_pose_window) and self.smpl_joint_optimizer is not None:
+                # Joint updates keep SMPL coupled to the Gaussian parameters
+                self.smpl_joint_optimizer.step()
+                smpl_optim_performed = True
+
+        for opt in (self.smpl_joint_optimizer, self.smpl_pose_optimizer):
+            if opt is not None:
+                opt.zero_grad(set_to_none=True)
 
 
         # Adaptive densification step
@@ -368,6 +397,9 @@ class Trainer:
         else:
             _clear_aux_grads(info)
         info = None
+        if smpl_param_forward is not None:
+            # Keep a detached snapshot for potential temporal losses
+            self._previous_smpl_params[fid] = smpl_param_forward.detach().clone()
 
 
         # Update skinning weights
@@ -375,25 +407,30 @@ class Trainer:
             with torch.no_grad():
                 new_lbs_weights_list = update_skinning_weights(self.all_gs, k=self.cfg.lbs_knn, eps=1e-6)
                 self.lbs_weights = [new_lbs_weights.detach() for new_lbs_weights in new_lbs_weights_list]
-                self.visualisation_manager.lbs_weights = self.lbs_weights
 
-        # Visualizations
-        self.last_pose_overlay_epoch = self.visualisation_manager.run_visualisation_step(
-            gt_render=gt_render,
-            pred_render=pred_render,
-            pred_original=pred_original,
-            fid=fid,
-            current_epoch=self.current_epoch,
-            smpl_param_forward=smpl_param_forward,
-            w2c=w2c[0],
-            K=K[0],
-            H=H,
-            W=W,
-            smpl_snapshot_frame=self.smpl_snapshot_frame,
-            smpl_snapshot_params=self.smpl_snapshot_params,
-            smpl_params_per_frame=self.smpl_params,
-            last_pose_overlay_epoch=self.last_pose_overlay_epoch,
-        )
+        if (
+            self.debug_vis_freq > 0
+            and it_number % self.debug_vis_freq == 0
+            and self._orbit_debug_frame is not None
+            and int(fid) == self._orbit_debug_frame
+            and len(self.all_gs.dynamic) > 0
+        ):
+            smpl_frame_params = self.smpl_params.get(int(fid))
+            if smpl_frame_params is not None:
+                orbit_out_path = (
+                    self.experiment_dir / "visualizations" / "orbit" / f"iter_{it_number:06d}.mp4"
+                )
+                save_orbit_visualization(
+                    scene_splats=self.all_gs,
+                    smpl_params=smpl_frame_params.detach(),
+                    lbs_weights=self.lbs_weights,
+                    base_w2c=w2c[0],
+                    K=K[0],
+                    image_size=(H, W),
+                    device=self.device,
+                    sh_degree=self.cfg.sh_degree,
+                    out_path=orbit_out_path,
+                )
 
         # Log values
         log_values = {
@@ -402,7 +439,9 @@ class Trainer:
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
+            "smpl_optim/step": 1.0 if smpl_optim_performed else 0.0,
         }
+
         total_n_gs = 0
         for i, gs in enumerate(self.all_gs.dynamic):
             log_values[f"splats/num_gs_dynamic_{i}"] = gs["means"].shape[0]
@@ -560,18 +599,12 @@ class Trainer:
         iteration = 0
         epoch = 0
 
+
         with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
             while iteration < iters:
                 self.current_epoch = epoch
                 if self.progressive_sam.should_update(epoch):
                     self.progressive_sam.update_masks(self.dataset, self.all_gs, self.lbs_weights, epoch=epoch)
-                    snapshot_fid = self.progressive_sam.get_lowest_iou_reliable_frame()
-                    if snapshot_fid is not None and snapshot_fid in self.smpl_params:
-                        self.smpl_snapshot_frame = snapshot_fid
-                        param_tensor = self.smpl_params[snapshot_fid].detach().clone()
-                        self.smpl_snapshot_params = [param_tensor[i].detach().cpu().clone() for i in range(param_tensor.shape[0])]
-                        self.last_pose_overlay_epoch = -1
-                    
                     self.loader = build_dataloader(self.cfg, self.dataset)
                     psam_logs = {
                         "progressive_sam/num_reliable_frames": len(self.progressive_sam.reliable_frames),
@@ -581,9 +614,12 @@ class Trainer:
                 else:
                     psam_logs = {}
 
+                smpl_epoch_updated = False
                 for batch in self.loader:
                     iteration += 1
                     logs = self.step(batch, iteration)
+                    if logs.get("smpl_optim/step", 0.0) > 0:
+                        smpl_epoch_updated = True
 
                     # Update progress bar
                     pbar.update(1)
@@ -607,10 +643,25 @@ class Trainer:
                         break
 
                 epoch += 1
-                self.is_smpl_optim_enabled = self.current_epoch < self.cfg.max_smpl_optim_epoch
-                if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.max_smpl_optim_epoch):
+                self.is_smpl_optim_enabled = self.current_epoch < self.cfg.pose_opt_end_epoch
+                if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.pose_opt_end_epoch):
                     print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
-                
+
+                if (
+                    smpl_epoch_updated
+                    and self.cfg.save_pose_overlays_every_epoch > 0
+                    and epoch % self.cfg.save_pose_overlays_every_epoch == 0
+                ):
+                    save_epoch_smpl_overlays(
+                        dataset=self.dataset,
+                        smpl_params_per_frame=self.smpl_params,
+                        experiment_dir=self.experiment_dir,
+                        epoch=epoch,
+                        device=self.device,
+                        gender=getattr(self.cfg, "smpl_gender", "neutral"),
+                        alpha=getattr(self.cfg, "pose_overlay_alpha", 0.6),
+                    )
+
                 if self.cfg.eval_every_epochs > 0 and (epoch % self.cfg.eval_every_epochs == 0) and epoch > 0:
                     self.evaluation_loop(
                         selected_tids=list(self.cfg.tids),

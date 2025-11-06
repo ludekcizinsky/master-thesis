@@ -1108,6 +1108,8 @@ class ProgressiveSAMManager:
             if len(self.tids) > 0:
                 self.clear_ckpt_dir()
             shutil.copytree(self.preprocessing_dir / "sam2_masks", self.checkpoint_dir, dirs_exist_ok=True)
+            ckpt_path = self.checkpoint_dir / "progressive_sam.pt"
+            self._load_state(ckpt_path)
 
     def _build_mask_entry(
         self,
