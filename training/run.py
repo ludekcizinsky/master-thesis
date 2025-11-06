@@ -122,10 +122,8 @@ class Trainer:
             self.lbs_weights = None
 
         # Initialize Progressive SAM manager
-        mask_cfg = cfg.mask_refinement
-        mask_container = OmegaConf.to_container(mask_cfg, resolve=True) if mask_cfg is not None else {}
         self.progressive_sam = ProgressiveSAMManager(
-            mask_cfg=mask_container,
+            mask_cfg=cfg.mask_refinement,
             tids=list(cfg.tids),
             device=self.device,
             default_lbs_knn=int(cfg.lbs_knn),

@@ -28,7 +28,7 @@ from training.smpl_deformer.smpl_server import SMPLServer
 
 
 @dataclass
-class SamMaskResult:
+class SamInputPrompt:
     mask: Tensor
     alpha: Tensor
     positive_points: Tensor
@@ -380,7 +380,7 @@ def _downsample_points(points: Optional[np.ndarray], max_points: int) -> Optiona
 
 
 def _prepare_point_arrays(
-    result: SamMaskResult,
+    result: SamInputPrompt,
     max_pos_points: int,
     max_neg_points: int,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
@@ -427,7 +427,7 @@ def _compute_mask_iou(initial_mask: Tensor, refined_mask: Tensor) -> float:
     return float((intersection / union).item())
 
 
-def get_sam_masks(
+def get_sam_input_prompts(
     all_gs: SceneSplats,
     smpl_params: Tensor,
     w2c: Tensor,
@@ -439,7 +439,7 @@ def get_sam_masks(
     lbs_knn: int = 30,
     device: Optional[torch.device | str] = None,
     use_raw_smpl: bool = False,
-) -> List[SamMaskResult]:
+) -> List[SamInputPrompt]:
     if not all_gs.dynamic:
         raise ValueError("SceneSplats contains no dynamic components to process.")
 
@@ -537,7 +537,7 @@ def get_sam_masks(
         else:
             positive_joint_indices = []
 
-        results: List[SamMaskResult] = []
+        results: List[SamInputPrompt] = []
         for idx in range(len(all_gs.dynamic)):
             pos_pts, neg_pts = _collect_prompt_points(
                 idx,
@@ -547,7 +547,7 @@ def get_sam_masks(
                 negative_joint_indices=positive_joint_indices,
             )
             results.append(
-                SamMaskResult(
+                SamInputPrompt(
                     mask=masks[idx],
                     alpha=alphas[idx],
                     positive_points=pos_pts,
@@ -559,7 +559,7 @@ def get_sam_masks(
 
 
 def refine_masks_with_predictor(
-    sam_results: Sequence[SamMaskResult],
+    sam_results: Sequence[SamInputPrompt],
     predictor: "SAM2ImagePredictor",
     *,
     multimask_output: bool,
@@ -657,6 +657,9 @@ def refine_masks_with_predictor(
                 vis_negative_points=neg_vis,
             )
         )
+
+    predictor.reset_predictor()
+
     return refined
 
 
@@ -675,7 +678,7 @@ def compute_refined_masks(
     device: Optional[torch.device | str] = None,
     use_raw_smpl: bool = False,
 ) -> List[RefinedMaskResult]:
-    sam_results = get_sam_masks(
+    sam_input_prompts = get_sam_input_prompts(
         scene_splats,
         smpl_params,
         w2c,
@@ -688,13 +691,13 @@ def compute_refined_masks(
         use_raw_smpl=use_raw_smpl,
     )
 
-    max_pos_points = int(predictor_cfg.get("max_pos_points", 24))
-    max_neg_points = int(predictor_cfg.get("max_neg_points", 10))
+    max_pos_points = int(predictor_cfg.max_pos_points)
+    max_neg_points = int(predictor_cfg.max_neg_points)
     refined = refine_masks_with_predictor(
-        sam_results,
+        sam_input_prompts,
         predictor,
-        multimask_output=bool(predictor_cfg.get("multimask_output", False)),
-        use_initial_mask=bool(predictor_cfg.get("use_initial_mask", True)),
+        multimask_output=bool(predictor_cfg.multimask_output),
+        use_initial_mask=bool(predictor_cfg.use_initial_mask),
         max_pos_points=max_pos_points,
         max_neg_points=max_neg_points,
     )
@@ -718,15 +721,14 @@ class ProgressiveSAMManager:
         self.tids = list(tids)
         self.device = device
         self.default_lbs_knn = int(default_lbs_knn)
-        self.loss_weight = float(mask_cfg.get("loss_weight", 0.0))
-        self.alpha_threshold = float(mask_cfg.get("alpha_threshold", 0.3))
-        self.alpha_threshold_warmup = max(int(mask_cfg.get("alpha_threshold_warmup_refinements", 0)), 0)
-        self.rebuild_every_epochs = max(int(mask_cfg.get("rebuild_every_epochs", 10)), 1)
-        self.rebuild_max_epoch = max(int(mask_cfg.get("rebuild_max_epoch", 20)), 1)
-        self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
+        self.alpha_threshold = mask_cfg.alpha_threshold
+        self.alpha_threshold_warmup = max(int(mask_cfg.alpha_threshold_warmup_refinements), 0)
+        self.rebuild_every_epochs = max(int(mask_cfg.rebuild_every_epochs), 1)
+        self.rebuild_max_epoch = max(int(mask_cfg.rebuild_max_epoch), 1)
+        self.predictor_cfg = mask_cfg.sam2
         self.preprocessing_dir = preprocessing_dir
         self.is_preprocessing = is_preprocessing
-        self.use_raw_smpl_until_epoch = int(mask_cfg.get("use_raw_smpl_until_epoch", 0))
+        self.use_raw_smpl_until_epoch = int(mask_cfg.use_raw_smpl_until_epoch)
 
         # paths
         if is_preprocessing:
@@ -1217,12 +1219,12 @@ class ProgressiveSAMManager:
         from sam2.sam2_image_predictor import SAM2ImagePredictor
 
         sam_cfg = self.predictor_cfg
-        model_id = sam_cfg.get("model_id", "facebook/sam2.1-hiera-large")
-        device_str = sam_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        model_id = sam_cfg.model_id
+        device_str = sam_cfg.device
         sam_model = build_sam2_hf(model_id, device=device_str)
         predictor = SAM2ImagePredictor(
             sam_model,
-            mask_threshold=float(sam_cfg.get("mask_threshold", 0.0)),
+            mask_threshold=float(sam_cfg.mask_threshold),
         )
 
         logging.getLogger("sam2").setLevel(logging.ERROR)
