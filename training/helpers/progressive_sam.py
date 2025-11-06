@@ -624,25 +624,20 @@ def refine_masks_with_predictor(
             multimask_output=multimask_output,
             )
 
-        if point_coords is not None:
-            for _ in range(2):
-                refined_masks, scores, logits = predictor.predict(
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                    mask_input=logits,
-                    box=box_input,
-                    multimask_output=multimask_output,
-                )
+        masks_np = np.asarray(refined_masks)
+        scores_np = np.asarray(scores) if scores is not None else None
+        logits_np = np.asarray(logits) if logits is not None else None
 
-        if refined_masks.ndim == 3:
-            idx = 0
-            if refined_masks.shape[0] > 1:
-                idx = int(np.argmax(scores))
-            refined_mask_np = refined_masks[idx]
+        if masks_np.ndim == 3:
+            if masks_np.shape[0] > 1 and scores_np is not None and scores_np.size > 0:
+                order = np.argsort(scores_np)[::-1]
+                mask_np = masks_np[order[0]]
+            else:
+                mask_np = masks_np[0]
         else:
-            refined_mask_np = refined_masks
+            mask_np = masks_np
 
-        refined_mask_tensor = torch.from_numpy(refined_mask_np).float()
+        refined_mask_tensor = torch.from_numpy(mask_np).float()
 
         refined.append(
             RefinedMaskResult(
