@@ -566,6 +566,7 @@ def refine_masks_with_predictor(
     use_initial_mask: bool,
     max_pos_points: int,
     max_neg_points: int,
+    n_iterations: int,
 ) -> List[RefinedMaskResult]:
     refined: List[RefinedMaskResult] = []
     for result in sam_results:
@@ -624,20 +625,55 @@ def refine_masks_with_predictor(
             multimask_output=multimask_output,
             )
 
-        masks_np = np.asarray(refined_masks)
-        scores_np = np.asarray(scores) if scores is not None else None
-        logits_np = np.asarray(logits) if logits is not None else None
+        def _select_best(mask_arr, score_arr, logit_arr):
+            mask_np_local = np.asarray(mask_arr)
+            score_np_local = np.asarray(score_arr) if score_arr is not None else None
+            logit_np_local = np.asarray(logit_arr) if logit_arr is not None else None
 
-        if masks_np.ndim == 3:
-            if masks_np.shape[0] > 1 and scores_np is not None and scores_np.size > 0:
-                order = np.argsort(scores_np)[::-1]
-                mask_np = masks_np[order[0]]
+            if mask_np_local.ndim == 3:
+                if score_np_local is not None and score_np_local.size > 0:
+                    order = np.argsort(score_np_local)[::-1]
+                    best_idx = int(order[0])
+                else:
+                    best_idx = 0
+                best_mask = mask_np_local[best_idx]
+                best_logit = (
+                    logit_np_local[best_idx]
+                    if logit_np_local is not None and logit_np_local.ndim >= 3
+                    else None
+                )
             else:
-                mask_np = masks_np[0]
-        else:
-            mask_np = masks_np
+                best_mask = mask_np_local
+                best_logit = logit_np_local
 
-        refined_mask_tensor = torch.from_numpy(mask_np).float()
+            return best_mask, best_logit
+
+        best_mask_np, best_logit_np = _select_best(refined_masks, scores, logits)
+
+        if point_coords is not None and n_iterations > 1:
+            for _ in range(max(n_iterations - 1, 0)):
+                if best_logit_np is None:
+                    break
+                if best_logit_np.ndim == 2:
+                    mask_input_iter = best_logit_np[None, None, ...].astype(np.float32)
+                elif best_logit_np.ndim == 3:
+                    if best_logit_np.shape[0] == 1:
+                        mask_input_iter = best_logit_np.astype(np.float32)
+                    else:
+                        mask_input_iter = best_logit_np[:1].astype(np.float32)
+                else:
+                    break
+
+                refined_masks, scores, logits = predictor.predict(
+                    point_coords=point_coords,
+                    point_labels=point_labels,
+                    mask_input=mask_input_iter,
+                    box=box_input,
+                    multimask_output=multimask_output,
+                )
+                best_mask_np, best_logit_np = _select_best(refined_masks, scores, logits)
+
+        refined_mask_tensor = torch.from_numpy(best_mask_np).float()
 
         refined.append(
             RefinedMaskResult(
@@ -695,6 +731,7 @@ def compute_refined_masks(
         use_initial_mask=bool(predictor_cfg.use_initial_mask),
         max_pos_points=max_pos_points,
         max_neg_points=max_neg_points,
+        n_iterations=int(predictor_cfg.get("n_iterations", 1)),
     )
     return refined
 
