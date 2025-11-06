@@ -61,6 +61,7 @@ mask_refinement:
   loss_weight: 0.01
   rebuild_every_epochs: 50
   rebuild_max_epoch: 10000000 # effectively no limit
+  use_raw_smpl_until_epoch: 190
   sam2:
     model_id: facebook/sam2.1-hiera-large
     device: cuda

@@ -420,7 +420,7 @@ class Trainer:
 
         if (
             self.debug_vis_freq > 0
-            and it_number % self.debug_vis_freq == 0
+            and self.current_epoch % self.debug_vis_freq == 0
             and self._orbit_debug_frame is not None
             and int(fid) == self._orbit_debug_frame
             and len(self.all_gs.dynamic) > 0

@@ -14,6 +14,8 @@ from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
 from hydra.core.global_hydra import GlobalHydra
+import pyrender
+import trimesh
 
 RNG = np.random.default_rng(42)
 
@@ -21,6 +23,7 @@ from training.helpers.model_init import SceneSplats
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import canon_to_posed, update_skinning_weights
 from training.helpers.geom_utils import project_points
+from training.smpl_deformer.smpl_server import SMPLServer
 
 
 
@@ -135,6 +138,50 @@ def _render_alpha_mask(
         alpha_map = alpha_map[..., 0]
     mask = (alpha_map > alpha_threshold).to(dtype=torch.bool)
     return mask.cpu(), alpha_map.cpu(), depth_map.cpu()
+
+
+def _render_raw_smpl_mask(
+    smpl_server: SMPLServer,
+    smpl_param: Tensor,
+    w2c: Tensor,
+    K: Tensor,
+    image_size: Tuple[int, int],
+    device: torch.device,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    H, W = image_size
+    smpl_output = smpl_server(smpl_param.unsqueeze(0).to(device), absolute=False)
+    verts = smpl_output["smpl_verts"][0].detach().cpu().numpy()
+    faces = smpl_server.smpl.faces.astype(np.int32)
+
+    tri_mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=False)
+
+    scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.2, 0.2, 0.2])
+    scene.add(mesh)
+    scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.0), pose=np.eye(4))
+
+    w2c_np = w2c.detach().cpu().numpy()
+    cv_to_gl = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+    w2c_gl = cv_to_gl @ w2c_np
+
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    cam = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, znear=0.01, zfar=100.0)
+    scene.add(cam, pose=np.linalg.inv(w2c_gl))
+
+    renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
+    color_rgb, depth = renderer.render(scene, flags=pyrender.constants.RenderFlags.FLAT)
+    renderer.delete()
+
+    render_rgb = color_rgb.astype(np.float32) / 255.0
+    mask_np = (depth > 0).astype(np.float32)
+    if mask_np.max() <= 0.0:
+        mask_np = (np.linalg.norm(render_rgb, axis=-1) > 1e-6).astype(np.float32)
+
+    mask_tensor = torch.from_numpy(mask_np.astype(np.bool_))
+    alpha_tensor = torch.from_numpy(mask_np.astype(np.float32))
+    depth_tensor = torch.from_numpy(depth.astype(np.float32))
+    return mask_tensor, alpha_tensor, depth_tensor
 
 
 def _pose_body_vertices(
@@ -391,6 +438,7 @@ def get_sam_masks(
     lbs_weights: Optional[Sequence[Tensor]] = None,
     lbs_knn: int = 30,
     device: Optional[torch.device | str] = None,
+    use_raw_smpl: bool = False,
 ) -> List[SamMaskResult]:
     if not all_gs.dynamic:
         raise ValueError("SceneSplats contains no dynamic components to process.")
@@ -406,7 +454,10 @@ def get_sam_masks(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
     sh_degree = _infer_sh_degree(all_gs)
-    lbs_weights_prepared = _ensure_lbs_weights(all_gs, lbs_weights, render_device, lbs_knn)
+    if use_raw_smpl:
+        lbs_weights_prepared = None
+    else:
+        lbs_weights_prepared = _ensure_lbs_weights(all_gs, lbs_weights, render_device, lbs_knn)
 
     masks: List[Tensor] = []
     alphas: List[Tensor] = []
@@ -415,21 +466,32 @@ def get_sam_masks(
     H, W = image_size
     K_3x3 = K[:3, :3] if K.shape[0] == 4 else K
     w2c_4x4 = w2c if w2c.shape == (4, 4) else w2c[:4, :4]
+    smpl_server = all_gs.smpl_c_info["smpl_server"].to(render_device)
 
     with torch.no_grad():
         for idx in range(len(all_gs.dynamic)):
-            mask, alpha_map, depth_map = _render_alpha_mask(
-                idx,
-                all_gs,
-                smpl_params,
-                lbs_weights_prepared,
-                w2c_4x4,
-                K_3x3,
-                (H, W),
-                alpha_threshold,
-                sh_degree,
-                render_device,
-            )
+            if use_raw_smpl:
+                mask, alpha_map, depth_map = _render_raw_smpl_mask(
+                    smpl_server,
+                    smpl_params[idx],
+                    w2c_4x4,
+                    K_3x3,
+                    (H, W),
+                    render_device,
+                )
+            else:
+                mask, alpha_map, depth_map = _render_alpha_mask(
+                    idx,
+                    all_gs,
+                    smpl_params,
+                    lbs_weights_prepared,
+                    w2c_4x4,
+                    K_3x3,
+                    (H, W),
+                    alpha_threshold,
+                    sh_degree,
+                    render_device,
+                )
             masks.append(mask)
             alphas.append(alpha_map)
             depths.append(depth_map)
@@ -611,6 +673,7 @@ def compute_refined_masks(
     lbs_weights: Optional[Sequence[Tensor]] = None,
     lbs_knn: int = 30,
     device: Optional[torch.device | str] = None,
+    use_raw_smpl: bool = False,
 ) -> List[RefinedMaskResult]:
     sam_results = get_sam_masks(
         scene_splats,
@@ -622,6 +685,7 @@ def compute_refined_masks(
         lbs_weights=lbs_weights,
         lbs_knn=lbs_knn,
         device=device,
+        use_raw_smpl=use_raw_smpl,
     )
 
     max_pos_points = int(predictor_cfg.get("max_pos_points", 24))
@@ -662,6 +726,7 @@ class ProgressiveSAMManager:
         self.predictor_cfg = dict(mask_cfg.get("sam2", {}))
         self.preprocessing_dir = preprocessing_dir
         self.is_preprocessing = is_preprocessing
+        self.use_raw_smpl_until_epoch = int(mask_cfg.get("use_raw_smpl_until_epoch", 0))
 
         # paths
         if is_preprocessing:
@@ -776,7 +841,7 @@ class ProgressiveSAMManager:
         print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
 
     def _save_visualization_of_entry(self, image: np.ndarray, entry: SamMaskEntry, fid: int, epoch: int) -> None:
-        vis_dir_epoch = self.vis_dir / f"epoch_{epoch + 1:04d}"
+        vis_dir_epoch = self.vis_dir / f"epoch_{epoch:04d}"
         vis_dir_epoch.mkdir(parents=True, exist_ok=True)
         scores_array = np.asarray(entry.iou_scores, dtype=np.float32) if entry.iou_scores else np.asarray([])
         if scores_array.size > 0:
@@ -895,7 +960,7 @@ class ProgressiveSAMManager:
             else:
                 frame_averages.append(float("nan"))
 
-        vis_dir_epoch = self.vis_dir / f"epoch_{epoch + 1:04d}"
+        vis_dir_epoch = self.vis_dir / f"epoch_{epoch:04d}"
         vis_dir_epoch.mkdir(parents=True, exist_ok=True)
         out_path = vis_dir_epoch / "iou_scores.png"
         hist_path = vis_dir_epoch / "iou_histograms.png"
@@ -1017,6 +1082,7 @@ class ProgressiveSAMManager:
                         lbs_weights=lbs_weights,
                         lbs_knn=self.default_lbs_knn,
                         device=self.device,
+                        use_raw_smpl=epoch <= self.use_raw_smpl_until_epoch,
                     )
 
                 entry, iou_scores = self._build_mask_entry(refined_results, self.device)
