@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=v3_runs
+#SBATCH --job-name=v5_runs
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
 #SBATCH --time=03:00:00
@@ -77,8 +77,12 @@ cd /home/cizinsky/master-thesis
 # GROUP_NAME=v4_new_psam_small_n_pos_points
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v4, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000 mask_refinement.sam2.max_pos_points=15 mask_refinement.sam2.max_neg_points=15
 
-GROUP_NAME=v4_new_psam_high_opacity_reg
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v4, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000 mask_refinement.sam2.max_pos_points=15 mask_refinement.sam2.max_neg_points=15 opacity_reg=0.01 scale_reg=0.01
+# GROUP_NAME=v4_new_psam_high_opacity_reg
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v4, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000 mask_refinement.sam2.max_pos_points=15 mask_refinement.sam2.max_neg_points=15 opacity_reg=0.01 scale_reg=0.01
+
+# --------------- V5 (better psam and pose optimizations) experiments ----------------
+GROUP_NAME=v5_default
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME
 
 # --- dev
 # python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000
