@@ -81,8 +81,32 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v4, psam_early_stop]' group_name=$GROUP_NAME gs_refine_stop_iter=5000 mask_refinement.rebuild_every_epochs=25 mask_refinement.rebuild_max_epoch=1000 mask_refinement.sam2.max_pos_points=15 mask_refinement.sam2.max_neg_points=15 opacity_reg=0.01 scale_reg=0.01
 
 # --------------- V5 (better psam and pose optimizations) experiments ----------------
-GROUP_NAME=v5_default
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME
+# GROUP_NAME=v5_default
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME
 
-# --- dev
-# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=true logger.tags=[v2] group_name=$GROUP_NAME debug=true save_freq=30000
+# GROUP_NAME=v5_default
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME
+
+# GROUP_NAME=v5_default_high_opacity_scale_reg
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME opacity_reg=0.1 scale_reg=0.1
+
+# GROUP_NAME=v5_3dgs_refine100
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME gs_refine_every=100
+
+# GROUP_NAME=v5_3dgs_refine500
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME gs_refine_every=500
+
+# GROUP_NAME=v5_pose_correction100
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME pose_correction_epoch=100
+
+# GROUP_NAME=v5_pose_optim_interval5
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME pose_opt_interval=5
+
+# GROUP_NAME=v5_sam_multimask_off
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.multimask_output=false
+
+# GROUP_NAME=v5_sam_n_iter1
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.n_iterations=1
+
+GROUP_NAME=v5_sam_n_iter2
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.n_iterations=2
