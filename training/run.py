@@ -630,6 +630,8 @@ class Trainer:
                     logs = self.step(batch, iteration)
                     if logs.get("smpl_optim/step", 0.0) > 0:
                         smpl_epoch_updated = True
+                    if torch.cuda.is_available() and self.device.type == "cuda":
+                        logs["gpu_mem_gib"] = float(torch.cuda.memory_allocated(self.device) / (1024 ** 3))
 
                     # Update progress bar
                     pbar.update(1)
