@@ -59,6 +59,14 @@ class Trainer:
         self.pose_opt_interval = int(cfg.pose_opt_interval)
         self.pose_opt_duration = int(cfg.pose_opt_duration)
         self.pose_lr_scale = float(cfg.pose_lr_scale)
+        depth_cfg = cfg.depth_loss
+        self.depth_loss_start_epoch = int(depth_cfg.start_epoch)
+        self.depth_loss_end_epoch = int(depth_cfg.end_epoch)
+        self.depth_loss_interval = int(depth_cfg.interval)
+        self.depth_loss_duration = int(depth_cfg.duration)
+        self.depth_order_weight = float(depth_cfg.depth_order_weight)
+        self.interpenetration_weight = float(depth_cfg.interpenetration_weight)
+        self.depth_iterations = 0
         self._previous_smpl_params: Dict[int, torch.Tensor] = {}
         print(f"--- FYI: using device {self.device}")
 
@@ -177,6 +185,17 @@ class Trainer:
         interval = self.pose_opt_interval if self.pose_opt_interval > 0 else 1
         duration = max(1, self.pose_opt_duration)
         position = (self.current_epoch - self.pose_opt_start_epoch) % interval
+        return position < duration
+
+    def _in_depth_loss_window(self) -> bool:
+        """Return True during epochs where we should run the depth-only step."""
+        if self.depth_loss_end_epoch <= self.depth_loss_start_epoch:
+            return False
+        if self.current_epoch < self.depth_loss_start_epoch or self.current_epoch >= self.depth_loss_end_epoch:
+            return False
+        interval = self.depth_loss_interval if self.depth_loss_interval > 0 else 1
+        duration = max(1, self.depth_loss_duration)
+        position = (self.current_epoch - self.depth_loss_start_epoch) % interval
         return position < duration
 
     def _get_frame_smpl_params(self, fid: int, allow_grad: bool) -> Optional[torch.Tensor]:
@@ -464,6 +483,213 @@ class Trainer:
 
         return log_values
 
+    def _render_depth_for_tid(
+        self,
+        tid: int,
+        smpl_params: Optional[torch.Tensor],
+        w2c: torch.Tensor,
+        K: torch.Tensor,
+        H: int,
+        W: int,
+    ) -> Optional[torch.Tensor]:
+        """
+        Render RGB+Depth for a single TID and return the depth map tensor.
+        """
+        if smpl_params is None:
+            return None
+
+        selected_indices, smpl_param_forward, lbs_weights = filter_dynamic_splats(
+            all_gs=self.all_gs,
+            all_lbs_weights=self.lbs_weights,
+            smpl_params=smpl_params,
+            sel_tids=[tid],
+            cfg_tids=self.cfg.tids,
+        )
+
+        if len(selected_indices) == 0 or smpl_param_forward is None or lbs_weights is None:
+            return None
+
+        dynamic_components = [self.all_gs.dynamic[idx] for idx in selected_indices]
+        if len(dynamic_components) == 0:
+            return None
+
+        gs_to_render = SceneSplats(
+            static=None,
+            dynamic=dynamic_components,
+            smpl_c_info=self.all_gs.smpl_c_info,
+        )
+
+        renders, _, _ = render_splats(
+            gs_to_render,
+            smpl_param_forward,
+            lbs_weights,
+            w2c,
+            K,
+            H,
+            W,
+            sh_degree=self.cfg.sh_degree,
+            render_mode="RGB+ED",
+        )
+        depths = renders[..., 3:4]
+        return depths
+
+    def step_depth(self, batch: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Compute auxiliary losses that require explicit per-person depth reasoning.
+        Returns both a depth-order loss and a coarse interpenetration penalty.
+        """
+        if len(self.cfg.tids) == 0:
+            return {
+                "loss/depth_order": 0.0,
+                "loss/interpenetration": 0.0,
+                "loss/combined": 0.0,
+            }
+
+        images, human_masks, K, w2c, H, W, fid = self._parse_batch(batch)
+        if human_masks.shape[0] != 1:
+            raise ValueError("Depth order loss currently expects batch size 1.")
+
+        allow_smpl_grad = self.is_smpl_optim_enabled
+        smpl_param_forward = self._get_frame_smpl_params(fid, allow_grad=allow_smpl_grad)
+        if smpl_param_forward is None:
+            return {
+                "loss/depth_order": 0.0,
+                "loss/interpenetration": 0.0,
+                "loss/combined": 0.0,
+            }
+
+        # Per-TID collections used to build the front-depth map.
+        depth_maps: List[torch.Tensor] = []
+        depth_valid_masks: List[torch.Tensor] = []
+        mask_tensors: List[torch.Tensor] = []
+
+        for tid_idx, tid in enumerate(self.cfg.tids):
+            depths = self._render_depth_for_tid(tid, smpl_param_forward, w2c, K, H, W)
+            if depths is None:
+                continue
+
+            depth_map = depths[0, ..., 0]  # [H,W]
+            depth_maps.append(depth_map)
+            depth_valid_masks.append(depth_map > 0.0)
+            mask_tensor = human_masks[0, tid_idx, ...].to(depth_map.device)
+            mask_tensors.append(mask_tensor)
+
+        if not depth_maps:
+            return {
+                "loss/depth_order": 0.0,
+                "loss/interpenetration": 0.0,
+                "loss/combined": 0.0,
+            }
+
+        stacked_depths = torch.stack(depth_maps, dim=0)  # [T,H,W]
+        stacked_valid = torch.stack(depth_valid_masks, dim=0)
+
+        # Replace invalid depths with +inf and take the min to approximate the frontmost actor.
+        large_val = torch.tensor(torch.finfo(stacked_depths.dtype).max, device=stacked_depths.device)
+        masked_depths = torch.where(stacked_valid, stacked_depths, large_val)
+        front_depth, _ = masked_depths.min(dim=0)
+        front_valid = stacked_valid.any(dim=0)
+
+        total_loss = torch.tensor(0.0, device=self.device)
+        total_pixels = 0
+        for depth_map, mask_tensor, valid_depth in zip(depth_maps, mask_tensors, depth_valid_masks):
+            # Only supervise pixels where SAM says this TID is visible and we rendered valid depths.
+            pixel_mask = (mask_tensor > 0.5) & valid_depth & front_valid
+            if pixel_mask.any():
+                diff = depth_map - front_depth
+                total_loss = total_loss + (diff[pixel_mask] ** 2).sum()
+                total_pixels += int(pixel_mask.sum().item())
+
+        if total_pixels == 0:
+            depth_order_loss = torch.tensor(0.0, device=self.device)
+        else:
+            depth_order_loss = total_loss / total_pixels
+
+        if self.interpenetration_weight > 0.0:
+            interpenetration_loss = self._compute_interpenetration_loss()
+        else:
+            interpenetration_loss = torch.tensor(0.0, device=self.device)
+
+        total_loss = depth_order_loss * self.depth_order_weight
+        if self.interpenetration_weight > 0.0:
+            total_loss = total_loss + interpenetration_loss * self.interpenetration_weight
+
+        smpl_optim_performed = False
+        if total_loss.requires_grad:
+            total_loss.backward()
+
+            static_optims = [self.all_optimisers.static] if self.all_gs.static is not None else []
+            all_optims = static_optims + self.all_optimisers.dynamic
+            for optimizers in all_optims:
+                for opt in optimizers.values():
+                    opt.step()
+                    opt.zero_grad(set_to_none=True)
+
+            if allow_smpl_grad and self.smpl_joint_optimizer is not None:
+                self.smpl_joint_optimizer.step()
+                smpl_optim_performed = True
+            if self.smpl_joint_optimizer is not None:
+                self.smpl_joint_optimizer.zero_grad(set_to_none=True)
+            if self.smpl_pose_optimizer is not None:
+                self.smpl_pose_optimizer.zero_grad(set_to_none=True)
+
+        depth_value = float(depth_order_loss.detach().item())
+        interpenetration_value = float(interpenetration_loss.detach().item())
+        combined_value = depth_value * self.depth_order_weight + interpenetration_value * self.interpenetration_weight
+
+        logs = {
+            "loss/depth_order": depth_value,
+            "loss/interpenetration": interpenetration_value,
+            "loss/combined": combined_value,
+            "smpl_optim/step": 1.0 if smpl_optim_performed else 0.0,
+        }
+        return logs
+
+    def _compute_interpenetration_loss(self) -> torch.Tensor:
+        """
+        Approximate an interpenetration penalty by treating each TID's Gaussians as
+        isotropic spheres and penalising overlaps between different TIDs.
+        """
+        if len(self.cfg.tids) < 2 or len(self.all_gs.dynamic) == 0:
+            return torch.tensor(0.0, device=self.device)
+
+        margin = float(self.cfg.interpenetration_margin)
+        total_loss = torch.tensor(0.0, device=self.device)
+        pair_count = 0
+
+        for idx_a in range(len(self.cfg.tids)):
+            for idx_b in range(idx_a + 1, len(self.cfg.tids)):
+                if idx_a >= len(self.all_gs.dynamic) or idx_b >= len(self.all_gs.dynamic):
+                    continue
+
+                gs_a = self.all_gs.dynamic[idx_a]
+                gs_b = self.all_gs.dynamic[idx_b]
+                if gs_a["means"].shape[0] == 0 or gs_b["means"].shape[0] == 0:
+                    continue
+
+                means_a = gs_a["means"]
+                means_b = gs_b["means"]
+                # Estimate an isotropic radius from anisotropic Gaussian scales.
+                scales_a = torch.exp(gs_a["scales"]).mean(dim=-1)
+                scales_b = torch.exp(gs_b["scales"]).mean(dim=-1)
+
+                # Compute all pairwise center distances and penalise any overlap between
+                # the two point sets, with a small safety margin.
+                diff = means_a[:, None, :] - means_b[None, :, :]
+                dists = torch.linalg.norm(diff, dim=-1)  # [Na, Nb]
+                radii_sum = scales_a[:, None] + scales_b[None, :] + margin
+
+                penetration = torch.clamp(radii_sum - dists, min=0.0)
+                if penetration.numel() == 0:
+                    continue
+
+                total_loss = total_loss + penetration.mean()
+                pair_count += 1
+
+        if pair_count == 0:
+            return torch.tensor(0.0, device=self.device)
+        return total_loss / pair_count
+
     def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
         mask_path = Path(self.cfg.preprocess_dir) / "sam2_masks"
         self.dataset = build_dataset(self.cfg, mask_path=mask_path)
@@ -624,17 +850,26 @@ class Trainer:
                 else:
                     psam_logs = {}
 
+                depth_window = self._in_depth_loss_window()
                 smpl_epoch_updated = False
                 for batch in self.loader:
                     iteration += 1
-                    logs = self.step(batch, iteration)
-                    if logs.get("smpl_optim/step", 0.0) > 0:
-                        smpl_epoch_updated = True
+                    if depth_window:
+                        logs = self.step_depth(batch)
+                        self.depth_iterations += 1
+                        if logs.get("smpl_optim/step", 0.0) > 0:
+                            smpl_epoch_updated = True
+                    else:
+                        effective_iteration = iteration - self.depth_iterations
+                        logs = self.step(batch, effective_iteration)
+                        if logs.get("smpl_optim/step", 0.0) > 0:
+                            smpl_epoch_updated = True
 
                     # Update progress bar
                     pbar.update(1)
+                    loss_display = logs.get("loss/combined", 0.0)
                     pbar.set_postfix({
-                        "loss": f"{logs['loss/combined']:.4f}",
+                        "loss": f"{loss_display:.4f}",
                         "epoch": epoch,
                         "n_gs": logs.get("splats/num_gs_total", 0),
                     })

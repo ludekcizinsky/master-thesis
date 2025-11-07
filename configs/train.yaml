@@ -53,6 +53,7 @@ alpha_lambda: 0.4
 opacity_reg: 0.1
 scale_reg: 0.1
 lbs_knn: 30
+interpenetration_margin: 0.01
 
 mask_refinement:
   enabled: true
@@ -87,6 +88,14 @@ sh0_lr: 2.5e-3
 shN_lr: 1.25e-4 
 # LR for SMPL pose parameters
 smpl_lr: 1.0e-3
+
+depth_loss:
+  start_epoch: 50
+  end_epoch: 400
+  interval: 20
+  duration: 1
+  depth_order_weight: 1.0
+  interpenetration_weight: 0.0
 
 # --- Visualization settings
 eval_depth_vis_min: 1.5 # if set, use this min depth for visualisation
