@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=v5_runs
+#SBATCH --job-name=v6_runs
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
 #SBATCH --time=03:00:00
@@ -108,5 +108,18 @@ cd /home/cizinsky/master-thesis
 # GROUP_NAME=v5_sam_n_iter1
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.n_iterations=1
 
-GROUP_NAME=v5_sam_n_iter2
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.n_iterations=2
+# GROUP_NAME=v5_sam_n_iter2
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v5]' group_name=$GROUP_NAME mask_refinement.sam2.n_iterations=2
+
+# --------------- V6 reliability threshold adjustment and lower number of gs via regulisation + more frequent adapt. densification
+# GROUP_NAME=v6_default
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME 
+
+# GROUP_NAME=v6_default_rel_tol_003
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.03
+
+# GROUP_NAME=v6_default_rel_tol_001
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.01
+
+GROUP_NAME=v6_default_rel_tol_01
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.1
