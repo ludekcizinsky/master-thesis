@@ -66,6 +66,8 @@ class Trainer:
         self.depth_loss_duration = int(depth_cfg.duration)
         self.depth_order_weight = float(depth_cfg.depth_order_weight)
         self.interpenetration_weight = float(depth_cfg.interpenetration_weight)
+        self.depth_normalise_by_pixels = bool(depth_cfg.normalise_by_pixels)
+        self.depth_decay_milestone = max(1, int(depth_cfg.decay_milestone))
         self.depth_iterations = 0
         self._previous_smpl_params: Dict[int, torch.Tensor] = {}
         print(f"--- FYI: using device {self.device}")
@@ -600,19 +602,48 @@ class Trainer:
                 total_loss = total_loss + (diff[pixel_mask] ** 2).sum()
                 total_pixels += int(pixel_mask.sum().item())
 
-        if total_pixels == 0:
-            depth_order_loss = torch.tensor(0.0, device=self.device)
+        # Recreate Multiply's mask filtering: only trust pixels belonging to exactly one actor.
+        mask_sum = human_masks[0].sum(dim=0)
+        single_actor = mask_sum <= (1.0 + 1e-2)
+        non_empty = mask_sum >= 0.7
+
+        sam_mask_idx = human_masks[0].argmax(dim=0, keepdim=True)  # [1,H,W]
+        gathered_depths = torch.gather(stacked_depths, dim=0, index=sam_mask_idx).squeeze(0)
+        gathered_valid = torch.gather(stacked_valid.float(), dim=0, index=sam_mask_idx).squeeze(0).bool()
+
+        valid_mask = front_valid & single_actor & non_empty & gathered_valid
+
+        front_flat = front_depth[valid_mask]
+        gt_flat = gathered_depths[valid_mask]
+
+        if front_flat.numel() == 0 or gt_flat.numel() == 0:
+            depth_order_loss_raw = torch.zeros(1, device=self.device, requires_grad=True)
+            valid_count = torch.tensor(0, device=self.device)
         else:
-            depth_order_loss = total_loss / total_pixels
+            diff = gt_flat - front_flat
+            exclude_mask = ~(diff.abs() < 1e-8)
+            if exclude_mask.any():
+                selected_diff = diff[exclude_mask]
+                depth_order_loss_raw = F.softplus(selected_diff).sum()
+                valid_count = torch.tensor(int(exclude_mask.sum().item()), device=self.device)
+            else:
+                depth_order_loss_raw = torch.zeros(1, device=self.device, requires_grad=True)
+                valid_count = torch.tensor(0, device=self.device)
+
+        if self.depth_normalise_by_pixels and valid_count.item() > 0:
+            depth_order_loss_raw = depth_order_loss_raw / valid_count
+
+        decay_factor = 1.0 - min(self.current_epoch, self.depth_decay_milestone) / float(self.depth_decay_milestone)
+        depth_order_loss = depth_order_loss_raw * self.depth_order_weight * decay_factor
 
         if self.interpenetration_weight > 0.0:
-            interpenetration_loss = self._compute_interpenetration_loss()
+            interpenetration_loss = (
+                self._compute_interpenetration_loss() * self.interpenetration_weight * decay_factor
+            )
         else:
             interpenetration_loss = torch.tensor(0.0, device=self.device)
 
-        total_loss = depth_order_loss * self.depth_order_weight
-        if self.interpenetration_weight > 0.0:
-            total_loss = total_loss + interpenetration_loss * self.interpenetration_weight
+        total_loss = depth_order_loss + interpenetration_loss
 
         smpl_optim_performed = False
         if total_loss.requires_grad:

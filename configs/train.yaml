@@ -94,8 +94,10 @@ depth_loss:
   end_epoch: 400
   interval: 16
   duration: 1
-  depth_order_weight: 400.0
+  depth_order_weight: 1.0
   interpenetration_weight: 0.0
+  normalise_by_pixels: true
+  decay_milestone: 1000
 
 # --- Visualization settings
 eval_depth_vis_min: 1.5 # if set, use this min depth for visualisation
