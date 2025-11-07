@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=v6_runs
+#SBATCH --job-name=v7_runs
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
 #SBATCH --time=03:00:00
@@ -125,5 +125,20 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.1
 
 # --------------- V7 depth order loss supervision
-GROUP_NAME=v7_default
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME
+# GROUP_NAME=v7_default
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME
+
+# GROUP_NAME=v7_more_frequent_depth_loss
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.interval=8
+
+# GROUP_NAME=v7_less_frequent_depth_loss
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.interval=32
+
+# GROUP_NAME=v7_dloss_weight200
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=200.0
+
+# GROUP_NAME=v7_dloss_weight300
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=300.0
+
+GROUP_NAME=v7_dloss_weight500
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=500.0
