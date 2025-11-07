@@ -121,5 +121,9 @@ cd /home/cizinsky/master-thesis
 # GROUP_NAME=v6_default_rel_tol_001
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.01
 
-GROUP_NAME=v6_default_rel_tol_01
-python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.1
+# GROUP_NAME=v6_default_rel_tol_01
+# python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.1
+
+# --------------- V7 depth order loss supervision
+GROUP_NAME=v7_default
+python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME

@@ -90,9 +90,9 @@ shN_lr: 1.25e-4
 smpl_lr: 1.0e-3
 
 depth_loss:
-  start_epoch: 50
+  start_epoch: 25
   end_epoch: 400
-  interval: 20
+  interval: 16
   duration: 1
   depth_order_weight: 400.0
   interpenetration_weight: 0.0
