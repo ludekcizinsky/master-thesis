@@ -59,7 +59,7 @@ mask_refinement:
   enabled: true
   alpha_threshold: 0.7
   alpha_threshold_warmup_refinements: 3
-  reliability_threshold_tolerance: 0.05
+  reliability_threshold_tolerance: 0.1
   rebuild_every_epochs: 50
   rebuild_max_epoch: 10000000 # effectively no limit
   use_raw_smpl_until_epoch: 50
@@ -94,7 +94,7 @@ depth_loss:
   end_epoch: 400
   interval: 20
   duration: 1
-  depth_order_weight: 1.0
+  depth_order_weight: 400.0
   interpenetration_weight: 0.0
 
 # --- Visualization settings
