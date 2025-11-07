@@ -58,6 +58,7 @@ mask_refinement:
   enabled: true
   alpha_threshold: 0.7
   alpha_threshold_warmup_refinements: 3
+  reliability_threshold_tolerance: 0.05
   rebuild_every_epochs: 50
   rebuild_max_epoch: 10000000 # effectively no limit
   use_raw_smpl_until_epoch: 50

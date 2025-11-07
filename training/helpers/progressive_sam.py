@@ -761,6 +761,12 @@ class ProgressiveSAMManager:
         self.preprocessing_dir = preprocessing_dir
         self.is_preprocessing = is_preprocessing
         self.use_raw_smpl_until_epoch = int(mask_cfg.use_raw_smpl_until_epoch)
+        tolerance_value = None
+        if isinstance(mask_cfg, dict):
+            tolerance_value = mask_cfg.get("reliability_threshold_tolerance")
+        else:
+            tolerance_value = getattr(mask_cfg, "reliability_threshold_tolerance", None)
+        self.reliability_threshold_tolerance = float(tolerance_value if tolerance_value is not None else 0.05)
 
         # paths
         if is_preprocessing:
@@ -849,8 +855,9 @@ class ProgressiveSAMManager:
             self.unreliable_frames = []
             return
 
-        alpha = float(np.median(np.asarray(all_scores, dtype=np.float32)))
-        self.iou_threshold = alpha
+        base_alpha = float(np.median(np.asarray(all_scores, dtype=np.float32)))
+        adjusted_alpha = max(0.0, base_alpha - self.reliability_threshold_tolerance)
+        self.iou_threshold = adjusted_alpha
 
         reliable: List[int] = []
         unreliable: List[int] = []
@@ -860,7 +867,7 @@ class ProgressiveSAMManager:
             else:
                 print(f"--- FYI: No IoU scores for frame {fid}, marking as unreliable.")
                 avg_iou = 0.0
-            if avg_iou >= alpha:
+            if avg_iou >= adjusted_alpha:
                 reliable.append(int(fid))
             else:
                 unreliable.append(int(fid))
@@ -872,7 +879,12 @@ class ProgressiveSAMManager:
         self._reliable_frame_set = set(reliable)
         self._unreliable_frame_set = set(unreliable)
 
-        print(f"--- FYI: SAM mask reliability updated: {len(reliable)} reliable, {len(unreliable)} unreliable frames. Threshold: {self.iou_threshold:.4f}")
+        print(
+            "--- FYI: SAM mask reliability updated: "
+            f"{len(reliable)} reliable, {len(unreliable)} unreliable frames. "
+            f"Median: {base_alpha:.4f}, Adjusted Threshold: {self.iou_threshold:.4f} "
+            f"(tolerance {self.reliability_threshold_tolerance:.4f})."
+        )
 
     def _save_visualization_of_entry(self, image: np.ndarray, entry: SamMaskEntry, fid: int, epoch: int) -> None:
         vis_dir_epoch = self.vis_dir / f"epoch_{epoch:04d}"
@@ -1034,7 +1046,15 @@ class ProgressiveSAMManager:
                 color="orange",
                 linestyle="--",
                 linewidth=1.2,
-                label=f"Global Median {global_median:.2f}",
+                label=f"Median Threshold {global_median:.2f}",
+            )
+            adjusted_median = max(0.0, global_median - self.reliability_threshold_tolerance)
+            ax.axhline(
+                adjusted_median,
+                color="purple",
+                linestyle="-.",
+                linewidth=1.2,
+                label=f"Adjusted Threshold {adjusted_median:.2f}",
             )
 
         ax.set_xticks(x)
