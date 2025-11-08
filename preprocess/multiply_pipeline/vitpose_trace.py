@@ -3,6 +3,7 @@ import os
 import warnings
 from argparse import ArgumentParser
 import glob
+from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import cv2
@@ -17,6 +18,9 @@ try:
     has_mmdet = True
 except (ImportError, ModuleNotFoundError):
     has_mmdet = False
+    warnings.warn(
+        'mmdet is not available; assuming detections are provided externally.',
+        UserWarning)
 
 def get_mask_center(mask_path):
     mask = cv2.imread(mask_path)[:, :, 0]
@@ -101,8 +105,6 @@ def main():
         default=1,
         help='Link thickness for visualization')
 
-    assert has_mmdet, 'Please install mmdet to run the demo.'
-
     args = parser.parse_args()
 
     # assert args.show or (args.out_img_root != '')
@@ -120,17 +122,31 @@ def main():
     # if len(img_paths) == 0:
     #     img_paths = sorted(glob.glob(os.path.join(args.img_root, '*.jpg')))
     
-    # img_dir = f'{DIR}/{args.seq}/frames'
-    img_dir = args.img_root
-    # this line below will lead to a segfault
-    imagePaths = sorted(glob.glob(f'{img_dir}/*.png'))
+    raw_frames_path = Path(args.img_root).resolve()
+    seq_name = raw_frames_path.parent.name
+    preprocess_root = raw_frames_path.parent.parent.parent
+
+    img_dir = raw_frames_path
+    imagePaths = sorted(map(str, img_dir.glob('*.png')))
     if len(imagePaths) == 0:
-        imagePaths = sorted(glob.glob(f'{img_dir}/*.jpg'))
+        imagePaths = sorted(map(str, img_dir.glob('*.jpg')))
+    if len(imagePaths) == 0:
+        fallback_dir = preprocess_root / 'data' / seq_name / 'image'
+        imagePaths = sorted(map(str, fallback_dir.glob('*.png')))
+        if len(imagePaths) == 0:
+            imagePaths = sorted(map(str, fallback_dir.glob('*.jpg')))
+        if len(imagePaths) == 0:
+            warnings.warn(f'No frames found in {img_dir} or fallback {fallback_dir}', UserWarning)
+        img_dir = fallback_dir
     # imagePaths = sorted(glob.glob(f'{img_dir}/*.png'))
     # imagePaths = op.get_images_on_directory(img_dir)
-    maskPath_list = sorted(glob.glob(f'{img_dir}/../init_mask/*'))
+    mask_root = raw_frames_path.parent / 'init_mask'
+    maskPath_list = sorted(glob.glob(str(mask_root / '*')))
     number_person = len(maskPath_list)
-    mask_path_list = [sorted(glob.glob(f'{img_dir}/../init_mask/{i}/*.png')) for i in range(number_person)]
+    mask_path_list = [
+        sorted(glob.glob(str(mask_root / f'{i}' / '*.png')))
+        for i in range(number_person)
+    ]
     if not os.path.exists(f'{img_dir}/../vitpose'):
             os.makedirs(f'{img_dir}/../vitpose')
     

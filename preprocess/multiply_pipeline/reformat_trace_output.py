@@ -16,7 +16,7 @@ def process_idx(reorganize_idx, vids=None):
 def main(args):
 
     # render SMPL
-    trace_output = f"{args.output_folder}/trace_results/{args.seq}/frames.npz"
+    trace_output = f"{args.output_folder}/trace_results/{args.seq}/image.npz"
     result = np.load(trace_output, allow_pickle=True)
     smpl_layer = SMPLLayer(model_type="smpl", gender="neutral")
     used_org_inds, per_img_person_inds = process_idx(result['outputs'][()]['reorganize_idx'])

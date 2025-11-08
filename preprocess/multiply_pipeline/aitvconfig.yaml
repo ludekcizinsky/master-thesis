@@ -1,4 +1,4 @@
-smplx_models: "../code/lib/smpl/smpl_model/SMPL_NEUTRAL.pkl"
+smplx_models: "/home/cizinsky/trace/smpl_model_data/SMPL_NEUTRAL.pkl"
 
 # # Pytorch configuration.
 # device: "cuda:0"

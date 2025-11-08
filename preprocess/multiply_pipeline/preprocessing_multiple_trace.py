@@ -7,6 +7,7 @@ import os
 from tqdm import tqdm
 import glob
 import argparse
+from pathlib import Path
 from preprocessing_utils import (smpl_to_pose, PerspectiveCamera, Renderer,RendererNew, render_trimesh, \
                                 estimate_translation_cv2, transform_smpl)
 from loss import joints_2d_loss, pose_temporal_loss, get_loss_weights
@@ -18,6 +19,7 @@ from rotation import axis_to_rot6D, rot6D_to_axis
 
 
 from smplx.lbs import blend_shapes, vertices2joints
+from smplx import SMPL
 
 def get_T_hip_from_smpl(smpl_model, betas):
     """
@@ -120,6 +122,8 @@ def transform_smpl_remain_extrinsic(curr_extrinsic, target_extrinsic, smpl_pose,
 def main(args):
     max_human_sphere_all = 0
     device = torch.device("cuda:0")
+    if not os.path.exists(args.smpl_model_path):
+        raise FileNotFoundError(f"SMPL model path {args.smpl_model_path} does not exist")
     seq = args.seq
     DIR = f"{args.out_dir}/raw_data"
     img_dir = f'{DIR}/{seq}/frames'   
@@ -130,16 +134,25 @@ def main(args):
         img_paths = sorted(glob.glob(f"{img_dir}/*.png"))
     if len(img_paths) == 0:
         img_paths = sorted(glob.glob(f"{img_dir}/*.jpg"))
+    if len(img_paths) == 0:
+        fallback_img_dir = f"{args.out_dir}/data/{seq}/image"
+        img_paths = sorted(glob.glob(f"{fallback_img_dir}/*.png"))
+        if len(img_paths) == 0:
+            img_paths = sorted(glob.glob(f"{fallback_img_dir}/*.jpg"))
+        if len(img_paths) > 0:
+            img_dir = fallback_img_dir
+
+    if len(img_paths) == 0:
+        raise FileNotFoundError(f"No images found in {img_dir} or fallback directory")
 
     # format: [person_id, frame_id, ...]
     trace_file_path = f"{trace_file_dir}/{seq}.npz"
     trace_output = np.load(trace_file_path, allow_pickle=True)["results"][()]
     number_person = trace_output['smpl_betas'].shape[0]
 
-    from smplx import SMPL
     smpl_model_list = []
     for i in range(number_person):
-        smpl_model_list.append(SMPL('../code/lib/smpl/smpl_model', gender="NEUTRAL").to(device))
+        smpl_model_list.append(SMPL(args.smpl_model_path, gender="NEUTRAL").to(device))
     
     input_img = cv2.imread(img_paths[0])
     if args.source == 'custom':
@@ -205,18 +218,26 @@ def main(args):
             os.makedirs(f'{DIR}/{seq}/init_refined_smpl_files')
         init_smpl_dir = f'{DIR}/{seq}/init_smpl_files'
         init_smpl_paths = sorted(glob.glob(f"{init_smpl_dir}/*.pkl"))
+        data_root = Path(args.out_dir)
+        raw_root = data_root / 'raw_data'
         if args.vitpose:
             print("using vitpose")
-            openpose_dir = f'{DIR}/{seq}/vitpose'
-            openpose_paths = sorted(glob.glob(f"{openpose_dir}/*.npy"))
+            openpose_dir = Path(f'{DIR}/{seq}/vitpose')
+            if not openpose_dir.exists() or len(list(openpose_dir.glob('*.npy'))) == 0:
+                openpose_dir = data_root / 'data' / seq / 'vitpose'
+            openpose_paths = sorted(map(str, openpose_dir.glob('*.npy')))
         else:
             print("using openpose")
-            openpose_dir = f'{DIR}/{seq}/openpose'
-            openpose_paths = sorted(glob.glob(f"{openpose_dir}/*.npy"))
+            openpose_dir = Path(f'{DIR}/{seq}/openpose')
+            if not openpose_dir.exists() or len(list(openpose_dir.glob('*.npy'))) == 0:
+                openpose_dir = data_root / 'data' / seq / 'openpose'
+            openpose_paths = sorted(map(str, openpose_dir.glob('*.npy')))
         if args.openpose:
             print("using openpose")
-            openpose_dir_true = f'{DIR}/{seq}/openpose'
-            openpose_paths_true = sorted(glob.glob(f"{openpose_dir_true}/*.npy"))
+            openpose_dir_true = Path(f'{DIR}/{seq}/openpose')
+            if not openpose_dir_true.exists() or len(list(openpose_dir_true.glob('*.npy'))) == 0:
+                openpose_dir_true = data_root / 'data' / seq / 'openpose'
+            openpose_paths_true = sorted(map(str, openpose_dir_true.glob('*.npy')))
 
         opt_num_iters=150
         weight_dict = get_loss_weights()
@@ -237,7 +258,8 @@ def main(args):
             smpl2op_mapping_openpose = torch.tensor(smpl_to_pose(model_type='smpl', use_hands=False, use_face=False,
                                             use_face_contour=False, openpose_format='coco25'), dtype=torch.long).cuda()
         
-        J_regressor_extra9 = np.load('/scratch/izar/cizinsky/venvs/trace/smpl_model_data/J_regressor_extra.npy')
+        smpl_extra_dir = os.path.dirname(args.smpl_model_path)
+        J_regressor_extra9 = np.load(os.path.join(smpl_extra_dir, 'J_regressor_extra.npy'))
         J_regressor_extra9 = torch.tensor(J_regressor_extra9, dtype=torch.float32).cuda()
     elif args.mode == 'final':
         refined_smpl_dir = f'{DIR}/{seq}/init_refined_smpl_files'
@@ -671,5 +693,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--vitpose', action='store_true', help="use vitpose", default=False)
     parser.add_argument('--openpose', action='store_true', help="use openpose", default=False)
+    parser.add_argument(
+        '--smpl_model_path',
+        type=str,
+        default=os.environ.get('SMPL_MODEL_PATH', '/home/cizinsky/trace/smpl_model_data/SMPL_NEUTRAL.pkl'),
+        help="Path to SMPL model file or directory containing SMPL assets"
+    )
     args = parser.parse_args()
     main(args)

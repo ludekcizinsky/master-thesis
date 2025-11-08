@@ -93,7 +93,7 @@ class Trainer:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
 
-        if self.cfg.save_pose_overlays_every_epoch > 0:
+        if self.cfg.save_pose_overlays_every_epoch > 0 and not self.cfg.is_preprocessing:
             baseline_dir = Path(self.cfg.preprocess_dir) / "baseline_smpl_vis"
             if not baseline_dir.exists():
                 raise FileNotFoundError(f"Baseline SMPL visualisations not found: {baseline_dir}")
