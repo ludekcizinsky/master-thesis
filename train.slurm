@@ -145,3 +145,6 @@ cd /home/cizinsky/master-thesis
 
 # GROUP_NAME=v7_weight_025
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=0.25
+
+GROUP_NAME=v7_football
+python training/run.py scene_name=football tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME

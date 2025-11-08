@@ -79,6 +79,7 @@ class Trainer:
             cfg.tids,
         )
         self.checkpoint_dir = self.ckpt_manager.root
+        self.baseline_vis_dir = Path(self.cfg.preprocess_dir) / "baseline_smpl_vis"
 
         if not cfg.resume:
             reset_static = bool(cfg.train_bg)
@@ -92,15 +93,6 @@ class Trainer:
         else:
             self.experiment_dir = Path(cfg.train_dir) / f"{wandb.run.name}_{wandb.run.id}"
         print(f"--- FYI: experiment output dir: {self.experiment_dir}")
-
-        if self.cfg.save_pose_overlays_every_epoch > 0 and not self.cfg.is_preprocessing:
-            baseline_dir = Path(self.cfg.preprocess_dir) / "baseline_smpl_vis"
-            if not baseline_dir.exists():
-                raise FileNotFoundError(f"Baseline SMPL visualisations not found: {baseline_dir}")
-            target_dir = self.experiment_dir / "visualizations" / "smpl"
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            shutil.copytree(baseline_dir, target_dir)
 
         # Load dataset and create dataloader
         mask_path = self.checkpoint_dir / "progressive_sam"
@@ -166,6 +158,10 @@ class Trainer:
             self.smpl_joint_optimizer = None
             self.smpl_pose_optimizer = None
 
+        if self.cfg.save_pose_overlays_every_epoch > 0 and not self.cfg.is_preprocessing:
+            self._ensure_baseline_visualisations()
+            self._copy_baseline_to_experiment()
+
     def _parse_batch(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
         human_masks = batch["human_mask"].to(self.device)  # [B,P,H,W]
@@ -205,6 +201,43 @@ class Trainer:
         if frame_smpl_params is None:
             return None
         return frame_smpl_params if allow_grad else frame_smpl_params.detach()
+
+    def _baseline_has_content(self, directory: Path) -> bool:
+        if not directory.exists():
+            return False
+        return any(directory.rglob("*.png"))
+
+    def _ensure_baseline_visualisations(self):
+        if self._baseline_has_content(self.baseline_vis_dir):
+            print(f"--- FYI: Found cached baseline SMPL visualisations at {self.baseline_vis_dir}")
+            return
+
+        print("--- FYI: Baseline SMPL visualisations not found. Generating now...")
+        target_dir = self.experiment_dir / "visualizations" / "smpl"
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+
+        save_epoch_smpl_overlays(
+            dataset=self.dataset,
+            smpl_params_per_frame=self.smpl_params,
+            experiment_dir=self.experiment_dir,
+            epoch=0,
+            device=self.device,
+            gender=getattr(self.cfg, "smpl_gender", "neutral"),
+            alpha=getattr(self.cfg, "pose_overlay_alpha", 0.6),
+        )
+        if self.baseline_vis_dir.exists():
+            shutil.rmtree(self.baseline_vis_dir)
+        shutil.copytree(target_dir, self.baseline_vis_dir)
+        print(f"--- FYI: Cached baseline SMPL visualisations at {self.baseline_vis_dir}")
+
+    def _copy_baseline_to_experiment(self):
+        if not self._baseline_has_content(self.baseline_vis_dir):
+            return
+        target_dir = self.experiment_dir / "visualizations" / "smpl"
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(self.baseline_vis_dir, target_dir)
 
     @torch.no_grad()
     def evaluate(self, batch: Dict[str, Any], tids: List[int], render_bg: bool):
