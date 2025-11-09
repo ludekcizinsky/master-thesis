@@ -2,7 +2,7 @@
 #SBATCH --job-name=v7_runs_football
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -147,4 +147,4 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=0.25
 
 GROUP_NAME=v7_football
-python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME
+python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, football]' group_name=$GROUP_NAME
