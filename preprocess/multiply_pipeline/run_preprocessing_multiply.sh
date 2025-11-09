@@ -44,7 +44,7 @@ python preprocessing_multiple_trace.py --source custom --seq $seq --mode refine 
 
 echo "---- Scaling images and centering human in 3D space"
 conda deactivate && conda activate $thesis_env
-python preprocessing_multiple_trace.py --source custom --seq $seq --mode final --scale_factor 2
+python preprocessing_multiple_trace.py --source custom --seq $seq --mode final --scale_factor 1
 
 echo "--- Normalize cameras such that all cameras are within the sphere of radius 3"
 conda deactivate && conda activate $thesis_env
