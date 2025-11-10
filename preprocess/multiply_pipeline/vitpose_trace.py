@@ -67,7 +67,9 @@ def main():
     # parser.add_argument('--det_checkpoint', help='Checkpoint file for detection', default='/media/ubuntu/hdd/ViTPose/ViTPose/checkpoints/yolox_x_8x8_300e_coco_20211126_140254-1ef88d67.pth')
     parser.add_argument('--pose_config', help='Config file for pose', default='./vitpose/configs/body/2d_kpt_sview_rgb_img/topdown_heatmap/coco/ViTPose_huge_coco_256x192.py')
     parser.add_argument('--pose_checkpoint', help='Checkpoint file for pose', default='./vitpose/checkpoints/vitpose-h-multi-coco.pth')
-    parser.add_argument('--img-root', type=str, default='', help='Image root')
+    parser.add_argument('--img-root', type=str, required=True, help='Directory containing input frames')
+    parser.add_argument('--init-mask-path', type=str, required=True, help='Directory containing per-person init masks')
+    parser.add_argument('--output-dir', type=str, required=True, help='Directory to store ViTPose outputs')
     # parser.add_argument('--img', type=str, default='', help='Image file')
     parser.add_argument(
         '--show',
@@ -122,33 +124,36 @@ def main():
     # if len(img_paths) == 0:
     #     img_paths = sorted(glob.glob(os.path.join(args.img_root, '*.jpg')))
     
-    raw_frames_path = Path(args.img_root).resolve()
-    seq_name = raw_frames_path.parent.name
-    preprocess_root = raw_frames_path.parent.parent.parent
-
-    img_dir = raw_frames_path
+    img_dir = Path(args.img_root).resolve()
+    if not img_dir.is_dir():
+        raise FileNotFoundError(f"Image directory '{img_dir}' does not exist.")
     imagePaths = sorted(map(str, img_dir.glob('*.png')))
     if len(imagePaths) == 0:
         imagePaths = sorted(map(str, img_dir.glob('*.jpg')))
     if len(imagePaths) == 0:
-        fallback_dir = preprocess_root / 'data' / seq_name / 'image'
-        imagePaths = sorted(map(str, fallback_dir.glob('*.png')))
-        if len(imagePaths) == 0:
-            imagePaths = sorted(map(str, fallback_dir.glob('*.jpg')))
-        if len(imagePaths) == 0:
-            warnings.warn(f'No frames found in {img_dir} or fallback {fallback_dir}', UserWarning)
-        img_dir = fallback_dir
+        raise FileNotFoundError(f"No image files (*.png or *.jpg) found in '{img_dir}'.")
     # imagePaths = sorted(glob.glob(f'{img_dir}/*.png'))
     # imagePaths = op.get_images_on_directory(img_dir)
-    mask_root = raw_frames_path.parent / 'init_mask'
-    maskPath_list = sorted(glob.glob(str(mask_root / '*')))
-    number_person = len(maskPath_list)
-    mask_path_list = [
-        sorted(glob.glob(str(mask_root / f'{i}' / '*.png')))
-        for i in range(number_person)
-    ]
-    if not os.path.exists(f'{img_dir}/../vitpose'):
-            os.makedirs(f'{img_dir}/../vitpose')
+    mask_root = Path(args.init_mask_path).resolve()
+    if not mask_root.exists():
+        raise FileNotFoundError(f"Init mask path '{mask_root}' does not exist.")
+    mask_dirs = sorted([p for p in mask_root.iterdir() if p.is_dir()])
+    if len(mask_dirs) == 0:
+        raise FileNotFoundError(f"No per-person mask directories found inside '{mask_root}'.")
+    mask_path_list = []
+    for mask_dir in mask_dirs:
+        person_masks = sorted(map(str, mask_dir.glob('*.png')))
+        if len(person_masks) == 0:
+            raise FileNotFoundError(f"No mask images found in '{mask_dir}'.")
+        if len(person_masks) != len(imagePaths):
+            raise ValueError(
+                f"Number of masks in '{mask_dir}' ({len(person_masks)}) does not match number of frames ({len(imagePaths)})."
+            )
+        mask_path_list.append(person_masks)
+    number_person = len(mask_path_list)
+
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     for idx, image_name in enumerate(tqdm(imagePaths)):
 
@@ -285,7 +290,7 @@ def main():
                 output_2d[person_i] = poseKeypoints[keypoint_i]
 
         last_output_2d = output_2d
-        np.save(f'{img_dir}/../vitpose/%04d.npy' % idx, output_2d)
+        np.save(output_dir / f"{idx:04d}.npy", output_2d)
         # output_img = datum.cvOutputData
         # output_img = cv2.imread(image_name)
         # show the results
@@ -312,7 +317,7 @@ def main():
             cv2.circle(output_img, (int(center_2D[keypoint_i][0]),int(center_2D[keypoint_i][1])), 10, color_jit, -1)
             cv2.circle(output_img, (int(mask_center_np[person_i][0]),int(mask_center_np[person_i][1])), 10, color_jit, -1)
             
-        cv2.imwrite(f'{img_dir}/../vitpose/%04d.png' % idx, output_img)
+        cv2.imwrite(str(output_dir / f"{idx:04d}.png"), output_img)
 
 
 

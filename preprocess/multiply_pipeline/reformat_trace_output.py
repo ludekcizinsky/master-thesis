@@ -3,6 +3,7 @@ from aitviewer.renderables.smpl import SMPLSequence
 
 import numpy as np
 import os
+from pathlib import Path
 
 CONTACT_COLORS = [[[0.412,0.663,1.0,1.0], [1.0, 0.412, 0.514, 1.0]], [[1.0,0.749,0.412,1.0], [1.0, 0.412, 0.514, 1.0]], [[0.412,1.0,0.663,1.0], [1.0, 0.412, 0.514, 1.0]], [[0.412,0.412,0.663,1.0], [1.0, 0.412, 0.514, 1.0]], [[0.412,0.0,0.0,1.0], [1.0, 0.412, 0.514, 1.0]], [[0.0,0.0,0.663,1.0], [1.0, 0.412, 0.514, 1.0]],[[0.0,0.412,0.0,1.0], [1.0, 0.412, 0.514, 1.0]],[[1.0,0.0,0.0,1.0], [1.0, 0.412, 0.514, 1.0]],[[0.0,1.0,0.0,1.0], [0.0, 0.0, 1.0, 1.0]], [[0.0,0.0,1.0,1.0], [1.0, 0.412, 0.514, 1.0]]]
 
@@ -13,10 +14,34 @@ def process_idx(reorganize_idx, vids=None):
 
     return used_org_inds, per_img_inds
 
+def _resolve_trace_file(output_folder: str, seq: str, explicit_file: str = None) -> Path:
+    trace_dir = Path(output_folder) / "trace_results" / seq
+    if explicit_file:
+        candidate = trace_dir / explicit_file
+        if not candidate.exists():
+            raise FileNotFoundError(f"Trace file '{candidate}' not found.")
+        return candidate
+
+    default_file = trace_dir / "image.npz"
+    if default_file.exists():
+        return default_file
+
+    candidates = sorted(trace_dir.glob("*.npz"))
+    if not candidates:
+        raise FileNotFoundError(f"No trace result files found under '{trace_dir}'.")
+    if len(candidates) == 1:
+        return candidates[0]
+
+    candidate_list = ", ".join([c.name for c in candidates])
+    raise RuntimeError(
+        "Multiple trace result files detected "
+        f"({candidate_list}). Please specify which one to use via --trace_file."
+    )
+
 def main(args):
 
     # render SMPL
-    trace_output = f"{args.output_folder}/trace_results/{args.seq}/image.npz"
+    trace_output = _resolve_trace_file(args.output_folder, args.seq, args.trace_file)
     result = np.load(trace_output, allow_pickle=True)
     smpl_layer = SMPLLayer(model_type="smpl", gender="neutral")
     used_org_inds, per_img_person_inds = process_idx(result['outputs'][()]['reorganize_idx'])
@@ -96,4 +121,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--seq', type=str, default="seq_name", help='seq name')
     parser.add_argument("--output_folder", type=str, default="/scratch/izar/cizinsky/multiply-output/preprocessing", help="output folder")
+    parser.add_argument("--trace_file", type=str, default=None, help="Optional trace npz filename inside trace_results/seq")
     main(parser.parse_args())

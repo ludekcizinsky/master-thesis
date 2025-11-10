@@ -126,7 +126,8 @@ def main(args):
         raise FileNotFoundError(f"SMPL model path {args.smpl_model_path} does not exist")
     seq = args.seq
     DIR = f"{args.out_dir}/raw_data"
-    img_dir = f'{DIR}/{seq}/frames'   
+    img_dir = args.images_dir if args.images_dir else f'{DIR}/{seq}/frames'
+    img_dir = os.path.abspath(img_dir)
     trace_file_dir = f'{DIR}/{seq}/trace'
     if args.source == 'hi4d':
         img_paths = sorted(glob.glob(f"{img_dir}/*.jpg"))
@@ -491,7 +492,7 @@ def main(args):
                     else:
                         previous_trans = torch.tensor(last_trans_list[person_i], dtype=torch.float32, requires_grad=False, device=device)
                         previous_trans = previous_trans[None]
-                    loop = tqdm(range(opt_num_iters))
+                    loop = range(opt_num_iters)
                     for it in loop:
                         optimizer.zero_grad()
 
@@ -690,6 +691,8 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, help="mask mode or refine mode: mask or refine or final")
     # scale factor for the input image
     parser.add_argument('--scale_factor', type=int, default=1, help="scale factor for the input image")
+    # override image directory
+    parser.add_argument('--images_dir', type=str, default=None, help="Path to source image frames; overrides default raw_data/<seq>/frames")
 
     parser.add_argument('--vitpose', action='store_true', help="use vitpose", default=False)
     parser.add_argument('--openpose', action='store_true', help="use openpose", default=False)
