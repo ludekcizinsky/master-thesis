@@ -146,5 +146,8 @@ cd /home/cizinsky/master-thesis
 # GROUP_NAME=v7_weight_025
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME depth_loss.depth_order_weight=0.25
 
-GROUP_NAME=v7_football
-python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, football]' group_name=$GROUP_NAME
+# GROUP_NAME=v7_football
+# python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, football]' group_name=$GROUP_NAME
+
+GROUP_NAME=v7_hi4d_pair16_jump16_cam4
+python training/run.py scene_name=hi4d_pair16_jump16_cam4 tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, hi4d_pair16_jump16_cam4]' group_name=$GROUP_NAME

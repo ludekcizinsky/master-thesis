@@ -898,7 +898,7 @@ class Trainer:
     def train_loop(self, max_epochs: int = 1):
         iteration = 0
 
-        with tqdm(total=None, desc="Training Progress", dynamic_ncols=True) as pbar:
+        with tqdm(total=max_epochs, desc="Training Progress", dynamic_ncols=True) as pbar:
             for epoch in range(max_epochs):
                 self.current_epoch = epoch
                 if self.progressive_sam.should_update(epoch):
@@ -927,8 +927,7 @@ class Trainer:
                         if logs.get("smpl_optim/step", 0.0) > 0:
                             smpl_epoch_updated = True
 
-                    # Update progress bar
-                    pbar.update(1)
+                    # Update progress bar display
                     loss_display = logs.get("loss/combined", 0.0)
                     pbar.set_postfix({
                         "loss": f"{loss_display:.4f}",
@@ -976,6 +975,7 @@ class Trainer:
                         render_bg=self.cfg.train_bg,
                         epoch=completed_epochs,
                     )
+                pbar.update(1)
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
             self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
