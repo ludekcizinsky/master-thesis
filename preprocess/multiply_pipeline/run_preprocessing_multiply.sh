@@ -4,8 +4,8 @@ set -e
 # parameter setup
 seq="hi4d_pair16_jump16_cam4" # name of the sequence
 images_folder_path="/scratch/izar/cizinsky/ait_datasets/hi4d/pair16/jump16/images/4"
-source="custom" # "custom" if use custom data
 number=2 # number of people
+source="custom" # "custom" if use custom data
 scripts_path="/home/cizinsky/master-thesis/preprocess/multiply_pipeline" # absolute path of preprocessing scripts
 folder_path="/scratch/izar/cizinsky/multiply-output/preprocessing" # absolute path of preprocessing folder
 trace_file_name="$(basename "$images_folder_path").npz"
@@ -58,28 +58,28 @@ python normalize_cameras_trace.py --input_cameras_file $folder_path/data/$seq/ca
                             --output_cameras_file $folder_path/data/$seq/cameras_normalize.npz \
                             --max_human_sphere_file $folder_path/data/$seq/max_human_sphere.npy
 
-echo "---- Running unidepth to obtain per frame depth maps"
-conda activate $unidepth_env
-export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
-CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
---scene-name $seq \
---img-path $folder_path/data/$seq/image \
---outdir $folder_path/data/$seq/unidepth
-
 echo "---- Running mask refinement with SAM"
 conda deactivate && conda activate $thesis_env
 cd /home/cizinsky/master-thesis
 python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true 
 
-echo "---- Converting unidepth to point clouds"
-conda deactivate && conda activate thesis
-cd /home/cizinsky/master-thesis/preprocess/multiply_pipeline
-python unidepth_to_cloud.py \
-  --preprocess_dir /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq \
-  --unidepth_dir   /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth \
-  --mask_dir       /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/sam2_masks \
-  --output_npz /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth_cloud_static_scaled.npz \
-  --depth_scale 0.8
+# echo "---- Running unidepth to obtain per frame depth maps"
+# conda activate $unidepth_env
+# export PYTHONPATH="${PYTHONPATH}:/home/cizinsky/master-thesis/preprocess/multiply_pipeline/unidepth"
+# CUDA_VISIBLE_DEVICES=0 python unidepth/scripts/demo_mega-sam.py \
+# --scene-name $seq \
+# --img-path $folder_path/data/$seq/image \
+# --outdir $folder_path/data/$seq/unidepth
 
-echo "---- Running visualization of joined results"
-python joined_viz.py --sequence $seq
+# echo "---- Converting unidepth to point clouds"
+# conda deactivate && conda activate thesis
+# cd /home/cizinsky/master-thesis/preprocess/multiply_pipeline
+# python unidepth_to_cloud.py \
+  # --preprocess_dir /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq \
+  # --unidepth_dir   /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth \
+  # --mask_dir       /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/sam2_masks \
+  # --output_npz /scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq/unidepth_cloud_static_scaled.npz \
+  # --depth_scale 0.8
+
+# echo "---- Running visualization of joined results"
+# python joined_viz.py --sequence $seq
