@@ -895,13 +895,11 @@ class Trainer:
         wandb.log(dict_to_log)
 
 
-    def train_loop(self, iters: int = 2000):
+    def train_loop(self, max_epochs: int = 1):
         iteration = 0
-        epoch = 0
 
-
-        with tqdm(total=iters, desc="Training Progress", dynamic_ncols=True) as pbar:
-            while iteration < iters:
+        with tqdm(total=None, desc="Training Progress", dynamic_ncols=True) as pbar:
+            for epoch in range(max_epochs):
                 self.current_epoch = epoch
                 if self.progressive_sam.should_update(epoch):
                     self.progressive_sam.update_masks(self.dataset, self.all_gs, self.lbs_weights, epoch=epoch)
@@ -948,34 +946,35 @@ class Trainer:
                     if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
                         self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
 
-                    if iteration >= iters:
-                        break
-
-                epoch += 1
                 self.is_smpl_optim_enabled = self.current_epoch < self.cfg.pose_opt_end_epoch
                 if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.pose_opt_end_epoch):
                     print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
 
+                completed_epochs = epoch + 1
                 if (
                     smpl_epoch_updated
                     and self.cfg.save_pose_overlays_every_epoch > 0
-                    and epoch % self.cfg.save_pose_overlays_every_epoch == 0
+                    and completed_epochs % self.cfg.save_pose_overlays_every_epoch == 0
                 ):
                     save_epoch_smpl_overlays(
                         dataset=self.dataset,
                         smpl_params_per_frame=self.smpl_params,
                         experiment_dir=self.experiment_dir,
-                        epoch=epoch,
+                        epoch=completed_epochs,
                         device=self.device,
                         gender=getattr(self.cfg, "smpl_gender", "neutral"),
                         alpha=getattr(self.cfg, "pose_overlay_alpha", 0.6),
                     )
 
-                if self.cfg.eval_every_epochs > 0 and (epoch % self.cfg.eval_every_epochs == 0) and epoch > 0:
+                if (
+                    self.cfg.eval_every_epochs > 0
+                    and completed_epochs % self.cfg.eval_every_epochs == 0
+                    and completed_epochs > 0
+                ):
                     self.evaluation_loop(
                         selected_tids=list(self.cfg.tids),
                         render_bg=self.cfg.train_bg,
-                        epoch=epoch,
+                        epoch=completed_epochs,
                     )
 
         if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
@@ -993,7 +992,7 @@ def main(cfg: DictConfig):
         return
 
     print("ℹ️ Starting training")
-    trainer.train_loop(iters=cfg.iters)
+    trainer.train_loop(max_epochs=cfg.max_epochs)
     wandb.finish()
     print("✅ Training completed.\n")
 
