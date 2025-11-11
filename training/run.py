@@ -768,9 +768,11 @@ class Trainer:
         if len(selected_tids) > 0:
             tid_video_metrics = dict()
             for tid in selected_tids:
-                save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}" / f"epoch_{epoch:04d}"
+                save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / f"tid_{tid}" / f"epoch_{epoch:04d}"
                 save_qual_rgb_dir = save_qual_dir / "rgb"
+                save_qual_mask_dir = save_qual_dir / "gt_mask"
                 os.makedirs(save_qual_rgb_dir, exist_ok=True)
+                os.makedirs(save_qual_mask_dir, exist_ok=True)
 
                 tid_idx = self.cfg.tids.index(tid)
                 tid_metrics = list()
@@ -791,6 +793,11 @@ class Trainer:
                     img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                     img_pil = Image.fromarray(img_np)
                     img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
+
+                    # save the mask image
+                    mask_np = (tid_masks[0].cpu().numpy() * 255).astype("uint8")
+                    mask_pil = Image.fromarray(mask_np)
+                    mask_pil.save(save_qual_mask_dir / f"{fid:04d}.png")
                 
                 # Aggregate metrics
                 tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
@@ -803,9 +810,11 @@ class Trainer:
 
         # --- Joined human evaluation (all selected tids together)
         if len(selected_tids) > 0:
-            save_qual_dir = self.experiment_dir / "visualizations" / "all_humans" / f"epoch_{epoch:04d}"
+            save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / "all" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
+            save_qual_mask_dir = save_qual_dir / "gt_mask"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
+            os.makedirs(save_qual_mask_dir, exist_ok=True)
 
             joined_tid_metrics = list()
             for batch in eval_dataloader:
@@ -825,6 +834,11 @@ class Trainer:
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                 img_pil = Image.fromarray(img_np)
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
+
+                # save the mask image
+                mask_np = (human_masks_joined[0].cpu().numpy() * 255).astype("uint8")
+                mask_pil = Image.fromarray(mask_np)
+                mask_pil.save(save_qual_mask_dir / f"{fid:04d}.png")
             
             # aggregate metrics 
             joined_tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(joined_tid_metrics)
