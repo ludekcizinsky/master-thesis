@@ -187,7 +187,7 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_ma
 
     resume_enabled = bool(getattr(cfg, "resume", False)) and checkpoint_manager is not None
     if resume_enabled:
-        loaded_params, loaded_iteration = checkpoint_manager.load_smpl(device=device)
+        loaded_params, loaded_epoch = checkpoint_manager.load_smpl(device=device)
         if loaded_params is not None:
             missing_frames = [fid for fid in range(len(dataset)) if fid not in loaded_params]
             if missing_frames:
@@ -196,10 +196,10 @@ def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_ma
             else:
                 smpl_params = {fid: loaded_params[fid] for fid in range(len(dataset))}
                 params_list = [smpl_params[fid] for fid in range(len(dataset))]
-                if loaded_iteration is not None and loaded_iteration >= 0:
-                    print(f"--- FYI: Loaded SMPL params from iteration {loaded_iteration}.")
+                if loaded_epoch is not None and loaded_epoch >= 0:
+                    print(f"--- FYI: Loaded SMPL params from epoch {loaded_epoch}.")
                 else:
-                    print("--- FYI: Loaded SMPL params from checkpoint with unknown iteration.")
+                    print("--- FYI: Loaded SMPL params from checkpoint with unknown epoch.")
         else:
             print("--- FYI: Resume enabled but no SMPL checkpoint found; initializing SMPL params from scratch.")
             smpl_params, params_list = _init_from_dataset()
@@ -357,12 +357,12 @@ def create_splats_with_optimizers(device, cfg, ds, checkpoint_manager=None):
     if cfg.train_bg:
         static_gs = None
         if resume_enabled:
-            static_gs, static_iter = checkpoint_manager.load_static(device=device)
+            static_gs, static_epoch = checkpoint_manager.load_static(device=device)
             if static_gs is not None:
-                if static_iter is not None and static_iter >= 0:
-                    print(f"--- FYI: Loaded static splats from iteration {static_iter}.")
+                if static_epoch is not None and static_epoch >= 0:
+                    print(f"--- FYI: Loaded static splats from epoch {static_epoch}.")
                 else:
-                    print(f"--- FYI: Loaded static splats from checkpoint with unknown iteration.")
+                    print(f"--- FYI: Loaded static splats from checkpoint with unknown epoch.")
 
         if static_gs is None:
             static_gs = init_3dgs_background(
@@ -381,19 +381,19 @@ def create_splats_with_optimizers(device, cfg, ds, checkpoint_manager=None):
         loaded_summary = []
         if resume_enabled:
             for idx, tid in enumerate(cfg.tids):
-                loaded_pdict, loaded_iter = checkpoint_manager.load_human(tid, device=device)
+                loaded_pdict, loaded_epoch = checkpoint_manager.load_human(tid, device=device)
                 if loaded_pdict is not None:
                     dynamic_gs_per_human[idx] = loaded_pdict
-                    loaded_summary.append((tid, loaded_iter, loaded_pdict["means"].shape[0]))
+                    loaded_summary.append((tid, loaded_epoch, loaded_pdict["means"].shape[0]))
 
         n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
         if loaded_summary:
             loaded_ids = {tid for tid, _, _ in loaded_summary}
-            for tid, iteration, count in loaded_summary:
-                if iteration is not None and iteration >= 0:
-                    print(f"--- FYI: Loaded {count} splats for human {tid} from iteration {iteration}.")
+            for tid, epoch, count in loaded_summary:
+                if epoch is not None and epoch >= 0:
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from epoch {epoch}.")
                 else:
-                    print(f"--- FYI: Loaded {count} splats for human {tid} from checkpoint with unknown iteration.")
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from checkpoint with unknown epoch.")
             remaining = [(idx, tid) for idx, tid in enumerate(cfg.tids) if tid not in loaded_ids]
             if remaining:
                 total_initialized = sum(dynamic_gs_per_human[idx]["means"].shape[0] for idx, _ in remaining)

@@ -14,7 +14,7 @@ train_dir: ${output_dir}/training
 # --- Training settings
 num_workers: 8  # number of data loading workers
 max_epochs: 400  # maximum number of training epochs
-save_freq: 5000 # frequency of checkpointing
+save_freq: 50 # frequency of checkpointing
 resume: false
 tids: [0, 1]
 cloud_downsample: 30

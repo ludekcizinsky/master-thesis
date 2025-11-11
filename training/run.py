@@ -942,9 +942,6 @@ class Trainer:
                         logs.update(psam_logs)
                     wandb.log(logs)
 
-                    if self.cfg.save_freq > 0 and (iteration % self.cfg.save_freq == 0):
-                        self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
-
                 self.is_smpl_optim_enabled = self.current_epoch < self.cfg.pose_opt_end_epoch
                 if not self.is_smpl_optim_enabled and (self.current_epoch == self.cfg.pose_opt_end_epoch):
                     print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
@@ -975,10 +972,13 @@ class Trainer:
                         render_bg=self.cfg.train_bg,
                         epoch=completed_epochs,
                     )
+
+                if self.cfg.save_freq > 0 and completed_epochs % self.cfg.save_freq == 0:
+                    self.ckpt_manager.save(self.all_gs, completed_epochs, smpl_params=self.smpl_params)
                 pbar.update(1)
 
-        if self.cfg.save_freq > 0 and iteration % self.cfg.save_freq != 0:
-            self.ckpt_manager.save(self.all_gs, iteration, smpl_params=self.smpl_params)
+        if self.cfg.save_freq > 0 and max_epochs > 0 and (max_epochs % self.cfg.save_freq != 0):
+            self.ckpt_manager.save(self.all_gs, max_epochs, smpl_params=self.smpl_params)
         
 
 @hydra.main(config_path="../configs", config_name="train.yaml", version_base=None)

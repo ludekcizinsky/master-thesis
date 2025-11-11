@@ -14,7 +14,7 @@ def _resolve_latest_checkpoint_path(ckpt_dir: Path) -> Path:
         if candidate.exists():
             return candidate
 
-    pt_files = sorted(ckpt_dir.glob("iter_*.pt"))
+    pt_files = sorted(ckpt_dir.glob("epoch_*.pt"))
     if not pt_files:
         raise FileNotFoundError(f"No checkpoint files found in {ckpt_dir}")
     return pt_files[-1]
