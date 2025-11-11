@@ -2,8 +2,8 @@
 set -e
 
 # parameter setup
-seq="hi4d_pair16_jump16_cam4" # name of the sequence
-images_folder_path="/scratch/izar/cizinsky/ait_datasets/hi4d/pair16/jump16/images/4"
+seq="hi4d_pair00_1_dance00_cam76" # name of the sequence
+images_folder_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/images/76"
 number=2 # number of people
 source="custom" # "custom" if use custom data
 scripts_path="/home/cizinsky/master-thesis/preprocess/multiply_pipeline" # absolute path of preprocessing scripts

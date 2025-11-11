@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, Union
 
 import torch
 import torch.nn.functional as F

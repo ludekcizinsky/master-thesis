@@ -544,7 +544,7 @@ def main(args):
                         l_str = 'Iter: %d' % it
                         for k in loss:
                             l_str += ', %s: %0.4f' % (k, weight_dict[k](loss[k], it).mean().item())
-                            loop.set_description(l_str)
+                            # loop.set_description(l_str)
 
                 smpl_mesh = trimesh.Trimesh(smpl_verts, smpl_model_list[person_i].faces, process=False)
                 R = torch.tensor(cam_extrinsics[:3, :3])[None].float()
