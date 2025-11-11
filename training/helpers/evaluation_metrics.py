@@ -92,19 +92,62 @@ def lpips(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor) -> t
     lpips_vals = torch.where(denom < 1e-5, torch.zeros_like(lpips_vals), lpips_vals)
     return lpips_vals
 
+def segmentation_mask_metrics(
+    gt_masks: torch.Tensor,
+    pred_masks: torch.Tensor,
+) -> Dict[str, torch.Tensor]:
+    """
+    Compute IoU, F1, and Recall for each sample in a batch of boolean masks.
+    """
+
+    if gt_masks.shape != pred_masks.shape:
+        raise ValueError(f"Mask shapes must match. Got {gt_masks.shape} vs {pred_masks.shape}.")
+
+    gt_flat = gt_masks.reshape(gt_masks.shape[0], -1).float()
+    pred_flat = pred_masks.reshape(pred_masks.shape[0], -1).float()
+
+    tp = (pred_flat * gt_flat).sum(dim=1)
+    fp = (pred_flat * (1 - gt_flat)).sum(dim=1)
+    fn = ((1 - pred_flat) * gt_flat).sum(dim=1)
+
+    union = tp + fp + fn
+    safe_union = union.clamp_min(1e-6)
+    iou_vals = tp / safe_union
+
+    denom_f1 = (2 * tp + fp + fn).clamp_min(1e-6)
+    f1_vals = (2 * tp) / denom_f1
+
+    denom_recall = (tp + fn).clamp_min(1e-6)
+    recall_vals = tp / denom_recall
+
+    zero_mask = (union < 1e-6)
+    iou_vals = torch.where(zero_mask, torch.zeros_like(iou_vals), iou_vals)
+    f1_vals = torch.where(zero_mask, torch.zeros_like(f1_vals), f1_vals)
+    recall_vals = torch.where(zero_mask, torch.zeros_like(recall_vals), recall_vals)
+
+    return {"segm_iou": iou_vals, "segm_f1": f1_vals, "segm_recall": recall_vals}
+
 
 def compute_all_metrics(
     images: torch.Tensor,
     masks: torch.Tensor,
     renders: torch.Tensor,
+    pred_masks: Optional[torch.Tensor] = None,
 ) -> dict[str, torch.Tensor]:
-    """Return per-sample masked SSIM/PSNR/LPIPS metrics."""
-    return {
+    
+    all_metrics = dict() 
+    rendering_metrics = {
         "ssim": ssim(images, masks, renders),
         "psnr": psnr(images, masks, renders),
         "lpips": lpips(images, masks, renders),
     }
+    all_metrics.update(rendering_metrics)
 
+    if pred_masks is not None:
+        segmentation_metrics = segmentation_mask_metrics(masks, pred_masks)
+        all_metrics.update(segmentation_metrics)
+    
+    return all_metrics
 
 def aggregate_batch_tid_metric_dicts(metric_dicts: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """Concat per-sample metrics across calls, then average each metric."""

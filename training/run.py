@@ -757,11 +757,11 @@ class Trainer:
     def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
         if self.cfg.gt_seg_masks_dir is None:
             mask_path = Path(self.cfg.preprocess_dir) / "sam2_masks"
-            gt_provided = False
+            gt_mask_provided = False
         else:
             mask_path = Path(self.cfg.gt_seg_masks_dir)
-            gt_provided = True
-        self.dataset = build_dataset(self.cfg, mask_path=mask_path, gt_provided=gt_provided)
+            gt_mask_provided = True
+        self.dataset = build_dataset(self.cfg, mask_path=mask_path, gt_provided=gt_mask_provided)
         eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
 
         # --- Individual human evaluations
@@ -773,6 +773,9 @@ class Trainer:
                 save_qual_mask_dir = save_qual_dir / "gt_mask"
                 os.makedirs(save_qual_rgb_dir, exist_ok=True)
                 os.makedirs(save_qual_mask_dir, exist_ok=True)
+                if gt_mask_provided:
+                    save_qual_pred_mask_dir = save_qual_dir / "pred_mask"
+                    os.makedirs(save_qual_pred_mask_dir, exist_ok=True)
 
                 tid_idx = self.cfg.tids.index(tid)
                 tid_metrics = list()
@@ -781,11 +784,21 @@ class Trainer:
                     tid_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
                     colors, _ = self.evaluate(batch, [tid], render_bg=False)
 
-                    # Compute quantitative metrics
+                    # Load predicted masks if available to compute segmentation metrics
+                    if gt_mask_provided:
+                        pred_masks_all = ProgressiveSAMManager._load_entry_from_disk(
+                            self.progressive_sam.checkpoint_dir,  fid, device=self.device
+                        ).refined
+                        pred_masks = pred_masks_all[tid_idx, ...].unsqueeze(0)  # [B,H,W]
+                    else:
+                        pred_masks = None
+ 
+                    # Compute quantitative rendering metrics
                     metrics = compute_all_metrics(
                         images=images,
                         masks=tid_masks,
                         renders=colors,
+                        pred_masks=pred_masks,
                     )
                     tid_metrics.append(metrics)
 
@@ -798,6 +811,12 @@ class Trainer:
                     mask_np = (tid_masks[0].cpu().numpy() * 255).astype("uint8")
                     mask_pil = Image.fromarray(mask_np)
                     mask_pil.save(save_qual_mask_dir / f"{fid:04d}.png")
+
+                    # if pred masks provided also save them
+                    if pred_masks is not None:
+                        pred_mask_np = (pred_masks[0].cpu().numpy() * 255).astype("uint8")
+                        pred_mask_pil = Image.fromarray(pred_mask_np)
+                        pred_mask_pil.save(save_qual_pred_mask_dir / f"{fid:04d}.png")
                 
                 # Aggregate metrics
                 tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
@@ -815,6 +834,9 @@ class Trainer:
             save_qual_mask_dir = save_qual_dir / "gt_mask"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
             os.makedirs(save_qual_mask_dir, exist_ok=True)
+            if gt_mask_provided:
+                save_qual_pred_mask_dir = save_qual_dir / "pred_mask"
+                os.makedirs(save_qual_pred_mask_dir, exist_ok=True)
 
             joined_tid_metrics = list()
             for batch in eval_dataloader:
@@ -822,11 +844,21 @@ class Trainer:
                 human_masks_joined = (human_masks.sum(dim=1).clamp(0.0, 1.0))  # [B,H,W] 
                 colors, _ = self.evaluate(batch, selected_tids, render_bg=False)
 
+                # Load predicted masks if available to compute segmentation metrics
+                if gt_mask_provided:
+                    pred_masks_all = ProgressiveSAMManager._load_entry_from_disk(
+                        self.progressive_sam.checkpoint_dir, fid, device=self.device
+                    ).refined
+                    pred_masks_joined = (pred_masks_all.sum(dim=0).clamp(0.0, 1.0)).unsqueeze(0)  # [B,H,W]
+                else:
+                    pred_masks_joined = None
+
                 # Compute quantitative metrics
                 metrics = compute_all_metrics(
                     images=images,
                     masks=human_masks_joined,
                     renders=colors,
+                    pred_masks=pred_masks_joined,
                 )
                 joined_tid_metrics.append(metrics)
 
@@ -839,6 +871,12 @@ class Trainer:
                 mask_np = (human_masks_joined[0].cpu().numpy() * 255).astype("uint8")
                 mask_pil = Image.fromarray(mask_np)
                 mask_pil.save(save_qual_mask_dir / f"{fid:04d}.png")
+
+                # if pred masks provided also save them
+                if pred_masks_joined is not None:
+                    pred_mask_np = (pred_masks_joined[0].cpu().numpy() * 255).astype("uint8")
+                    pred_mask_pil = Image.fromarray(pred_mask_np)
+                    pred_mask_pil.save(save_qual_pred_mask_dir / f"{fid:04d}.png")
             
             # aggregate metrics 
             joined_tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(joined_tid_metrics)
