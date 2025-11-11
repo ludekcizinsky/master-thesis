@@ -2,8 +2,39 @@
 set -e
 
 # parameter setup
-seq="hi4d_pair00_1_dance00_cam76" # name of the sequence
-images_folder_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/images/76"
+usage() {
+  echo "Usage: $0 --seq <sequence_name> --images-dir <path_to_images>"
+  exit 1
+}
+
+seq=""
+images_folder_path=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --seq)
+      seq="$2"
+      shift 2
+      ;;
+    --images-dir|--images_folder_path)
+      images_folder_path="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      usage
+      ;;
+  esac
+done
+
+if [[ -z "$seq" || -z "$images_folder_path" ]]; then
+  echo "Error: --seq and --images-dir are required."
+  usage
+fi
+
 number=2 # number of people
 source="custom" # "custom" if use custom data
 scripts_path="/home/cizinsky/master-thesis/preprocess/multiply_pipeline" # absolute path of preprocessing scripts
