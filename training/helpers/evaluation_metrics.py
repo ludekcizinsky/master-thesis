@@ -5,10 +5,13 @@ import torch.nn.functional as F
 import kornia
 import pyiqa
 
+from training.smpl_deformer.smpl_server import SMPLServer
+
 
 # Cache the LPIPS metric instance so we initialise it only once.
 # Cached LPIPS metric instance; built lazily on first use.
 _LPIPS_METRIC: Optional[torch.nn.Module] = None
+_SMPL_METRIC_SERVER: Optional[SMPLServer] = None
 
 
 def _get_lpips_net(device: torch.device) -> torch.nn.Module:
@@ -19,6 +22,13 @@ def _get_lpips_net(device: torch.device) -> torch.nn.Module:
             "lpips", device=device, net="vgg", spatial=True, as_loss=False
         ).eval()
     return _LPIPS_METRIC.to(device)
+
+
+def _get_smpl_metric_server() -> SMPLServer:
+    global _SMPL_METRIC_SERVER
+    if _SMPL_METRIC_SERVER is None:
+        _SMPL_METRIC_SERVER = SMPLServer().eval()
+    return _SMPL_METRIC_SERVER
 
 
 def _ensure_nchw(t: torch.Tensor) -> torch.Tensor:
@@ -126,6 +136,51 @@ def segmentation_mask_metrics(
     recall_vals = torch.where(zero_mask, torch.zeros_like(recall_vals), recall_vals)
 
     return {"segm_iou": iou_vals, "segm_f1": f1_vals, "segm_recall": recall_vals}
+
+
+def _smpl_params_to_joints(params: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """
+    Convert SMPL parameter tensor [B, P, 86] to joint tensor [B, P, J, 3].
+    """
+
+    b, p, _ = params.shape
+    flat = params.reshape(-1, params.shape[-1]).to(device=device, dtype=torch.float32)
+    smpl_server = _get_smpl_metric_server()
+
+    with torch.no_grad():
+        outputs = smpl_server(flat, absolute=True)
+        joints = outputs["smpl_jnts"]
+
+    return joints.reshape(b, p, joints.shape[1], 3)
+
+
+def mpjpe_from_smpl_params(
+    gt_params: torch.Tensor,
+    pred_params: torch.Tensor,
+    normalization_factor: float = 1.0,
+    output_units: str = "m",
+) -> torch.Tensor:
+    """
+    Compute MPJPE per (frame, person) pair given SMPL parameter tensors of shape (B, P, 86).
+    Returns a tensor of shape (B*P,) in the same units as the inputs.
+    """
+
+    if gt_params.shape != pred_params.shape:
+        raise ValueError(f"SMPL parameter shapes must match. Got {gt_params.shape} vs {pred_params.shape}.")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gt_joints = _smpl_params_to_joints(gt_params, device)
+    pred_joints = _smpl_params_to_joints(pred_params, device)
+
+    diff = pred_joints - gt_joints
+    per_sample = diff.norm(dim=-1).mean(dim=-1)  # [B, P]
+    values = per_sample.reshape(-1) * float(normalization_factor)
+
+    if output_units not in {"m", "mm"}:
+        raise ValueError("output_units must be either 'm' or 'mm'")
+    if output_units == "mm":
+        values = values * 1000.0
+    return values
 
 
 def compute_all_metrics(
