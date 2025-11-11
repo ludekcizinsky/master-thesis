@@ -1,14 +1,55 @@
 import os
 from pathlib import Path
-from typing import List
-import torch
-from torch.utils.data import Dataset, DataLoader
+from typing import List, Sequence, Union
+
 import numpy as np
+import torch
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 from training.helpers.geom_utils import load_K_Rt_from_P
 from training.helpers.progressive_sam import ProgressiveSAMManager
 
-from PIL import Image
+
+class Hi4DDataset:
+    def __init__(self, mask_root: Union[str, Path]):
+        self.mask_root = Path(mask_root)
+        if not self.mask_root.exists():
+            raise FileNotFoundError(f"Mask root '{self.mask_root}' does not exist.")
+
+        self.person_dirs: Sequence[Path] = sorted(
+            [d for d in self.mask_root.iterdir() if d.is_dir() and d.name.isdigit()],
+            key=lambda d: int(d.name),
+        )
+        if not self.person_dirs:
+            raise FileNotFoundError(f"No person-id subdirectories found under '{self.mask_root}'.")
+
+        person_files_sorted_ascending = sorted(list(self.person_dirs[0].glob("*.png")))
+        sample_file = person_files_sorted_ascending[0] if person_files_sorted_ascending else None
+        if sample_file is None:
+            raise FileNotFoundError(f"No PNG files found in '{self.person_dirs[0]}'.")
+        self.frame_name_width = len(sample_file.stem)
+        self.seg_mask_dir_offset = int(sample_file.stem)
+
+
+    def load_segmentation_masks(self, frame_id: int) -> torch.Tensor:
+        """
+        Load per-person segmentation masks for a given frame, ordered by person id.
+        Returns a tensor shaped [P, H, W] with boolean masks.
+        """
+
+        masks = []
+        target_frame = self.seg_mask_dir_offset + frame_id
+        for person_dir in self.person_dirs:
+            frame_path = person_dir / f"{target_frame:0{self.frame_name_width}d}.png"
+            if not frame_path.exists():
+                raise FileNotFoundError(f"Mask for frame {target_frame} not found in '{person_dir}'.")
+
+            mask_img = Image.open(frame_path).convert("L")
+            mask_np = np.array(mask_img) > 127
+            masks.append(torch.from_numpy(mask_np.astype(np.bool_)))
+
+        return torch.stack(masks, dim=0)
 
 
 class FullSceneDataset(Dataset):
@@ -19,11 +60,16 @@ class FullSceneDataset(Dataset):
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False):
+    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False, gt_provided: bool = False):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
         self.train_bg = train_bg
         self.mask_path = mask_path
+        self.gt_provided = gt_provided
+        if self.gt_provided and "hi4d" in str(self.mask_path).lower():
+            self.mask_loader = Hi4DDataset(self.mask_path)
+        else:
+            self.mask_loader = None
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
@@ -114,11 +160,14 @@ class FullSceneDataset(Dataset):
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
         # Human masks
-        mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
-        if mask_entry is not None:
-            human_masks = mask_entry.refined
+        if self.mask_loader is not None:
+            human_masks = self.mask_loader.load_segmentation_masks(frame_id=idx)  # [P,H,W]
         else:
-            human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
+            mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
+            if mask_entry is not None:
+                human_masks = mask_entry.refined
+            else:
+                human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
 
         # Camera 
         # - Extrinsics
@@ -158,13 +207,14 @@ class FullSceneDataset(Dataset):
 
 
 
-def build_dataset(cfg, mask_path: Path) -> Dataset:
+def build_dataset(cfg, mask_path: Path, gt_provided: bool = False) -> Dataset:
     dataset = FullSceneDataset(
         preprocess_dir=Path(cfg.preprocess_dir),
         tids=cfg.tids,
         mask_path=mask_path,
         cloud_downsample=cfg.cloud_downsample,
         train_bg=cfg.train_bg,
+        gt_provided=gt_provided,
     )
     return dataset
 

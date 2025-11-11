@@ -755,8 +755,13 @@ class Trainer:
         return total_loss / pair_count
 
     def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
-        mask_path = Path(self.cfg.preprocess_dir) / "sam2_masks"
-        self.dataset = build_dataset(self.cfg, mask_path=mask_path)
+        if self.cfg.gt_seg_masks_dir is None:
+            mask_path = Path(self.cfg.preprocess_dir) / "sam2_masks"
+            gt_provided = False
+        else:
+            mask_path = Path(self.cfg.gt_seg_masks_dir)
+            gt_provided = True
+        self.dataset = build_dataset(self.cfg, mask_path=mask_path, gt_provided=gt_provided)
         eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
 
         # --- Individual human evaluations
@@ -765,16 +770,14 @@ class Trainer:
             for tid in selected_tids:
                 save_qual_dir = self.experiment_dir / "visualizations" / f"tid_{tid}" / f"epoch_{epoch:04d}"
                 save_qual_rgb_dir = save_qual_dir / "rgb"
-                save_qual_depth_dir = save_qual_dir / "depth"
                 os.makedirs(save_qual_rgb_dir, exist_ok=True)
-                os.makedirs(save_qual_depth_dir, exist_ok=True)
 
                 tid_idx = self.cfg.tids.index(tid)
                 tid_metrics = list()
                 for batch in eval_dataloader:
                     images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                     tid_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
-                    colors, depths = self.evaluate(batch, [tid], render_bg=False)
+                    colors, _ = self.evaluate(batch, [tid], render_bg=False)
 
                     # Compute quantitative metrics
                     metrics = compute_all_metrics(
@@ -788,11 +791,6 @@ class Trainer:
                     img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                     img_pil = Image.fromarray(img_np)
                     img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
-
-                    # save the depth map
-                    depth_viz = colourise_depth(depths[0], self.cfg)
-                    depth_pil = Image.fromarray(depth_viz)
-                    depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
                 
                 # Aggregate metrics
                 tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
@@ -807,15 +805,13 @@ class Trainer:
         if len(selected_tids) > 0:
             save_qual_dir = self.experiment_dir / "visualizations" / "all_humans" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
-            save_qual_depth_dir = save_qual_dir / "depth"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
-            os.makedirs(save_qual_depth_dir, exist_ok=True)
 
             joined_tid_metrics = list()
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                 human_masks_joined = (human_masks.sum(dim=1).clamp(0.0, 1.0))  # [B,H,W] 
-                colors, depths = self.evaluate(batch, selected_tids, render_bg=False)
+                colors, _ = self.evaluate(batch, selected_tids, render_bg=False)
 
                 # Compute quantitative metrics
                 metrics = compute_all_metrics(
@@ -829,11 +825,6 @@ class Trainer:
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                 img_pil = Image.fromarray(img_np)
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
-
-                # save the depth map
-                depth_viz = colourise_depth(depths[0], self.cfg)
-                depth_pil = Image.fromarray(depth_viz)
-                depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
             
             # aggregate metrics 
             joined_tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(joined_tid_metrics)
@@ -844,14 +835,12 @@ class Trainer:
         if render_bg:
             save_qual_dir = self.experiment_dir / "visualizations" / "full_render" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
-            save_qual_depth_dir = save_qual_dir / "depth"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
-            os.makedirs(save_qual_depth_dir, exist_ok=True)
 
             full_render_metrics = list()
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
-                colors, depths = self.evaluate(batch, selected_tids, render_bg=True)
+                colors, _ = self.evaluate(batch, selected_tids, render_bg=True)
 
                 # Compute quantitative metrics
                 masks_include_all = torch.ones_like(human_masks[:, 0, ...])  # [B,H,W]
@@ -866,11 +855,6 @@ class Trainer:
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                 img_pil = Image.fromarray(img_np)
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
-
-                # save the depth map
-                depth_viz = colourise_depth(depths[0], self.cfg)
-                depth_pil = Image.fromarray(depth_viz)
-                depth_pil.save(save_qual_depth_dir / f"{fid:04d}.png")
         
             # aggregate metrics
             full_render_metrics_across_frames = aggregate_batch_tid_metric_dicts(full_render_metrics)

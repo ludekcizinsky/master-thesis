@@ -11,6 +11,9 @@ output_dir: /scratch/izar/cizinsky/thesis/output/${scene_name}
 preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/${scene_name}  # path to the preprocessing folder
 train_dir: ${output_dir}/training
 
+# --- Evaluation settings
+gt_seg_masks_dir: null
+
 # --- Training settings
 num_workers: 8  # number of data loading workers
 max_epochs: 400  # maximum number of training epochs
