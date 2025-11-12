@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Sequence, Union
+from typing import List, Sequence, Union, Optional
 
 import numpy as np
 import torch
@@ -12,24 +12,38 @@ from training.helpers.progressive_sam import ProgressiveSAMManager
 
 
 class Hi4DDataset:
-    def __init__(self, mask_root: Union[str, Path]):
-        self.mask_root = Path(mask_root)
-        if not self.mask_root.exists():
+    def __init__(self, mask_root: Optional[Union[str, Path]], smpl_root: Optional[Union[str, Path]], preprocess_dir: Optional[Union[str, Path]]):
+
+        # Segmentation masks
+        self.mask_root = Path(mask_root) if mask_root is not None else None
+        if self.mask_root is not None and not self.mask_root.exists():
             raise FileNotFoundError(f"Mask root '{self.mask_root}' does not exist.")
+        elif self.mask_root is not None:
+            self.person_dirs: Sequence[Path] = sorted(
+                [d for d in self.mask_root.iterdir() if d.is_dir() and d.name.isdigit()],
+                key=lambda d: int(d.name),
+            )
+            if not self.person_dirs:
+                raise FileNotFoundError(f"No person-id subdirectories found under '{self.mask_root}'.")
+            person_files_sorted_ascending = sorted(list(self.person_dirs[0].glob("*.png")))
+            sample_file = person_files_sorted_ascending[0] if person_files_sorted_ascending else None
+            if sample_file is None:
+                raise FileNotFoundError(f"No PNG files found in '{self.person_dirs[0]}'.")
+            self.frame_name_width = len(sample_file.stem)
+            self.seg_mask_dir_offset = int(sample_file.stem)
 
-        self.person_dirs: Sequence[Path] = sorted(
-            [d for d in self.mask_root.iterdir() if d.is_dir() and d.name.isdigit()],
-            key=lambda d: int(d.name),
-        )
-        if not self.person_dirs:
-            raise FileNotFoundError(f"No person-id subdirectories found under '{self.mask_root}'.")
+        # SMPL parameters
+        self.smpl_root = Path(smpl_root) if smpl_root is not None else None
+        if self.smpl_root is not None and not self.smpl_root.exists():
+            raise FileNotFoundError(f"SMPL root '{self.smpl_root}' does not exist.")
 
-        person_files_sorted_ascending = sorted(list(self.person_dirs[0].glob("*.png")))
-        sample_file = person_files_sorted_ascending[0] if person_files_sorted_ascending else None
-        if sample_file is None:
-            raise FileNotFoundError(f"No PNG files found in '{self.person_dirs[0]}'.")
-        self.frame_name_width = len(sample_file.stem)
-        self.seg_mask_dir_offset = int(sample_file.stem)
+        # Preprocessing directory -> needed for SMPL alignment
+        self.preprocess_dir = Path(preprocess_dir) if preprocess_dir is not None else None
+        if self.preprocess_dir is not None and not self.preprocess_dir.exists():
+            raise FileNotFoundError(f"Preprocessing directory '{self.preprocess_dir}' does not exist.")
+        
+        # Load SMPL params
+        self.smpl_params = self._load_gt_smpl_params() if self.smpl_root is not None else None
 
 
     def load_segmentation_masks(self, frame_id: int) -> torch.Tensor:
@@ -37,7 +51,9 @@ class Hi4DDataset:
         Load per-person segmentation masks for a given frame, ordered by person id.
         Returns a tensor shaped [P, H, W] with boolean masks.
         """
-
+        if self.mask_root is None:
+            raise ValueError("Mask root directory not specified for segmentation mask loading.")
+    
         masks = []
         target_frame = self.seg_mask_dir_offset + frame_id
         for person_dir in self.person_dirs:
@@ -50,6 +66,69 @@ class Hi4DDataset:
             masks.append(torch.from_numpy(mask_np.astype(np.bool_)))
 
         return torch.stack(masks, dim=0)
+    
+    def is_seg_mask_loading_available(self) -> bool:
+        """Check if segmentation mask loading is available."""
+        return self.mask_root is not None 
+
+    def _load_gt_smpl_params(self) -> np.ndarray:
+        """
+        Load ground-truth SMPL params stored as per-frame .npz files, apply preprocessing alignments,
+        and return (F, P, 86).
+        """
+        if self.smpl_root is None:
+            raise ValueError("SMPL root directory not specified for SMPL parameter loading.")
+
+        gt_root = self.smpl_root
+        frame_files = sorted(gt_root.glob("*.npz"))
+        if not frame_files:
+            raise FileNotFoundError(f"No .npz frames found in {gt_root}")
+
+        preprocess_root = self.preprocess_dir
+        poses = np.load(preprocess_root / "poses.npy")
+        trans = np.load(preprocess_root / "normalize_trans.npy")
+        shape = np.load(preprocess_root / "mean_shape.npy")
+        if poses.shape[0] != len(frame_files):
+            raise ValueError("Mismatch between poses.npy frames and raw SMPL frames.")
+
+        cam_norm_path = preprocess_root / "cameras_normalize.npz"
+        if not cam_norm_path.exists():
+            raise FileNotFoundError(f"{cam_norm_path} not found. Cannot determine scale.")
+        cam_norm = np.load(cam_norm_path)
+        scale_mat = cam_norm["scale_mat_0"]
+        scale_value = 1.0 / float(scale_mat[0, 0])
+
+        frame_tensors = []
+        num_persons = poses.shape[1]
+        for idx in range(len(frame_files)):
+            frame_pose = poses[idx]
+            frame_trans = trans[idx] * scale_value
+            scale = np.full((num_persons, 1), scale_value, dtype=np.float32)
+            frame_tensor = np.concatenate(
+                [scale, frame_trans, frame_pose[:, :3], frame_pose[:, 3:], shape],
+                axis=1,
+            )
+            if frame_tensor.shape[1] != 86:
+                raise ValueError(f"Unexpected SMPL parameter dimension {frame_tensor.shape[1]} at frame {idx}")
+            frame_tensors.append(frame_tensor)
+
+        stacked = np.stack(frame_tensors, axis=0)
+        return stacked
+    
+    def load_smpl_params_for_frame(self, frame_id: int) -> torch.Tensor:
+        """
+        Load SMPL parameters for a given frame as a tensor of shape (P, 86).
+        """
+        if self.smpl_params is None:
+            raise ValueError("SMPL parameters not loaded in dataset.")
+        if frame_id < 0 or frame_id >= self.smpl_params.shape[0]:
+            raise IndexError(f"Frame ID {frame_id} out of bounds for SMPL parameters with {self.smpl_params.shape[0]} frames.")
+        
+        return torch.from_numpy(self.smpl_params[frame_id]).float()
+    
+    def is_smpl_loading_available(self) -> bool:
+        """Check if SMPL parameter loading is available."""
+        return self.smpl_root is not None
 
 
 class FullSceneDataset(Dataset):
@@ -60,16 +139,11 @@ class FullSceneDataset(Dataset):
     1. All persons are on all frames
     """
 
-    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False, gt_provided: bool = False):
+    def __init__(self, preprocess_dir: Path, tids: List[int], mask_path: Path, cloud_downsample: int = 10, train_bg: bool = False):
         self.preprocess_dir = preprocess_dir
         self.tids = tids
         self.train_bg = train_bg
         self.mask_path = mask_path
-        self.gt_provided = gt_provided
-        if self.gt_provided and "hi4d" in str(self.mask_path).lower():
-            self.mask_loader = Hi4DDataset(self.mask_path)
-        else:
-            self.mask_loader = None
 
         # Paths
         self.images_dir = self.preprocess_dir / "image"
@@ -160,14 +234,11 @@ class FullSceneDataset(Dataset):
         assert image.shape[0] == self.H and image.shape[1] == self.W, f"Image shape mismatch: {image.shape} vs ({self.H},{self.W})"
 
         # Human masks
-        if self.mask_loader is not None:
-            human_masks = self.mask_loader.load_segmentation_masks(frame_id=idx)  # [P,H,W]
+        mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
+        if mask_entry is not None:
+            human_masks = mask_entry.refined
         else:
-            mask_entry = ProgressiveSAMManager._load_entry_from_disk(self.mask_path, fid=idx, device='cpu')
-            if mask_entry is not None:
-                human_masks = mask_entry.refined
-            else:
-                human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
+            human_masks = torch.zeros((0, self.H, self.W), dtype=torch.bool)  # No masks available
 
         # Camera 
         # - Extrinsics
@@ -207,15 +278,27 @@ class FullSceneDataset(Dataset):
 
 
 
-def build_dataset(cfg, mask_path: Path, gt_provided: bool = False) -> Dataset:
+def build_training_dataset(cfg, mask_path: Path) -> Dataset:
     dataset = FullSceneDataset(
         preprocess_dir=Path(cfg.preprocess_dir),
         tids=cfg.tids,
         mask_path=mask_path,
         cloud_downsample=cfg.cloud_downsample,
         train_bg=cfg.train_bg,
-        gt_provided=gt_provided,
     )
+    return dataset
+
+
+def build_evaluation_dataset(cfg) -> Dataset:
+    ds_name = cfg.eval_ds_name
+    if ds_name.lower() == "hi4d":
+        dataset = Hi4DDataset(
+            mask_root=cfg.gt_seg_masks_dir,
+            smpl_root=cfg.gt_smpl_dir,
+            preprocess_dir=cfg.preprocess_dir,
+        )
+    else:
+        raise ValueError(f"Unsupported evaluation dataset name: {ds_name}")
     return dataset
 
 def build_dataloader(cfg, dataset: Dataset, is_eval: bool = False) -> DataLoader:

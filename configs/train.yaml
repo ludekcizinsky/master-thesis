@@ -12,7 +12,9 @@ preprocess_dir:  /scratch/izar/cizinsky/multiply-output/preprocessing/data/${sce
 train_dir: ${output_dir}/training
 
 # --- Evaluation settings
+eval_ds_name: "hi4d"
 gt_seg_masks_dir: null
+gt_smpl_dir: null
 
 # --- Training settings
 num_workers: 8  # number of data loading workers

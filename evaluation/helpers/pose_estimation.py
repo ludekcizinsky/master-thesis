@@ -149,7 +149,6 @@ def load_multiply_smpl_checkpoint(ckpt_path: Union[str, Path]) -> np.ndarray:
 def load_gt_smpl_params(
     gt_dir: Union[str, Path],
     preprocess_dir: Union[str, Path],
-    frame_offset: int = 0,
 ) -> np.ndarray:
     """
     Load ground-truth SMPL params stored as per-frame .npz files, apply preprocessing alignments,
