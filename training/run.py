@@ -756,8 +756,8 @@ class Trainer:
 
     def evaluation_loop(self, selected_tids: List[int], render_bg: bool, epoch: int):
         mask_path = Path(self.cfg.preprocess_dir) / "sam2_masks"
-        self.dataset = build_training_dataset(self.cfg, mask_path=mask_path)
-        eval_dataloader = build_dataloader(self.cfg, self.dataset, is_eval=True)
+        eval_dataset = build_training_dataset(self.cfg, mask_path=mask_path)
+        eval_dataloader = build_dataloader(self.cfg, eval_dataset, is_eval=True)
 
         gt_provided = self.cfg.gt_seg_masks_dir is not None or self.cfg.gt_smpl_dir is not None
         if gt_provided:
@@ -835,7 +835,7 @@ class Trainer:
                     if gt_smpl is not None:
                         overlay_dir = save_qual_dir / "gt_vs_pred_smpl"
                         overlay_dir.mkdir(parents=True, exist_ok=True)
-                        frame_data = self.dataset[fid]
+                        frame_data = eval_dataset[fid]
                         save_smpl_overlay_image(
                             image=frame_data["image"],
                             pred_smpl=pred_smpl[0, 0],
