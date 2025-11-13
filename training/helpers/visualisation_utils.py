@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Sequence, List, Dict, Any
+from typing import Optional, Sequence, List, Dict, Any, Tuple, Union
 import os
 
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
@@ -22,6 +22,16 @@ from training.helpers.smpl_utils import canon_to_posed
 from training.smpl_deformer.smpl_server import SMPLServer
 import pyrender
 import trimesh
+from evaluation.helpers.pose_estimation import load_gt_smpl_params, load_latest_smpl_checkpoint
+
+_SMPL_VIS_SERVER: Optional[SMPLServer] = None
+
+
+def _get_smpl_vis_server() -> SMPLServer:
+    global _SMPL_VIS_SERVER
+    if _SMPL_VIS_SERVER is None:
+        _SMPL_VIS_SERVER = SMPLServer().eval()
+    return _SMPL_VIS_SERVER
 
 
 def colourise_depth(depth_tensor: torch.Tensor, cfg: DictConfig) -> np.ndarray:
@@ -577,3 +587,81 @@ def save_epoch_smpl_overlays(
             Image.fromarray(comparison_img, mode="RGBA").save(comparison_path)
 
     renderer.delete()
+
+
+@torch.no_grad()
+def save_smpl_overlay_image(
+    image: Union[np.ndarray, torch.Tensor],
+    pred_smpl: torch.Tensor,
+    K: torch.Tensor,
+    w2c_cv: torch.Tensor,
+    out_path: Union[str, Path],
+    *,
+    gt_smpl: Optional[torch.Tensor] = None,
+    device: torch.device,
+    pred_color: Tuple[float, float, float] = (0.0, 0.0, 1.0),
+    gt_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
+) -> None:
+    """
+    Render predicted (and optionally GT) SMPL meshes on top of the input image.
+    """
+
+    if isinstance(image, torch.Tensor):
+        img_np = image.detach().cpu().numpy()
+    else:
+        img_np = np.asarray(image)
+    if img_np.max() > 1.0:
+        img_np = img_np / 255.0
+    img_np = img_np.astype(np.float32)
+    H, W = img_np.shape[:2]
+
+    renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
+    scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.2, 0.2, 0.2])
+
+    smpl_server = _get_smpl_vis_server().to(device)
+    faces = smpl_server.smpl.faces.astype(np.int32)
+
+    def _add_mesh(params: Optional[torch.Tensor], color: Tuple[float, float, float]) -> None:
+        if params is None:
+            return
+        tensor = params.to(device)
+        if tensor.ndim == 1:
+            tensor = tensor.unsqueeze(0)
+        smpl_output = smpl_server(tensor, absolute=True)
+        verts = smpl_output["smpl_verts"][0].detach().cpu().numpy()
+        color_rgba = np.array((*color, 0.85), dtype=np.float32)
+        vertex_colors = np.tile(color_rgba, (verts.shape[0], 1))
+        tri_mesh = trimesh.Trimesh(vertices=verts, faces=faces, vertex_colors=vertex_colors, process=False)
+        mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=False)
+        scene.add(mesh)
+
+    _add_mesh(gt_smpl, gt_color)
+    _add_mesh(pred_smpl, pred_color)
+
+    K_np = K.detach().cpu().numpy()
+    w2c_np = w2c_cv.detach().cpu().numpy()
+    cv_to_gl = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+    w2c_gl = cv_to_gl @ w2c_np
+
+    camera = pyrender.IntrinsicsCamera(
+        fx=K_np[0, 0],
+        fy=K_np[1, 1],
+        cx=K_np[0, 2],
+        cy=K_np[1, 2],
+        znear=0.01,
+        zfar=100.0,
+    )
+    scene.add(camera, pose=np.linalg.inv(w2c_gl))
+    scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.0), pose=np.eye(4))
+
+    color_rgba, depth = renderer.render(scene, flags=pyrender.constants.RenderFlags.FLAT)
+    render_rgb = color_rgba.astype(np.float32) / 255.0
+    mask = (depth > 0).astype(np.float32)[..., None]
+    if mask.max() <= 0.0:
+        mask = (np.linalg.norm(render_rgb, axis=-1, keepdims=True) > 1e-6).astype(np.float32)
+
+    composite = render_rgb * mask + img_np * (1.0 - mask)
+    composite_uint8 = np.clip(composite * 255.0, 0.0, 255.0).astype(np.uint8)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(composite_uint8).save(out_path)
