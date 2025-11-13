@@ -180,14 +180,18 @@ def mpjpe_from_smpl_params(
         raise ValueError("output_units must be either 'm' or 'mm'")
     if output_units == "mm":
         values = values * 1000.0
-    return values
 
+    return values
 
 def compute_all_metrics(
     images: torch.Tensor,
     masks: torch.Tensor,
     renders: torch.Tensor,
     pred_masks: Optional[torch.Tensor] = None,
+    gt_smpl: Optional[torch.Tensor] = None,
+    pred_smpl: Optional[torch.Tensor] = None,
+    gt_smpl_normalization_factor: float = 1.0,
+    mpjpe_units: str = "mm",
 ) -> dict[str, torch.Tensor]:
     
     all_metrics = dict() 
@@ -201,6 +205,15 @@ def compute_all_metrics(
     if pred_masks is not None:
         segmentation_metrics = segmentation_mask_metrics(masks, pred_masks)
         all_metrics.update(segmentation_metrics)
+
+    if gt_smpl is not None and pred_smpl is not None:
+        mpjpe_values = mpjpe_from_smpl_params(
+            gt_smpl,
+            pred_smpl,
+            normalization_factor=gt_smpl_normalization_factor,
+            output_units=mpjpe_units,
+        )
+        all_metrics["mpjpe"] = mpjpe_values
     
     return all_metrics
 

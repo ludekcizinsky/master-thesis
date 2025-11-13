@@ -43,7 +43,7 @@ class Hi4DDataset:
             raise FileNotFoundError(f"Preprocessing directory '{self.preprocess_dir}' does not exist.")
         
         # Load SMPL params
-        self.smpl_params = self._load_gt_smpl_params() if self.smpl_root is not None else None
+        self.smpl_params, self.smpl_normalisation_factor = self._load_gt_smpl_params() if self.smpl_root is not None else (None, None)
 
 
     def load_segmentation_masks(self, frame_id: int) -> torch.Tensor:
@@ -113,7 +113,8 @@ class Hi4DDataset:
             frame_tensors.append(frame_tensor)
 
         stacked = np.stack(frame_tensors, axis=0)
-        return stacked
+        meters_factor = 1.0 / scale_value  # to convert normalized distances back to meters
+        return stacked, meters_factor
     
     def load_smpl_params_for_frame(self, frame_id: int) -> torch.Tensor:
         """

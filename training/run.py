@@ -278,7 +278,7 @@ class Trainer:
         )
         colors, depths = renders[..., 0:3], renders[..., 3:4]
 
-        return colors, depths
+        return colors, depths, smpl_param_forward
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         # Parse batch
@@ -783,7 +783,8 @@ class Trainer:
                 for batch in eval_dataloader:
                     images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                     pred_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
-                    colors, _ = self.evaluate(batch, [tid], render_bg=False)
+                    colors, _, pred_smpl = self.evaluate(batch, [tid], render_bg=False)
+                    pred_smpl = pred_smpl.unsqueeze(0)  # [B,1,86]
 
                     # Load predicted masks if available to compute segmentation metrics
                     if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
@@ -792,13 +793,25 @@ class Trainer:
                     else:
                         gt_masks = pred_masks
                         pred_masks = None
- 
+
+                    # Load ground-truth SMPL if available
+                    if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
+                        gt_smpl_all = gt_dataset.load_smpl_params_for_frame(fid).to(self.device)
+                        gt_smpl = gt_smpl_all[tid_idx: tid_idx+1].unsqueeze(0)  # [B,1,86]
+                        gt_smpl_normalization_factor = gt_dataset.smpl_normalisation_factor
+                    else:
+                        gt_smpl = None
+                        gt_smpl_normalization_factor = 1.0
+
                     # Compute quantitative rendering metrics
                     metrics = compute_all_metrics(
                         images=images,
                         masks=gt_masks,
                         renders=colors,
                         pred_masks=pred_masks,
+                        gt_smpl=gt_smpl,
+                        pred_smpl=pred_smpl,
+                        gt_smpl_normalization_factor=gt_smpl_normalization_factor,
                     )
                     tid_metrics.append(metrics)
 
@@ -842,7 +855,8 @@ class Trainer:
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                 pred_masks_joined = (human_masks.sum(dim=1).clamp(0.0, 1.0))  # [B,H,W] 
-                colors, _ = self.evaluate(batch, selected_tids, render_bg=False)
+                colors, _, pred_smpl = self.evaluate(batch, selected_tids, render_bg=False)
+                pred_smpl = pred_smpl.unsqueeze(0)  # [B,len(tids),86]
 
                 # Load predicted masks if available to compute segmentation metrics
                 if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
@@ -852,12 +866,24 @@ class Trainer:
                     gt_masks_joined = pred_masks_joined
                     pred_masks_joined = None
 
+                # Load ground-truth SMPL if available
+                if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
+                    gt_smpl_all = gt_dataset.load_smpl_params_for_frame(fid).to(self.device)
+                    gt_smpl = gt_smpl_all[[self.cfg.tids.index(tid) for tid in selected_tids], ...].unsqueeze(0)  # [B,len(tids),86]
+                    gt_smpl_normalization_factor = gt_dataset.smpl_normalisation_factor
+                else:
+                    gt_smpl = None
+                    gt_smpl_normalization_factor = 1.0
+
                 # Compute quantitative metrics
                 metrics = compute_all_metrics(
                     images=images,
                     masks=gt_masks_joined,
                     renders=colors,
                     pred_masks=pred_masks_joined,
+                    gt_smpl=gt_smpl,
+                    pred_smpl=pred_smpl,
+                    gt_smpl_normalization_factor=gt_smpl_normalization_factor,
                 )
                 joined_tid_metrics.append(metrics)
 
@@ -891,7 +917,7 @@ class Trainer:
             full_render_metrics = list()
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
-                colors, _ = self.evaluate(batch, selected_tids, render_bg=True)
+                colors, _, pred_smpl = self.evaluate(batch, selected_tids, render_bg=True)
 
                 # Compute quantitative metrics
                 masks_include_all = torch.ones_like(human_masks[:, 0, ...])  # [B,H,W]
