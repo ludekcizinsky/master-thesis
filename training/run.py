@@ -836,21 +836,6 @@ class Trainer:
                         pred_mask_np = (pred_masks[0].cpu().numpy() * 255).astype("uint8")
                         pred_mask_pil = Image.fromarray(pred_mask_np)
                         pred_mask_pil.save(save_qual_pred_mask_dir / f"{fid:04d}.png")
-
-                    # Save GT vs Pred SMPL overlay
-#                     if gt_smpl is not None:
-                        # overlay_dir = save_qual_dir / "gt_vs_pred_smpl"
-                        # overlay_dir.mkdir(parents=True, exist_ok=True)
-                        # frame_data = eval_dataset[fid]
-                        # save_smpl_overlay_image(
-                            # image=frame_data["image"],
-                            # pred_smpl=pred_smpl[0, 0],
-                            # gt_smpl=gt_smpl[0, 0],
-                            # K=frame_data["K"],
-                            # w2c_cv=frame_data["M_ext"],
-                            # out_path=overlay_dir / f"{fid:04d}.png",
-                            # device=self.device,
-                        # )
                 
                 # Aggregate metrics
                 tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)

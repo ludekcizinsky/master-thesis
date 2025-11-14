@@ -182,7 +182,7 @@ def compute_all_metrics(
             pred_smpl_joints,
             output_units=mpjpe_units,
             )
-            all_metrics["mpjpe"] = mpjpe_values
+            all_metrics["pa-mpjpe"] = mpjpe_values
     
     return all_metrics
 
