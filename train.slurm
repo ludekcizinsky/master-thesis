@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=v7_runs_football
+#SBATCH --job-name=v7_runs_taichi
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -125,7 +125,7 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v6]' group_name=$GROUP_NAME mask_refinement.reliability_threshold_tolerance=0.1
 
 # --------------- V7 depth order loss supervision
-# GROUP_NAME=v7_default
+# GROUP_NAME=v7_default_corrected
 # python training/run.py scene_name=taichi tids=[0,1] train_bg=false resume=false 'logger.tags=[v7]' group_name=$GROUP_NAME
 
 # GROUP_NAME=v7_normalise_by_pixels
@@ -150,5 +150,5 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, football]' group_name=$GROUP_NAME
 
 # --------------- V7 hi4d experiments
-GROUP_NAME=v7_hi4d_pair00_dance00_cam76
-python training/run.py scene_name=hi4d_pair00_dance00_cam76 tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, hi4d_pair00_dance00_cam76]' group_name=dev gt_seg_masks_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/seg/img_seg_mask/76" gt_smpl_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/smpl" debug=true eval_every_epochs=1
+# GROUP_NAME=v7_hi4d_pair00_dance00_cam76
+# python training/run.py scene_name=hi4d_pair00_dance00_cam76 tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, hi4d_pair00_dance00_cam76]' group_name=dev gt_seg_masks_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/seg/img_seg_mask/76" gt_smpl_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/smpl" debug=true eval_every_epochs=1
