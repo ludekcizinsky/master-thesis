@@ -1052,7 +1052,7 @@ def main(cfg: DictConfig):
         return
 
     print("ℹ️ Starting training")
-    trainer.train_loop(max_epochs=cfg.max_epochs)
+    trainer.train_loop(max_epochs=cfg.max_epochs + 1)
     wandb.finish()
     print("✅ Training completed.\n")
 

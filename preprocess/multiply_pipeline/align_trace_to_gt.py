@@ -323,11 +323,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preprocess_dir", type=Path, required=True, help="Path to Multiply preprocessing output.")
     parser.add_argument("--gt_smpl_dir", type=Path, required=True, help="Directory with per-frame GT SMPL .npz files.")
     parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="If set, save overlay images of aligned SMPL meshes to <preprocess_dir>/smpl_alignment_check.",
-    )
-    parser.add_argument(
         "--gt_camera_file",
         type=Path,
         default=None,
@@ -343,6 +338,11 @@ def parse_args() -> argparse.Namespace:
         "--cam_id",
         type=int,
         required=True,
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="If set, save overlay images of aligned SMPL meshes to <preprocess_dir>/smpl_alignment_check.",
     )
     return parser.parse_args()
 
