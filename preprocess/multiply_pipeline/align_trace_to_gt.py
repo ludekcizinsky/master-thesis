@@ -206,27 +206,20 @@ def align_trace_to_metric(
     preprocess_dir: Path,
     gt_smpl_dir: Path,
     cameras: List[Tuple[np.ndarray, np.ndarray]],
+    dataset: str = "hi4d",
     visualize: bool = False,
 ) -> None:
+    
+    # Load preprocessing artifacts
     poses = np.load(preprocess_dir / "poses.npy")
     trans = np.load(preprocess_dir / "normalize_trans.npy")
     shape = np.load(preprocess_dir / "mean_shape.npy")
 
     cam_norm = np.load(preprocess_dir / "cameras_normalize.npz")
-    if "scale_mat_0" not in cam_norm:
-        raise FileNotFoundError(f"'scale_mat_0' missing in {preprocess_dir / 'cameras_normalize.npz'}")
     scale_mat = cam_norm["scale_mat_0"]
     scale_value = 1.0 / float(scale_mat[0, 0])
 
-#     if True:
-        # custom_cam_path = preprocess_dir / "cameras_normalize.npz"
-        # cameras = load_camera_data(
-            # custom_cam_path,
-            # camera_id=None,
-            # dataset="custom",
-            # n_frames=poses.shape[0],
-        # )
-
+    # Load GT SMPL files
     frame_files = sorted(gt_smpl_dir.glob("*.npz"))
     if not frame_files:
         raise FileNotFoundError(f"No .npz files found in {gt_smpl_dir}")
@@ -235,13 +228,16 @@ def align_trace_to_metric(
             f"Mismatch between GT frames ({len(frame_files)}) and canonical poses ({poses.shape[0]})"
         )
 
+    # Prepare SMPL server
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     smpl_server = SMPLServer().to(device).eval()
 
+    # Prepare storage for alignment transforms
     rotations = np.zeros((poses.shape[0], poses.shape[1], 3, 3), dtype=np.float32)
     translations = np.zeros((poses.shape[0], poses.shape[1], 3), dtype=np.float32)
     scales = np.ones((poses.shape[0], poses.shape[1]), dtype=np.float32)
 
+    # Iterate over frames and compute alignment transforms
     with torch.no_grad():
         total_repr_error, total_alignments = 0.0, 0
         for frame_idx, npz_path in tqdm(enumerate(frame_files), total=len(frame_files), desc="Aligning frames"):
@@ -261,19 +257,23 @@ def align_trace_to_metric(
 
             # Compute alignment transforms per person
             for person_idx in range(gt_joints.shape[0]):
+                # Get src and dst joints
                 src = canon_joints[person_idx]
                 dst = gt_joints[person_idx]
-                # _estimate_similarity_transform(src, dst)
-                # rot, t = rigid_transform_3D(src, dst) 
+
+                # Compute similarity transform from canonical to GT joints
                 scale, rot, t, reproj_error = similarity_transform_3D(src, dst)
                 total_repr_error += reproj_error
                 total_alignments += 1
+
+                # Store the results
                 scales[frame_idx, person_idx] = scale
                 rotations[frame_idx, person_idx] = rot.astype(np.float32)
                 translations[frame_idx, person_idx] = t.astype(np.float32)
 
+            # Visualization (optional)
             if visualize:
-                vis_dir = preprocess_dir / "smpl_alignment_check"
+                vis_dir = preprocess_dir / "smpl_joints_alignment_check" / dataset
                 vis_dir.mkdir(parents=True, exist_ok=True)
                 images_dir = preprocess_dir / "image"
                 frame_image_path = images_dir / f"{frame_idx:04d}.png"
@@ -282,8 +282,6 @@ def align_trace_to_metric(
                     image_np = np.array(Image.open(frame_image_path).convert("RGB"))
                     joints_metric_list: List[np.ndarray] = []
                     for person_idx in range(gt_joints.shape[0]):
-                        # joints_metric_list.append(gt_joints[person_idx])
-                        # joints_metric_list.append(canon_joints[person_idx])                      
 
                         # parse the transforms
                         rot = rotations[frame_idx, person_idx]
@@ -295,10 +293,6 @@ def align_trace_to_metric(
                         joints_metric = (rot @ joints_canon.T).T * scale_val + trans_vec
                         joints_metric_list.append(joints_metric)
 
-#                     if joints_metric_list:
-                        # y_vals = np.concatenate([j[:, 1] for j in joints_metric_list])
-                        # print(f"[align_trace_to_gt] Frame {frame_idx} metric Y range: {y_vals.min():.3f} to {y_vals.max():.3f}")
-
                     _draw_alignment_overlay(
                         image=image_np,
                         joints_list=joints_metric_list,
@@ -309,16 +303,18 @@ def align_trace_to_metric(
                 else:
                     raise FileNotFoundError(f"Frame image not found for visualization: {frame_image_path}")
 
-    output_path = preprocess_dir / "canonical_to_metric_transforms.npz"
+    # Save the alignment transforms
+    output_path = preprocess_dir / "smpl_joints_alignment_transforms" / f"{dataset}.npz"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    avg_reproj_error = total_repr_error / total_alignments if total_alignments > 0 else float('nan')
     np.savez(
         output_path,
         rotations=rotations,
         translations=translations,
         scales=scales,
-        frame_files=np.array([p.name for p in frame_files]),
     )
+
     print(f"[align_trace_to_gt] Saved alignment transforms to {output_path}")
-    avg_reproj_error = total_repr_error / total_alignments if total_alignments > 0 else float('nan')
     print(f"[align_trace_to_gt] Average reprojection error over all alignments: {avg_reproj_error:.4f} m")
 
 
@@ -336,6 +332,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Path to the GT camera metadata file (e.g. rgb_cameras.npz).",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        default="hi4d",
     )
     parser.add_argument(
         "--cam_id",
@@ -390,11 +392,12 @@ def main():
     gt_dir: Path = args.gt_smpl_dir
     gt_camera_file: Path = args.gt_camera_file
     camera_id: int = int(args.cam_id)
+    dataset: str = args.dataset
 
     camera_params = load_camera_data(
         gt_camera_file,
         camera_id,
-        dataset="hi4d",
+        dataset=dataset,
         n_frames=len(sorted(gt_dir.glob("*.npz"))),
     )
 
@@ -403,6 +406,7 @@ def main():
         gt_dir,
         visualize=args.visualize,
         cameras=camera_params,
+        dataset=dataset,
     )
 
 
