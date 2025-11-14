@@ -33,4 +33,4 @@ cd /home/cizinsky/master-thesis
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq hi4d_pair17_dance17_cam28 --images-dir /scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17/images/28
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq hi4d_pair19_piggyback19_cam4 --images-dir /scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19/images/4
 
-bash compute_align_transformations.sh
+bash preprocess/multiply_pipeline/compute_align_transformations.sh

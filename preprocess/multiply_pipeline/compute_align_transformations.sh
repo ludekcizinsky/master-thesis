@@ -5,6 +5,7 @@ set -e
 source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 conda activate thesis
 
+cd /home/cizinsky/master-thesis
 
 PREPROCESS_DIR=/scratch/izar/cizinsky/multiply-output/preprocessing/data
 
