@@ -43,7 +43,8 @@ class Hi4DDataset:
             raise FileNotFoundError(f"Preprocessing directory '{self.preprocess_dir}' does not exist.")
         
         # Load SMPL params
-        self.smpl_params, self.smpl_normalisation_factor = self._load_gt_smpl_params() if self.smpl_root is not None else (None, None)
+        self._load_gt_smpl_params() 
+        self._load_metric_alignment()
 
 
     def load_segmentation_masks(self, frame_id: int) -> torch.Tensor:
@@ -73,63 +74,119 @@ class Hi4DDataset:
 
     def _load_gt_smpl_params(self) -> np.ndarray:
         """
-        Load ground-truth SMPL params stored as per-frame .npz files, apply preprocessing alignments,
+        Load ground-truth SMPL params stored as per-frame .npz files (already in metric units)
         and return (F, P, 86).
         """
         if self.smpl_root is None:
-            raise ValueError("SMPL root directory not specified for SMPL parameter loading.")
+            self.smpl_params = None
+            self.smpl_joints = None
+            return 
 
         gt_root = self.smpl_root
         frame_files = sorted(gt_root.glob("*.npz"))
         if not frame_files:
             raise FileNotFoundError(f"No .npz frames found in {gt_root}")
 
-        preprocess_root = self.preprocess_dir
-        poses = np.load(preprocess_root / "poses.npy")
-        trans = np.load(preprocess_root / "normalize_trans.npy")
-        shape = np.load(preprocess_root / "mean_shape.npy")
-        if poses.shape[0] != len(frame_files):
-            raise ValueError("Mismatch between poses.npy frames and raw SMPL frames.")
+        frame_smpl_params: list[np.ndarray] = []
+        frame_smpl_joints: list[np.ndarray] = []
+        for idx, path in enumerate(frame_files):
+            data = np.load(path, allow_pickle=False)
+            betas = data["betas"].astype(np.float32)
+            global_orient = data["global_orient"].astype(np.float32)
+            body_pose = data["body_pose"].astype(np.float32)
+            transl = data["transl"].astype(np.float32)
+            joints = data["joints_3d"].astype(np.float32) # [P, 24, 3]
+            num_persons = joints.shape[0] 
 
-        cam_norm_path = preprocess_root / "cameras_normalize.npz"
-        if not cam_norm_path.exists():
-            raise FileNotFoundError(f"{cam_norm_path} not found. Cannot determine scale.")
-        cam_norm = np.load(cam_norm_path)
-        scale_mat = cam_norm["scale_mat_0"]
-        scale_value = 1.0 / float(scale_mat[0, 0])
-
-        frame_tensors = []
-        num_persons = poses.shape[1]
-        for idx in range(len(frame_files)):
-            frame_pose = poses[idx]
-            frame_trans = trans[idx] * scale_value
-            scale = np.full((num_persons, 1), scale_value, dtype=np.float32)
+            scale = np.ones((num_persons, 1), dtype=np.float32)
             frame_tensor = np.concatenate(
-                [scale, frame_trans, frame_pose[:, :3], frame_pose[:, 3:], shape],
+                [scale, transl, global_orient, body_pose, betas],
                 axis=1,
             )
             if frame_tensor.shape[1] != 86:
-                raise ValueError(f"Unexpected SMPL parameter dimension {frame_tensor.shape[1]} at frame {idx}")
-            frame_tensors.append(frame_tensor)
+                raise ValueError(
+                    f"Unexpected SMPL parameter dimension {frame_tensor.shape[1]} at frame {idx}"
+                )
+            frame_smpl_params.append(frame_tensor)
+            frame_smpl_joints.append(joints)
 
-        stacked = np.stack(frame_tensors, axis=0)
-        meters_factor = 1.0 / scale_value  # to convert normalized distances back to meters
-        return stacked, meters_factor
+        self.smpl_params = torch.from_numpy(np.stack(frame_smpl_params, axis=0)).float()  # [F, P, 86]
+        self.smpl_joints = torch.from_numpy(np.stack(frame_smpl_joints, axis=0)).float()  # [F, P, 24, 3]
+        print(f"--- FYI: Loaded GT SMPL parameters from {len(frame_files)} frames in {gt_root}. Shape: {self.smpl_params.shape}")
+        print(f"--- FYI: Loaded GT SMPL joints from {len(frame_files)} frames in {gt_root}. Shape: {self.smpl_joints.shape}")
+
     
     def load_smpl_params_for_frame(self, frame_id: int) -> torch.Tensor:
         """
-        Load SMPL parameters for a given frame as a tensor of shape (P, 86).
+        Load SMPL parameters for a given frame.
+
+        Args:
+            frame_id: Frame index to load SMPL parameters for.
+        Returns:
+            smpl_params: SMPL parameters tensor of shape (P, 86) for the specified frame.
         """
         if self.smpl_params is None:
-            raise ValueError("SMPL parameters not loaded in dataset.")
+            raise ValueError("SMPL parameters not loaded or available.")
+
         if frame_id < 0 or frame_id >= self.smpl_params.shape[0]:
-            raise IndexError(f"Frame ID {frame_id} out of bounds for SMPL parameters with {self.smpl_params.shape[0]} frames.")
-        
-        return torch.from_numpy(self.smpl_params[frame_id]).float()
+            raise IndexError(f"Frame id {frame_id} out of bounds for SMPL parameters with {self.smpl_params.shape[0]} frames.")
+
+        return self.smpl_params[frame_id]
+
+    def load_smpl_joints_for_frame(self, frame_id: int) -> torch.Tensor:
+        """
+        Load SMPL joint positions for a given frame.
+
+        Args:
+            frame_id: Frame index to load SMPL joints for.
+        Returns:
+            smpl_joints: SMPL joint positions tensor of shape (P, 24, 3) for the specified frame.
+        """
+        if self.smpl_joints is None:
+            raise ValueError("SMPL joints not loaded or available.")
+
+        if frame_id < 0 or frame_id >= self.smpl_joints.shape[0]:
+            raise IndexError(f"Frame id {frame_id} out of bounds for SMPL joints with {self.smpl_joints.shape[0]} frames.")
+
+        return self.smpl_joints[frame_id] 
     
     def is_smpl_loading_available(self) -> bool:
-        """Check if SMPL parameter loading is available."""
-        return self.smpl_root is not None
+        return self.smpl_root is not None and self.smpl_params is not None
+
+    def _load_metric_alignment(self) -> Optional[dict]:
+        alignment_path = self.preprocess_dir / "smpl_joints_alignment_transforms" / "hi4d.npz"
+        if not alignment_path.exists():
+            raise FileNotFoundError(f"SMPL joints alignment transforms not found at {alignment_path}")
+        data = np.load(alignment_path)
+        self.rotations = torch.from_numpy(data["rotations"]).float()
+        self.translations = torch.from_numpy(data["translations"]).float()
+        self.scales = torch.from_numpy(data["scales"]).float()
+
+    def align_input_smpl_joints(self, src_joints: torch.Tensor, frame_idx: int, person_idx: int) -> torch.Tensor:
+        """
+        Apply precomputed similarity transform to align SMPL joints to metric space.
+
+        Args:
+            src_joints: Source SMPL joints of shape (J, 3) in canonical space (arbitrary units).
+            frame_idx: Frame index to select the transform.
+            person_idx: Person index to select the transform.
+
+        Returns:
+            dst_joints: Transformed SMPL joints of shape (J, 3) in metric space. 
+        """
+        
+        # parse the transforms
+        rot = self.rotations[frame_idx, person_idx]
+        trans_vec = self.translations[frame_idx, person_idx]
+        scale_val = self.scales[frame_idx, person_idx]
+
+        # apply the similarity transform to map 
+        original_device = src_joints.device
+        device = rot.device
+        dst_joints = (rot @ src_joints.to(device).T).T * scale_val + trans_vec
+        dst_joints = dst_joints.to(original_device)
+
+        return dst_joints 
 
 
 class FullSceneDataset(Dataset):

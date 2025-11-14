@@ -23,7 +23,7 @@ from PIL import Image
 
 import math
 from training.helpers.trainer_init import init_logging
-from training.helpers.smpl_utils import update_skinning_weights, filter_dynamic_splats
+from training.helpers.smpl_utils import update_skinning_weights, filter_dynamic_splats, get_joints_from_pose_params
 from training.helpers.dataset import Hi4DDataset, build_training_dataset, build_dataloader, build_evaluation_dataset
 from training.helpers.model_init import (
     SceneSplats,
@@ -784,7 +784,7 @@ class Trainer:
                     images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                     pred_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
                     colors, _, pred_smpl = self.evaluate(batch, [tid], render_bg=False)
-                    pred_smpl = pred_smpl.unsqueeze(0)  # [B,1,86]
+                    pred_smpl = pred_smpl.unsqueeze(0)  # [1,1,86]
 
                     # Load predicted masks if available to compute segmentation metrics
                     if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
@@ -796,12 +796,19 @@ class Trainer:
 
                     # Load ground-truth SMPL if available
                     if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
-                        gt_smpl_all = gt_dataset.load_smpl_params_for_frame(fid).to(self.device)
-                        gt_smpl = gt_smpl_all[tid_idx: tid_idx+1].unsqueeze(0)  # [B,1,86]
-                        gt_smpl_normalization_factor = gt_dataset.smpl_normalisation_factor
+                        gt_smpl_joints_all = gt_dataset.load_smpl_joints_for_frame(fid).to(self.device) # [P,24,3]
+                        gt_smpl_joints = gt_smpl_joints_all[tid_idx].unsqueeze(0)  # [B,24,3]
+
+                        # pred smpl pose params -> joints
+                        pred_smpl_joints_raw = get_joints_from_pose_params(pred_smpl[0]) # [1,86] -> [1,24,3]
+
+                        # align to the gt dataset
+                        pred_smpl_joints = gt_dataset.align_input_smpl_joints(pred_smpl_joints_raw[0], fid, tid_idx) # [24,3]
+                        pred_smpl_joints = pred_smpl_joints.unsqueeze(0)  # [1,24,3]
+                        
                     else:
-                        gt_smpl = None
-                        gt_smpl_normalization_factor = 1.0
+                        gt_smpl_joints = None
+                        pred_smpl_joints = None
 
                     # Compute quantitative rendering metrics
                     metrics = compute_all_metrics(
@@ -809,9 +816,8 @@ class Trainer:
                         masks=gt_masks,
                         renders=colors,
                         pred_masks=pred_masks,
-                        gt_smpl=gt_smpl,
-                        pred_smpl=pred_smpl,
-                        gt_smpl_normalization_factor=gt_smpl_normalization_factor,
+                        gt_smpl_joints=gt_smpl_joints,
+                        pred_smpl_joints=pred_smpl_joints,
                     )
                     tid_metrics.append(metrics)
 
@@ -832,19 +838,19 @@ class Trainer:
                         pred_mask_pil.save(save_qual_pred_mask_dir / f"{fid:04d}.png")
 
                     # Save GT vs Pred SMPL overlay
-                    if gt_smpl is not None:
-                        overlay_dir = save_qual_dir / "gt_vs_pred_smpl"
-                        overlay_dir.mkdir(parents=True, exist_ok=True)
-                        frame_data = eval_dataset[fid]
-                        save_smpl_overlay_image(
-                            image=frame_data["image"],
-                            pred_smpl=pred_smpl[0, 0],
-                            gt_smpl=gt_smpl[0, 0],
-                            K=frame_data["K"],
-                            w2c_cv=frame_data["M_ext"],
-                            out_path=overlay_dir / f"{fid:04d}.png",
-                            device=self.device,
-                        )
+#                     if gt_smpl is not None:
+                        # overlay_dir = save_qual_dir / "gt_vs_pred_smpl"
+                        # overlay_dir.mkdir(parents=True, exist_ok=True)
+                        # frame_data = eval_dataset[fid]
+                        # save_smpl_overlay_image(
+                            # image=frame_data["image"],
+                            # pred_smpl=pred_smpl[0, 0],
+                            # gt_smpl=gt_smpl[0, 0],
+                            # K=frame_data["K"],
+                            # w2c_cv=frame_data["M_ext"],
+                            # out_path=overlay_dir / f"{fid:04d}.png",
+                            # device=self.device,
+                        # )
                 
                 # Aggregate metrics
                 tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
@@ -882,13 +888,8 @@ class Trainer:
                     pred_masks_joined = None
 
                 # Load ground-truth SMPL if available
-                if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
-                    gt_smpl_all = gt_dataset.load_smpl_params_for_frame(fid).to(self.device)
-                    gt_smpl = gt_smpl_all[[self.cfg.tids.index(tid) for tid in selected_tids], ...].unsqueeze(0)  # [B,len(tids),86]
-                    gt_smpl_normalization_factor = gt_dataset.smpl_normalisation_factor
-                else:
-                    gt_smpl = None
-                    gt_smpl_normalization_factor = 1.0
+                gt_smpl_joints = None
+                pred_smpl_joints = None
 
                 # Compute quantitative metrics
                 metrics = compute_all_metrics(
@@ -896,9 +897,8 @@ class Trainer:
                     masks=gt_masks_joined,
                     renders=colors,
                     pred_masks=pred_masks_joined,
-                    gt_smpl=gt_smpl,
-                    pred_smpl=pred_smpl,
-                    gt_smpl_normalization_factor=gt_smpl_normalization_factor,
+                    gt_smpl_joints=gt_smpl_joints,
+                    pred_smpl_joints=pred_smpl_joints,
                 )
                 joined_tid_metrics.append(metrics)
 
@@ -952,7 +952,6 @@ class Trainer:
             full_render_metrics_across_frames = aggregate_batch_tid_metric_dicts(full_render_metrics)
         else:
             full_render_metrics_across_frames = dict()
-
 
         # Log to wandb
         dict_to_log = {}

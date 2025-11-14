@@ -5,6 +5,16 @@ from training.helpers.model_init import SceneSplats
 from typing import List, Optional
 
 
+from training.smpl_deformer.smpl_server import SMPLServer
+
+
+_SMPL_METRIC_SERVER: Optional[SMPLServer] = None
+
+def _get_smpl_metric_server() -> SMPLServer:
+    global _SMPL_METRIC_SERVER
+    if _SMPL_METRIC_SERVER is None:
+        _SMPL_METRIC_SERVER = SMPLServer().eval()
+    return _SMPL_METRIC_SERVER
 
 def update_skinning_weights(all_gs: SceneSplats, k: int = 4, eps: float = 1e-6, p: float = 1.0, device="cuda", dtype=torch.float32) -> torch.Tensor:
 
@@ -116,3 +126,20 @@ def filter_dynamic_splats(all_gs: SceneSplats, all_lbs_weights: List[torch.Tenso
         selected_lbs_weights = []
     
     return selected_indices, selected_smpl_params, selected_lbs_weights
+
+
+def get_joints_from_pose_params(smpl_params: torch.Tensor, device="cuda") -> torch.Tensor:
+    """
+    Get SMPL joints from SMPL pose parameters.
+
+    Args:
+        smpl_params: SMPL parameters. Shape: [P, 86] where P is the number of persons.
+        device: Device to perform computation on.
+    Returns:
+        smpl_joints: SMPL joint positions. Shape: [P, 24, 3].
+    """
+
+    smpl_server = _get_smpl_metric_server()
+    smpl_output = smpl_server(smpl_params.to(device), absolute=True)
+    smpl_joints = smpl_output["smpl_jnts"]
+    return smpl_joints
