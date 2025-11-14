@@ -3,12 +3,13 @@ set -e
 
 # parameter setup
 usage() {
-  echo "Usage: $0 --seq <sequence_name> --images-dir <path_to_images>"
+  echo "Usage: $0 --seq <sequence_name> --images-dir <path_to_images> [--gt-smpl-dir <path_to_gt_smpl_npz_dir>]"
   exit 1
 }
 
 seq=""
 images_folder_path=""
+gt_smpl_dir=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,6 +19,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --images-dir|--images_folder_path)
       images_folder_path="$2"
+      shift 2
+      ;;
+    --gt-smpl-dir)
+      gt_smpl_dir="$2"
       shift 2
       ;;
     -h|--help)
@@ -93,6 +98,15 @@ echo "---- Running mask refinement with SAM"
 conda deactivate && conda activate $thesis_env
 cd /home/cizinsky/master-thesis
 python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true 
+
+if [[ -n "$gt_smpl_dir" ]]; then
+  echo "---- Aligning canonical Trace SMPL to metric GT SMPL"
+  conda deactivate && conda activate $thesis_env
+  cd /home/cizinsky/master-thesis
+  python preprocess/multiply_pipeline/align_trace_to_gt.py \
+    --preprocess_dir $folder_path/data/$seq \
+    --gt_smpl_dir "$gt_smpl_dir"
+fi
 
 # echo "---- Running unidepth to obtain per frame depth maps"
 # conda activate $unidepth_env
