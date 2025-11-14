@@ -31,20 +31,20 @@ class VertexJointSelector(nn.Module):
 
     def __init__(self, vertex_ids=None,
                  use_hands=True,
-                 use_feet_keypoints=True, **kwargs):
+                 use_feet_keypoints=True,
+                 use_face_keypoints=False, **kwargs):
         super(VertexJointSelector, self).__init__()
 
         extra_joints_idxs = []
 
-        face_keyp_idxs = np.array([
-            vertex_ids['nose'],
-            vertex_ids['reye'],
-            vertex_ids['leye'],
-            vertex_ids['rear'],
-            vertex_ids['lear']], dtype=np.int64)
-
-        extra_joints_idxs = np.concatenate([extra_joints_idxs,
-                                            face_keyp_idxs])
+        if use_face_keypoints:
+            face_keyp_idxs = np.array([
+                vertex_ids['nose'],
+                vertex_ids['reye'],
+                vertex_ids['leye'],
+                vertex_ids['rear'],
+                vertex_ids['lear']], dtype=np.int64)
+            extra_joints_idxs.append(face_keyp_idxs)
 
         if use_feet_keypoints:
             feet_keyp_idxs = np.array([vertex_ids['LBigToe'],
@@ -52,10 +52,8 @@ class VertexJointSelector(nn.Module):
                                        vertex_ids['LHeel'],
                                        vertex_ids['RBigToe'],
                                        vertex_ids['RSmallToe'],
-                                       vertex_ids['RHeel']], dtype=np.int32)
-
-            extra_joints_idxs = np.concatenate(
-                [extra_joints_idxs, feet_keyp_idxs])
+                                       vertex_ids['RHeel']], dtype=np.int64)
+            extra_joints_idxs.append(feet_keyp_idxs)
 
         if use_hands:
             self.tip_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
@@ -65,13 +63,21 @@ class VertexJointSelector(nn.Module):
                 for tip_name in self.tip_names:
                     tips_idxs.append(vertex_ids[hand_id + tip_name])
 
-            extra_joints_idxs = np.concatenate(
-                [extra_joints_idxs, tips_idxs])
+            tips_idxs = np.array(tips_idxs, dtype=np.int64)
+            extra_joints_idxs.append(tips_idxs)
+
+        if len(extra_joints_idxs) > 0:
+            extra_joints_idxs = np.concatenate(extra_joints_idxs)
+        else:
+            extra_joints_idxs = np.array([], dtype=np.int64)
 
         self.register_buffer('extra_joints_idxs',
                              to_tensor(extra_joints_idxs, dtype=torch.long))
 
     def forward(self, vertices, joints):
+        if self.extra_joints_idxs.numel() == 0:
+            return joints
+
         extra_joints = torch.index_select(vertices, 1, self.extra_joints_idxs)
         joints = torch.cat([joints, extra_joints], dim=1)
         return joints

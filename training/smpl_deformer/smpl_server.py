@@ -3,7 +3,7 @@ import numpy as np
 from training.smpl_deformer.smpl.body_models import SMPL
 
 class SMPLServer(torch.nn.Module):
-    def __init__(self, gender='neutral'):
+    def __init__(self, gender='neutral', use_face_keypoints=False):
         super().__init__()
 
         smpl_model_path = 'gtu/smpl_deformer/smpl/smpl_model'
@@ -14,6 +14,7 @@ class SMPLServer(torch.nn.Module):
                          batch_size=1,
                          use_hands=False,
                          use_feet_keypoints=False,
+                         use_face_keypoints=use_face_keypoints,
                          dtype=torch.float32).cuda()
 
         self.bone_parents = self.smpl.bone_parents.astype(int)
@@ -43,9 +44,9 @@ class SMPLServer(torch.nn.Module):
             absolute (bool): if true return smpl_tfs wrt thetas=0. else wrt thetas=thetas_canonical. 
 
         Returns:
-            smpl_verts: vertices. shape: [B, 6893. 3]
+            smpl_verts: vertices. shape: [B, 6893, 3]
             smpl_tfs: bone transformations. shape: [B, 24, 4, 4]
-            smpl_jnts: joint positions. shape: [B, 25, 3]
+            smpl_jnts: joint positions. shape: [B, 24, 3]
         """
 
         output = {}
