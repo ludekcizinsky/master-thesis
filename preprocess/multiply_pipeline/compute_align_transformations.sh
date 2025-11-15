@@ -22,7 +22,6 @@ python preprocess/multiply_pipeline/align_trace_to_gt.py \
     --cam_id $cam_id \
     --visualize
 
-
 seq_name="hi4d_pair01_hug01_cam76"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair01/pair01/hug01
 cam_id=76
