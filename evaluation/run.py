@@ -133,14 +133,14 @@ def main() -> None:
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
     print("\nAverage metrics across frames:")
-    for name in ("ssim", "psnr", "lpips"):
+    for name in sorted(averages.keys()):
         value = averages.get(name, None)
         if value is None:
             continue
         print(f"  {name.upper():>5}: {value:.4f}")
     
     # save the metrics to csv file
-    metrics_csv_path = metrics_output_dir / "rendering_metrics.csv"
+    metrics_csv_path = metrics_output_dir / "metrics.csv"
     with open(metrics_csv_path, "w") as f:
         f.write("metric,value\n")
         for name, value in averages.items():

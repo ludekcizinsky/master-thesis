@@ -42,6 +42,8 @@ cd /home/cizinsky/master-thesis
 images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76/image"
 gt_masks_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/seg/img_seg_mask/76/all"
 gt_masks_ds_type="multicolor_png"
+pred_masks_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/progressive_sam"
+pred_masks_ds_type="progressive_sam"
 render_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/training/comic-terrain-249_o7qi4cwb/visualizations/fg_render/all/epoch_0400/rgb"
 metrics_output_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76"
 python evaluation/run.py \
@@ -49,6 +51,8 @@ python evaluation/run.py \
   --renders-path $render_path \
   --gt-masks-path $gt_masks_path \
   --gt-masks-ds-type $gt_masks_ds_type \
+  --pred-masks-path $pred_masks_path \
+  --pred-masks-ds-type $pred_masks_ds_type \
   --metrics-output-path $metrics_output_path
 
 masked_dir=$render_path/masked_renders
