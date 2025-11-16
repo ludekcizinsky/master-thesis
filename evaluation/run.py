@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 import torch
 from PIL import Image
+import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -35,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory with reference RGB frames",
     )
     parser.add_argument(
+        "--renders-path",
+        type=Path,
+        help="Directory with rendered RGB frames to evaluate",
+    )
+    parser.add_argument(
         "--gt-masks-path",
         type=Path,
         help="Directory with ground-truth masks",
@@ -44,11 +50,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Dataset type for ground-truth masks (e.g., 'multiply', 'progressive_sam')",
     )
-
     parser.add_argument(
-        "--renders-path",
+        "--pred-masks-path",
         type=Path,
-        help="Directory with rendered RGB frames to evaluate",
+        help="Directory with predicted masks",
+        default=None,
+    )
+    parser.add_argument(
+        "--pred-masks-ds-type",
+        type=str,
+        help="Dataset type for predicted masks (e.g., 'multiply', 'progressive_sam')",
+        default=None,
     )
     parser.add_argument(
         "--metrics-output-path",
@@ -76,8 +88,9 @@ def main() -> None:
 
     # Directories
     images_dir = args.images_path
-    masks_dir = args.gt_masks_path
     renders_dir = args.renders_path
+    gt_masks_dir = args.gt_masks_path
+    pred_masks_dir = args.pred_masks_path
     masked_output_dir = renders_dir / "masked_renders"
     masked_output_dir.mkdir(parents=True, exist_ok=True)
     metrics_output_dir = args.metrics_output_path
@@ -88,10 +101,10 @@ def main() -> None:
     images = torch.stack([load_image(images_dir / name) for name in frame_names], dim=0)
     renders = torch.stack([load_image(renders_dir / name) for name in frame_names], dim=0)
     gt_masks, pred_masks = load_masks_for_evaluation(
-        gt_masks_dir_path=masks_dir,
+        gt_masks_dir_path=gt_masks_dir,
         gt_ds=args.gt_masks_ds_type,
-        pred_masks_dir_path=None,
-        pred_ds=None,
+        pred_masks_dir_path=pred_masks_dir,
+        pred_ds=args.pred_masks_ds_type,
         device="cpu",
     )
     gt_smpl_joints = None
@@ -103,7 +116,7 @@ def main() -> None:
     with torch.no_grad():
         for batch_start in range(0, len(frame_names), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(frame_names))
-            print(f"Processing frames {batch_start} to {batch_end - 1}...")
+            print(f"Processing frames {batch_start} to {batch_end-1}...")
 
             images_batch = images[batch_start:batch_end].to(device)
             renders_batch = renders[batch_start:batch_end].to(device)
@@ -126,7 +139,7 @@ def main() -> None:
             continue
         print(f"  {name.upper():>5}: {value:.4f}")
     
-    # save the metrics to cvs file
+    # save the metrics to csv file
     metrics_csv_path = metrics_output_dir / "rendering_metrics.csv"
     with open(metrics_csv_path, "w") as f:
         f.write("metric,value\n")

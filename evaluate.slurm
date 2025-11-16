@@ -18,21 +18,42 @@ module load gcc ffmpeg
 cd /home/cizinsky/master-thesis
 
 # V7 / Taichi evaluation / MultiPly
-images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image"
-gt_masks_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/pseudo_gt_masks"
-gt_masks_ds_type="binary_png"
-render_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/joined_fg"
-metrics_output_path="/scratch/izar/cizinsky/multiply-output/evaluation/original_taichi"
+# images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image"
+# gt_masks_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/pseudo_gt_masks"
+# gt_masks_ds_type="binary_png"
+# render_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/joined_fg"
+# metrics_output_path="/scratch/izar/cizinsky/multiply-output/evaluation/original_taichi"
+# python evaluation/run.py \
+  # --images-path $images_path \
+  # --renders-path $render_path \
+  # --gt-masks-path $gt_masks_path \
+  # --gt-masks-ds-type $gt_masks_ds_type \
+  # --metrics-output-path $metrics_output_path
+
+# masked_dir=$render_path/masked_renders
+# output_video=$masked_dir/masked_renders.mp4
+# ffmpeg -hide_banner -loglevel error -y -framerate 10 \
+  # -i "$masked_dir/%04d.png" \
+  # -c:v libx264 -pix_fmt yuv420p $output_video 
+# echo "Video saved to: $output_video"
+
+
+# V7 / Hi4d / pair00 / Ours
+images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76/image"
+gt_masks_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/seg/img_seg_mask/76/all"
+gt_masks_ds_type="multicolor_png"
+render_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/training/comic-terrain-249_o7qi4cwb/visualizations/fg_render/all/epoch_0400/rgb"
+metrics_output_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76"
 python evaluation/run.py \
   --images-path $images_path \
+  --renders-path $render_path \
   --gt-masks-path $gt_masks_path \
   --gt-masks-ds-type $gt_masks_ds_type \
-  --renders-path $render_path \
   --metrics-output-path $metrics_output_path
 
 masked_dir=$render_path/masked_renders
 output_video=$masked_dir/masked_renders.mp4
-ffmpeg -hide_banner -loglevel error -y -framerate 10 \
+ffmpeg -hide_banner -loglevel error -y -framerate 20 \
   -i "$masked_dir/%04d.png" \
   -c:v libx264 -pix_fmt yuv420p $output_video 
 echo "Video saved to: $output_video"

@@ -168,6 +168,56 @@ def _load_binary_masks_from_dir(
     return stacked.astype(np.float32, copy=False)
 
 
+def _load_multicolor_masks_from_dir(
+    mask_dir: Union[str, Path],
+    frame_ids: Optional[Sequence[int]] = None,
+    binarize: bool = True,
+    threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    Load color-coded masks stored as PNGs and merge all foreground colors into one mask.
+
+    Args:
+        mask_dir : str or Path
+            Directory containing per-frame color mask PNG files.
+        frame_ids : sequence of int, optional
+            Specific frame ids to load. When omitted, all PNG files in the
+            directory are used in ascending order.
+        binarize : bool
+            If True (default) threshold the merged masks using `threshold`
+            before returning.
+        threshold : float
+            Value used for binarisation. Ignored when `binarize` is False.
+
+    Returns:
+        np.ndarray
+            Mask array shaped (num_frames, 1, H, W) with boolean dtype.
+    """
+
+    mask_root = Path(mask_dir)
+    if frame_ids is None:
+        mask_paths = sorted(mask_root.glob("*.png"))
+    else:
+        mask_paths = [mask_root / f"mask_{int(fid):04d}.png" for fid in frame_ids]
+
+    if not mask_paths:
+        raise FileNotFoundError(f"No PNG mask files found in {mask_root}")
+
+    mask_arrays: List[np.ndarray] = []
+    for path in mask_paths:
+        if not path.exists():
+            raise FileNotFoundError(f"Missing multicolor mask file: {path}")
+        img = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
+        mask = np.any(img > 0, axis=-1).astype(np.float32)  # Shape (H, W)
+        mask = np.expand_dims(mask, axis=0)  # Shape (1, H, W)
+        mask_arrays.append(mask)
+
+    stacked = np.stack(mask_arrays, axis=0)  # Shape (num_frames, 1, H, W)
+    if binarize:
+        return stacked >= threshold
+    return stacked.astype(np.float32, copy=False)
+
+
 def demo_load_mask_shapes() -> None:
     """
     Small smoke test that loads both SAM mask variants and prints their shapes.
@@ -195,6 +245,8 @@ def get_mask_load_function(ds: str):
         return _load_progressive_sam_masks
     elif ds == "binary_png":
         return _load_binary_masks_from_dir
+    elif ds == "multicolor_png":
+        return _load_multicolor_masks_from_dir
     else:
         raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 
