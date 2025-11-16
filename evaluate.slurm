@@ -17,14 +17,16 @@ module load gcc ffmpeg
 # Change to the directory where the script is located
 cd /home/cizinsky/master-thesis
 
-# V7 / Taichi evaluation
+# V7 / Taichi evaluation / MultiPly
 images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image"
 gt_masks_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/pseudo_gt_masks"
+gt_masks_ds_type="binary_png"
 render_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/joined_fg"
 metrics_output_path="/scratch/izar/cizinsky/multiply-output/evaluation/original_taichi"
 python evaluation/run.py \
   --images-path $images_path \
   --gt-masks-path $gt_masks_path \
+  --gt-masks-ds-type $gt_masks_ds_type \
   --renders-path $render_path \
   --metrics-output-path $metrics_output_path
 

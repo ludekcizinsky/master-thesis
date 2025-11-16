@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 import torch
+from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -16,14 +17,14 @@ from training.helpers.evaluation_metrics import (  # noqa: E402
     aggregate_batch_tid_metric_dicts,
 )
 
-from evaluation.helpers.rendering import (  # noqa: E402
-    common_frame_names,
+from evaluation.helpers.misc import (
     load_image,
-    load_mask,
     save_masked_renders,
 )
 
-from evaluation.helpers.misc import chunked 
+from evaluation.helpers.segmentation import (
+    load_masks_for_evaluation,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +39,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory with ground-truth masks",
     )
+    parser.add_argument(
+        "--gt-masks-ds-type",
+        type=str,
+        help="Dataset type for ground-truth masks (e.g., 'multiply', 'progressive_sam')",
+    )
+
     parser.add_argument(
         "--renders-path",
         type=Path,
@@ -76,21 +83,40 @@ def main() -> None:
     metrics_output_dir = args.metrics_output_path
     metrics_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Rendering metrics
-    frame_names = common_frame_names(images_dir, masks_dir, renders_dir)
-    print(f"Found {len(frame_names)} common PNG frames. Processing on device: {device}.")
-    print(f"Masked renders will be saved to: {masked_output_dir}")
+    # Load data for evaluation
+    frame_names = sorted(p.name for p in images_dir.iterdir() if p.suffix.lower() == ".png")
+    images = torch.stack([load_image(images_dir / name) for name in frame_names], dim=0)
+    renders = torch.stack([load_image(renders_dir / name) for name in frame_names], dim=0)
+    gt_masks, pred_masks = load_masks_for_evaluation(
+        gt_masks_dir_path=masks_dir,
+        gt_ds=args.gt_masks_ds_type,
+        pred_masks_dir_path=None,
+        pred_ds=None,
+        device="cpu",
+    )
+    gt_smpl_joints = None
+    pred_smpl_joints = None
+    print(f"Found {len(frame_names)} PNG frames. Processing on device: {device}.")
 
+    # Compute Metrics
     metric_batches: List[Dict[str, torch.Tensor]] = []
     with torch.no_grad():
-        for chunk in chunked(frame_names, args.batch_size):
-            images = torch.stack([load_image(images_dir / name) for name in chunk], dim=0).to(device)
-            masks = torch.stack([load_mask(masks_dir / name) for name in chunk], dim=0).to(device)
-            renders = torch.stack([load_image(renders_dir / name) for name in chunk], dim=0).to(device)
+        for batch_start in range(0, len(frame_names), args.batch_size):
+            batch_end = min(batch_start + args.batch_size, len(frame_names))
+            print(f"Processing frames {batch_start} to {batch_end - 1}...")
 
-            metrics = compute_all_metrics(images, masks, renders)
+            images_batch = images[batch_start:batch_end].to(device)
+            renders_batch = renders[batch_start:batch_end].to(device)
+            gt_masks_batch = gt_masks[batch_start:batch_end].to(device)
+            if pred_masks is not None:
+                pred_masks_batch = pred_masks[batch_start:batch_end].to(device)
+            else:
+                pred_masks_batch = None
+
+            frame_names_batch = frame_names[batch_start:batch_end]
+            metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints, pred_smpl_joints)
             metric_batches.append({k: v.detach().cpu() for k, v in metrics.items()})
-            save_masked_renders(renders, masks, chunk, masked_output_dir)
+            save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
     print("\nAverage metrics across frames:")
@@ -107,6 +133,7 @@ def main() -> None:
         for name, value in averages.items():
             f.write(f"{name},{value:.6f}\n")
     print(f"\nMetrics saved to: {metrics_csv_path}")
+
 
 if __name__ == "__main__":
     main()
