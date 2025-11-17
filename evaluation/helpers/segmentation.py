@@ -5,59 +5,6 @@ import numpy as np
 import torch
 from PIL import Image
 
-def _load_multiply_sam_masks(
-    visualisation_output_dir: Union[str, Path],
-    epoch: Optional[int] = None,
-    binarize: bool = True,
-    threshold: float = 0.5,
-) -> np.ndarray:
-    """
-    Load the SAM-refined masks dumped by Multiply's training loop.
-
-    Parameters
-    ----------
-    visualisation_output_dir : str or Path
-        Either the root visualisation directory (the one passed to `SAMServer`)
-        or a direct path to the ``sam_opt_mask.npy`` file.
-    epoch : int, optional
-        Epoch number whose masks should be loaded. Can be omitted when
-        ``visualisation_output_dir`` already points to the ``.npy`` file.
-    binarize : bool, optional
-        When True, convert the masks to boolean masks using `threshold`.
-    threshold : float, optional
-        Threshold used during binarisation. Ignored if `binarize` is False.
-
-    Returns
-    -------
-    np.ndarray
-        Array shaped (num_frames, num_person, H, W). If `binarize` is True
-        the dtype is bool, otherwise float32. Raises FileNotFoundError if
-        the expected `.npy` file is missing.
-    """
-
-    vis_path = Path(visualisation_output_dir)
-    if vis_path.is_file() and vis_path.suffix == ".npy":
-        mask_path = vis_path
-    else:
-        if epoch is None:
-            raise ValueError("`epoch` must be provided when only the root directory is given.")
-        mask_path = vis_path / "stage_sam_mask" / f"{epoch:05d}" / "sam_opt_mask.npy"
-    if not mask_path.exists():
-        raise FileNotFoundError(
-            f"Could not find SAM masks for epoch {epoch} at {mask_path}"
-        )
-
-    masks = np.load(mask_path, allow_pickle=False)
-
-    # SAM dumps singleton channel dimensions; squeeze them for convenience.
-    if masks.ndim == 5:
-        masks = np.squeeze(masks, axis=-3)
-
-    if binarize:
-        return masks >= threshold
-
-    return masks.astype(np.float32, copy=False)
-
 
 def _load_progressive_sam_masks(
     mask_dir: Union[str, Path],
@@ -218,30 +165,8 @@ def _load_multicolor_masks_from_dir(
     return stacked.astype(np.float32, copy=False)
 
 
-def demo_load_mask_shapes() -> None:
-    """
-    Small smoke test that loads both SAM mask variants and prints their shapes.
-    """
-
-    multiply_mask_path = (
-        "/scratch/izar/cizinsky/multiply-output/training/football_high_res/"
-        "visualisations/stage_sam_mask/02850/sam_opt_mask.npy"
-    )
-    multiply_masks = _load_multiply_sam_masks(multiply_mask_path)
-    print(f"Multiply SAM masks shape: {multiply_masks.shape}")
-
-    progressive_mask_dir = (
-        "/scratch/izar/cizinsky/thesis/output/football_high_res/checkpoints/"
-        "v7_football/progressive_sam"
-    )
-    progressive_masks = _load_progressive_sam_masks(progressive_mask_dir)
-    print(f"Progressive SAM masks shape: {progressive_masks.shape}")
-
-
 def get_mask_load_function(ds: str):
-    if ds == "multiply":
-        return _load_multiply_sam_masks
-    elif ds == "progressive_sam":
+    if ds == "progressive_sam":
         return _load_progressive_sam_masks
     elif ds == "binary_png":
         return _load_binary_masks_from_dir
@@ -264,7 +189,3 @@ def load_masks_for_evaluation(gt_masks_dir_path: Path, gt_ds: str, pred_masks_di
         pred_masks = None
 
     return gt_masks, pred_masks
-
-
-if __name__ == "__main__":
-    demo_load_mask_shapes()

@@ -70,12 +70,12 @@ def _stack_frame_params(params: Dict[int, torch.Tensor]) -> Tuple[np.ndarray, It
     assert stacked.shape[1] == num_persons
     return stacked, [fid for fid, _ in sorted_items]
 
-def _load_multiply_smpl_checkpoint(ckpt_path: Union[str, Path]) -> np.ndarray:
+def _load_multiply_smpl_checkpoint(ckpt_dir_path: Path) -> np.ndarray:
     """
     Load SMPL parameters from a Multiply Lightning checkpoint and return (F, P, 86).
     """
 
-    ckpt_path = Path(ckpt_path)
+    ckpt_path = ckpt_dir_path / "last.ckpt"
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
@@ -225,6 +225,34 @@ def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: 
 
     return aligned_smpl_joints
 
+
+def load_multiply_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path) -> torch.Tensor:
+
+    # Load the unaligned smpl joints
+    smpl_params = _load_multiply_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
+    num_frames, num_persons, _ = smpl_params.shape
+    smpl_params_reshaped = smpl_params.reshape(num_frames * num_persons, 86)
+    smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
+    smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
+
+
+    # Align the joints to the gt dataset
+    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d")
+    aligned_smpl_joints = torch.zeros_like(smpl_joints)
+    for fidx in range(num_frames):
+        for pidx in range(num_persons):
+            smpl_joints[fidx, pidx] = align_input_smpl_joints(
+                src_joints=smpl_joints[fidx, pidx],
+                frame_idx=fidx,
+                person_idx=pidx,
+                transformations=transformations,
+            )
+            aligned_smpl_joints[fidx, pidx] = smpl_joints[fidx, pidx]
+
+
+    return aligned_smpl_joints
+
+
 def load_hi4d_gt_joints(gt_joints_dir_path: Path) -> torch.Tensor:
     """
     Load ground-truth 3D joints from HI4D dataset.
@@ -252,6 +280,8 @@ def get_3d_joint_load_function(ds: str):
         return load_hi4d_gt_joints
     elif ds == "ours":
         return load_ours_pred_joints
+    elif ds == "multiply":
+        return load_multiply_pred_joints
     else:
         raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 

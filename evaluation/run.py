@@ -134,7 +134,7 @@ def main() -> None:
     metrics_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data for evaluation
-    frame_names = sorted(p.name for p in images_dir.iterdir() if p.suffix.lower() == ".png")
+    frame_names = sorted(p.name for p in renders_dir.iterdir() if p.suffix.lower() == ".png")
     images = torch.stack([load_image(images_dir / name) for name in frame_names], dim=0)
     renders = torch.stack([load_image(renders_dir / name) for name in frame_names], dim=0)
     gt_masks, pred_masks = load_masks_for_evaluation(
