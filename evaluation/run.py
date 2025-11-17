@@ -128,7 +128,7 @@ def main() -> None:
     gt_joints_dir = args.gt_joints_path
     pred_joints_dir = args.pred_joints_path
     transformations_dir_path = args.transformations_dir_path
-    masked_output_dir = renders_dir / "masked_renders"
+    masked_output_dir = renders_dir.parent / "masked_renders"
     masked_output_dir.mkdir(parents=True, exist_ok=True)
     metrics_output_dir = args.metrics_output_path
     metrics_output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,12 +190,12 @@ def main() -> None:
             save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
-    print("\nAverage metrics across frames:")
-    for name in sorted(averages.keys()):
-        value = averages.get(name, None)
-        if value is None:
-            continue
-        print(f"  {name.upper():>5}: {value:.4f}")
+#    print("\nAverage metrics across frames:")
+    #for name in sorted(averages.keys()):
+        #value = averages.get(name, None)
+        #if value is None:
+            #continue
+        #print(f"  {name.upper():>5}: {value:.4f}")
     
     # save the metrics to csv file
     metrics_csv_path = metrics_output_dir / "metrics.csv"

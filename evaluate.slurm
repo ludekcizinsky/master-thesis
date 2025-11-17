@@ -9,65 +9,42 @@
 #SBATCH --gres=gpu:1 
 #SBATCH --account=master 
 
-# Conda init and activate
-source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
-conda activate thesis
-module load gcc ffmpeg 
-
 # Change to the directory where the script is located
-cd /home/cizinsky/master-thesis
+cd /home/cizinsky/master-thesis/evaluation
 
-# V7 / Taichi evaluation / MultiPly
-# images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image"
-# gt_masks_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/pseudo_gt_masks"
-# gt_masks_ds_type="binary_png"
-# render_path="/scratch/izar/cizinsky/multiply-output/training/original_taichi/joined_fg"
-# metrics_output_path="/scratch/izar/cizinsky/multiply-output/evaluation/original_taichi"
-# python evaluation/run.py \
-  # --images-path $images_path \
-  # --renders-path $render_path \
-  # --gt-masks-path $gt_masks_path \
-  # --gt-masks-ds-type $gt_masks_ds_type \
-  # --metrics-output-path $metrics_output_path
-
-# masked_dir=$render_path/masked_renders
-# output_video=$masked_dir/masked_renders.mp4
-# ffmpeg -hide_banner -loglevel error -y -framerate 10 \
-  # -i "$masked_dir/%04d.png" \
-  # -c:v libx264 -pix_fmt yuv420p $output_video 
-# echo "Video saved to: $output_video"
-
-
+exp_version=v7
 # V7 / Hi4d / pair00 / Ours
-images_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76/image"
-render_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/training/comic-terrain-249_o7qi4cwb/visualizations/fg_render/all/epoch_0400/rgb"
-gt_masks_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/seg/img_seg_mask/76/all"
-gt_masks_ds_type="multicolor_png"
-pred_masks_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/progressive_sam"
-pred_masks_ds_type="progressive_sam"
-gt_joints_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/smpl"
-gt_joints_ds_type="hi4d"
-pred_joints_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/smpl"
-pred_joints_ds_type="ours"
-transformations_dir_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76"
-metrics_output_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76"
-python evaluation/run.py \
-  --images-path $images_path \
-  --renders-path $render_path \
-  --gt-masks-path $gt_masks_path \
-  --gt-masks-ds-type $gt_masks_ds_type \
-  --pred-masks-path $pred_masks_path \
-  --pred-masks-ds-type $pred_masks_ds_type \
-  --gt-joints-path $gt_joints_path \
-  --gt-joints-ds-type $gt_joints_ds_type \
-  --pred-joints-path $pred_joints_path \
-  --pred-joints-ds-type $pred_joints_ds_type \
-  --transformations-dir-path $transformations_dir_path \
-  --metrics-output-path $metrics_output_path
+seq_name=hi4d_pair00_dance00_cam76
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+cam_id=76
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
-masked_dir=$render_path/masked_renders
-output_video=$masked_dir/masked_renders.mp4
-ffmpeg -hide_banner -loglevel error -y -framerate 20 \
-  -i "$masked_dir/%04d.png" \
-  -c:v libx264 -pix_fmt yuv420p $output_video 
-echo "Video saved to: $output_video"
+# V7 / Hi4d / pair01 / Ours
+seq_name="hi4d_pair01_hug01_cam76"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair01/pair01/hug01
+cam_id=76
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+
+# V7 / Hi4d / pair15 / Ours
+seq_name="hi4d_pair15_fight15_cam4"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15
+cam_id=4
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+
+# V7 / Hi4d / pair16 / Ours
+seq_name="hi4d_pair16_jump16_cam4"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
+cam_id=4
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+
+# V7 / Hi4d / pair17 / Ours
+seq_name="hi4d_pair17_dance17_cam28"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
+cam_id=28
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+
+# V7 / Hi4d / pair19 / Ours
+seq_name="hi4d_pair19_piggyback19_cam4"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
+cam_id=4
+bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
