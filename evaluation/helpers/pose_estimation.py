@@ -145,23 +145,85 @@ def _load_latest_smpl_checkpoint(checkpoint_dir: Union[str, Path]) -> np.ndarray
     stacked, _ = _stack_frame_params(params_dict)
     return stacked
 
-def load_ours_pred_joints(pred_joints_dir_path: Path) -> torch.Tensor:
+def _load_metric_alignment(preprocess_dir: Path, tgt_ds_name: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    alignment_path = preprocess_dir / "smpl_joints_alignment_transforms" / f"{tgt_ds_name}.npz"
+    if not alignment_path.exists():
+        raise FileNotFoundError(f"SMPL joints alignment transforms not found at {alignment_path}")
+    data = np.load(alignment_path, allow_pickle=False)
+    rotations = torch.from_numpy(data["rotations"]).float()
+    translations = torch.from_numpy(data["translations"]).float()
+    scales = torch.from_numpy(data["scales"]).float()
+
+    return rotations, translations, scales
+
+def align_input_smpl_joints(src_joints: torch.Tensor, frame_idx: int, person_idx: int, transformations: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    """
+    Apply precomputed similarity transform to align SMPL joints to metric space.
+
+    Args:
+        src_joints: Source SMPL joints of shape (J, 3) in canonical space (arbitrary units).
+        frame_idx: Frame index to select the transform.
+        person_idx: Person index to select the transform.
+        transformations: Tuple of (rotations, translations, scales) where:
+            - rotations: Tensor of shape (F, P, 3, 3)
+            - translations: Tensor of shape (F, P, 3)
+            - scales: Tensor of shape (F, P, 1)
+
+    Returns:
+        dst_joints: Transformed SMPL joints of shape (J, 3) in metric space. 
+    """
+
+    # parse the transforms
+    rotations, translations, scales = transformations
+    rot = rotations[frame_idx, person_idx]
+    trans_vec = translations[frame_idx, person_idx]
+    scale_val = scales[frame_idx, person_idx]
+
+    # apply the similarity transform
+    original_device = src_joints.device
+    device = rot.device
+    dst_joints = (rot @ src_joints.to(device).T).T * scale_val + trans_vec
+    dst_joints = dst_joints.to(original_device)
+
+    return dst_joints 
+
+
+def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path) -> torch.Tensor:
     """
     Load predicted 3D joints from our method's SMPL checkpoints.
     Args:
         pred_joints_dir_path: Path
             Directory containing SMPL parameter checkpoints.
+        transformations_dir_path: Path
+            Directory containing precomputed alignment transforms.
     Returns:
         torch.Tensor
             Tensor of shape (num_frames, num_persons, 24, 3) with 3D joint positions.
     """
 
+    # Load the unaligned smpl joints
     smpl_params = _load_latest_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
     num_frames, num_persons, _ = smpl_params.shape
     smpl_params_reshaped = smpl_params.reshape(num_frames * num_persons, 86)
     smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
     smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
-    return smpl_joints
+
+
+    # Align the joints to the gt dataset
+    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d")
+    aligned_smpl_joints = torch.zeros_like(smpl_joints)
+    for fidx in range(num_frames):
+        for pidx in range(num_persons):
+            smpl_joints[fidx, pidx] = align_input_smpl_joints(
+                src_joints=smpl_joints[fidx, pidx],
+                frame_idx=fidx,
+                person_idx=pidx,
+                transformations=transformations,
+            )
+            aligned_smpl_joints[fidx, pidx] = smpl_joints[fidx, pidx]
+
+
+    return aligned_smpl_joints
 
 def load_hi4d_gt_joints(gt_joints_dir_path: Path) -> torch.Tensor:
     """
@@ -193,14 +255,14 @@ def get_3d_joint_load_function(ds: str):
     else:
         raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 
-def load_3d_joints_for_evaluation(gt_joints_dir_path: Path, gt_ds: str, pred_joints_dir_path: Optional[Path], pred_ds: Optional[str], device: str = "cuda") -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def load_3d_joints_for_evaluation(gt_joints_dir_path: Path, gt_ds: str, pred_joints_dir_path: Optional[Path], pred_ds: Optional[str], trnsfm_dir_path: Optional[Path], device: str = "cuda") -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
 
     gt_joint_loader = get_3d_joint_load_function(gt_ds)
     gt_joints = gt_joint_loader(gt_joints_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
 
     if pred_joints_dir_path is not None and pred_ds is not None:
         pred_joint_loader = get_3d_joint_load_function(pred_ds)
-        pred_joints = pred_joint_loader(pred_joints_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
+        pred_joints = pred_joint_loader(pred_joints_dir_path, trnsfm_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
     else:
         pred_joints = None
     return gt_joints, pred_joints

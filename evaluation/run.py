@@ -91,6 +91,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--transformations-dir-path",
+        type=Path,
+        help="Directory with transformation data for aligning 3D joints",
+        default=None,
+    )
+    parser.add_argument(
         "--metrics-output-path",
         type=Path,
         help="Directory to save computed metrics",
@@ -121,6 +127,7 @@ def main() -> None:
     pred_masks_dir = args.pred_masks_path
     gt_joints_dir = args.gt_joints_path
     pred_joints_dir = args.pred_joints_path
+    transformations_dir_path = args.transformations_dir_path
     masked_output_dir = renders_dir / "masked_renders"
     masked_output_dir.mkdir(parents=True, exist_ok=True)
     metrics_output_dir = args.metrics_output_path
@@ -143,6 +150,7 @@ def main() -> None:
             gt_ds=args.gt_joints_ds_type,
             pred_joints_dir_path=pred_joints_dir,
             pred_ds=args.pred_joints_ds_type,
+            trnsfm_dir_path=transformations_dir_path,
             device="cpu",
         )
     else:

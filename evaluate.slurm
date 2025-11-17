@@ -45,6 +45,11 @@ gt_masks_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/se
 gt_masks_ds_type="multicolor_png"
 pred_masks_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/progressive_sam"
 pred_masks_ds_type="progressive_sam"
+gt_joints_path="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/smpl"
+gt_joints_ds_type="hi4d"
+pred_joints_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/smpl"
+pred_joints_ds_type="ours"
+transformations_dir_path="/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76"
 metrics_output_path="/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76"
 python evaluation/run.py \
   --images-path $images_path \
@@ -53,6 +58,11 @@ python evaluation/run.py \
   --gt-masks-ds-type $gt_masks_ds_type \
   --pred-masks-path $pred_masks_path \
   --pred-masks-ds-type $pred_masks_ds_type \
+  --gt-joints-path $gt_joints_path \
+  --gt-joints-ds-type $gt_joints_ds_type \
+  --pred-joints-path $pred_joints_path \
+  --pred-joints-ds-type $pred_joints_ds_type \
+  --transformations-dir-path $transformations_dir_path \
   --metrics-output-path $metrics_output_path
 
 masked_dir=$render_path/masked_renders
