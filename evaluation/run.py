@@ -27,6 +27,10 @@ from evaluation.helpers.segmentation import (
     load_masks_for_evaluation,
 )
 
+from evaluation.helpers.pose_estimation import (
+    load_3d_joints_for_evaluation,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -48,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gt-masks-ds-type",
         type=str,
-        help="Dataset type for ground-truth masks (e.g., 'multiply', 'progressive_sam')",
+        help="Dataset type for ground-truth (e.g., 'multiply', 'progressive_sam')",
     )
     parser.add_argument(
         "--pred-masks-path",
@@ -59,7 +63,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pred-masks-ds-type",
         type=str,
-        help="Dataset type for predicted masks (e.g., 'multiply', 'progressive_sam')",
+        help="Dataset type for predictions (e.g., 'multiply', 'progressive_sam')",
+        default=None,
+    )
+    parser.add_argument(
+        "--gt-joints-path",
+        type=Path,
+        help="Directory with ground-truth 3D joints",
+        default=None,
+    )
+    parser.add_argument(
+        "--gt-joints-ds-type",
+        type=str,
+        help="Dataset type for ground-truth 3D joints (e.g., 'hi4d')",
+        default=None,
+    )
+    parser.add_argument(
+        "--pred-joints-path",
+        type=Path,
+        help="Directory with predicted 3D joints",
+        default=None,
+    )
+    parser.add_argument(
+        "--pred-joints-ds-type",
+        type=str,
+        help="Dataset type for predicted 3D joints (e.g., 'ours')",
         default=None,
     )
     parser.add_argument(
@@ -91,6 +119,8 @@ def main() -> None:
     renders_dir = args.renders_path
     gt_masks_dir = args.gt_masks_path
     pred_masks_dir = args.pred_masks_path
+    gt_joints_dir = args.gt_joints_path
+    pred_joints_dir = args.pred_joints_path
     masked_output_dir = renders_dir / "masked_renders"
     masked_output_dir.mkdir(parents=True, exist_ok=True)
     metrics_output_dir = args.metrics_output_path
@@ -107,8 +137,17 @@ def main() -> None:
         pred_ds=args.pred_masks_ds_type,
         device="cpu",
     )
-    gt_smpl_joints = None
-    pred_smpl_joints = None
+    if gt_joints_dir is not None:
+        gt_smpl_joints, pred_smpl_joints = load_3d_joints_for_evaluation(
+            gt_joints_dir_path=gt_joints_dir,
+            gt_ds=args.gt_joints_ds_type,
+            pred_joints_dir_path=pred_joints_dir,
+            pred_ds=args.pred_joints_ds_type,
+            device="cpu",
+        )
+    else:
+        gt_smpl_joints = None
+        pred_smpl_joints = None
     print(f"Found {len(frame_names)} PNG frames. Processing on device: {device}.")
 
     # Compute Metrics
@@ -118,16 +157,27 @@ def main() -> None:
             batch_end = min(batch_start + args.batch_size, len(frame_names))
             print(f"Processing frames {batch_start} to {batch_end-1}...")
 
+            # Images and Renders
             images_batch = images[batch_start:batch_end].to(device)
             renders_batch = renders[batch_start:batch_end].to(device)
+
+            # Masks
             gt_masks_batch = gt_masks[batch_start:batch_end].to(device)
             if pred_masks is not None:
                 pred_masks_batch = pred_masks[batch_start:batch_end].to(device)
             else:
                 pred_masks_batch = None
 
+            # 3D Joints
+            if gt_smpl_joints is not None:
+                gt_smpl_joints_batch = gt_smpl_joints[batch_start:batch_end].to(device)
+                pred_smpl_joints_batch = pred_smpl_joints[batch_start:batch_end].to(device)
+            else:
+                gt_smpl_joints_batch = None
+                pred_smpl_joints_batch = None
+
             frame_names_batch = frame_names[batch_start:batch_end]
-            metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints, pred_smpl_joints)
+            metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints_batch, pred_smpl_joints_batch)
             metric_batches.append({k: v.detach().cpu() for k, v in metrics.items()})
             save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
 

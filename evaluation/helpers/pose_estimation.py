@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, Tuple, Union
+from typing import Any, Dict, Iterable, Tuple, Union, Optional
 
 import numpy as np
 import torch
+
+from training.helpers.smpl_utils import get_joints_from_pose_params
 
 
 def _resolve_latest_checkpoint_path(path: Path) -> Path:
@@ -68,26 +70,7 @@ def _stack_frame_params(params: Dict[int, torch.Tensor]) -> Tuple[np.ndarray, It
     assert stacked.shape[1] == num_persons
     return stacked, [fid for fid, _ in sorted_items]
 
-
-def load_latest_smpl_checkpoint(checkpoint_dir: Union[str, Path]) -> np.ndarray:
-    """
-    Load the latest SMPL checkpoint and return an array with shape (F, P, D).
-
-    F = number of frames, P = number of persons, D = parameter dimension (typically 86).
-    """
-
-    ckpt_dir = Path(checkpoint_dir)
-    if not ckpt_dir.exists():
-        raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt_dir}")
-
-    ckpt_path = _resolve_latest_checkpoint_path(ckpt_dir)
-    payload = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    params_dict = _extract_params_dict(payload)
-    stacked, _ = _stack_frame_params(params_dict)
-    return stacked
-
-
-def load_multiply_smpl_checkpoint(ckpt_path: Union[str, Path]) -> np.ndarray:
+def _load_multiply_smpl_checkpoint(ckpt_path: Union[str, Path]) -> np.ndarray:
     """
     Load SMPL parameters from a Multiply Lightning checkpoint and return (F, P, 86).
     """
@@ -145,80 +128,79 @@ def load_multiply_smpl_checkpoint(ckpt_path: Union[str, Path]) -> np.ndarray:
     stacked = torch.stack(frame_tensors, dim=1).numpy()
     return stacked
 
-
-def load_gt_smpl_params(
-    gt_dir: Union[str, Path],
-    preprocess_dir: Union[str, Path],
-) -> np.ndarray:
+def _load_latest_smpl_checkpoint(checkpoint_dir: Union[str, Path]) -> np.ndarray:
     """
-    Load ground-truth SMPL params stored as per-frame .npz files, apply preprocessing alignments,
-    and return (F, P, 86).
+    Load the latest SMPL checkpoint and return an array with shape (F, P, D).
+
+    F = number of frames, P = number of persons, D = parameter dimension (typically 86).
     """
 
-    gt_root = Path(gt_dir)
-    if not gt_root.exists():
-        raise FileNotFoundError(f"Ground-truth SMPL directory not found: {gt_root}")
+    ckpt_dir = Path(checkpoint_dir)
+    if not ckpt_dir.exists():
+        raise FileNotFoundError(f"Checkpoint path does not exist: {ckpt_dir}")
 
-    frame_files = sorted(gt_root.glob("*.npz"))
-    if not frame_files:
-        raise FileNotFoundError(f"No .npz frames found in {gt_root}")
-
-    preprocess_root = Path(preprocess_dir)
-    if not preprocess_root.exists():
-        raise FileNotFoundError(f"Preprocessing directory not found: {preprocess_root}")
-
-    poses = np.load(preprocess_root / "poses.npy")
-    trans = np.load(preprocess_root / "normalize_trans.npy")
-    shape = np.load(preprocess_root / "mean_shape.npy")
-    if poses.shape[0] != len(frame_files):
-        raise ValueError("Mismatch between poses.npy frames and raw SMPL frames.")
-
-    cam_norm_path = preprocess_root / "cameras_normalize.npz"
-    if not cam_norm_path.exists():
-        raise FileNotFoundError(f"{cam_norm_path} not found. Cannot determine scale.")
-    cam_norm = np.load(cam_norm_path)
-    scale_mat = cam_norm["scale_mat_0"]
-    scale_value = 1.0 / float(scale_mat[0, 0])
-
-    frame_tensors = []
-    num_persons = poses.shape[1]
-    for idx in range(len(frame_files)):
-        frame_pose = poses[idx]
-        frame_trans = trans[idx] * scale_value
-        scale = np.full((num_persons, 1), scale_value, dtype=np.float32)
-        frame_tensor = np.concatenate(
-            [scale, frame_trans, frame_pose[:, :3], frame_pose[:, 3:], shape],
-            axis=1,
-        )
-        if frame_tensor.shape[1] != 86:
-            raise ValueError(f"Unexpected SMPL parameter dimension {frame_tensor.shape[1]} at frame {idx}")
-        frame_tensors.append(frame_tensor)
-
-    stacked = np.stack(frame_tensors, axis=0)
+    ckpt_path = _resolve_latest_checkpoint_path(ckpt_dir)
+    payload = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    params_dict = _extract_params_dict(payload)
+    stacked, _ = _stack_frame_params(params_dict)
     return stacked
 
+def load_ours_pred_joints(pred_joints_dir_path: Path) -> torch.Tensor:
+    """
+    Load predicted 3D joints from our method's SMPL checkpoints.
+    Args:
+        pred_joints_dir_path: Path
+            Directory containing SMPL parameter checkpoints.
+    Returns:
+        torch.Tensor
+            Tensor of shape (num_frames, num_persons, 24, 3) with 3D joint positions.
+    """
 
-def demo_predictions_vs_gt(
-    prediction_checkpoint: Union[str, Path],
-    gt_raw_dir: Union[str, Path],
-    preprocess_dir: Union[str, Path],
-) -> None:
-    pred_array = load_latest_smpl_checkpoint(prediction_checkpoint)
-    p_frames, p_persons = pred_array.shape[:2]
-    print(f"Prediction checkpoint shape: {pred_array.shape} (frames={p_frames}, persons={p_persons})")
+    smpl_params = _load_latest_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
+    num_frames, num_persons, _ = smpl_params.shape
+    smpl_params_reshaped = smpl_params.reshape(num_frames * num_persons, 86)
+    smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
+    smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
+    return smpl_joints
 
-    gt_array = load_gt_smpl_params(gt_raw_dir, preprocess_dir)
-    g_frames, g_persons = gt_array.shape[:2]
-    print(f"GT params shape: {gt_array.shape} (frames={g_frames}, persons={g_persons})")
+def load_hi4d_gt_joints(gt_joints_dir_path: Path) -> torch.Tensor:
+    """
+    Load ground-truth 3D joints from HI4D dataset.
 
-    if pred_array.shape != gt_array.shape:
-        print("WARNING: predicted and GT shapes differ.")
+    Args:
+        gt_joints_dir_path: Path
+            Directory containing per-frame ground-truth joint .npz files.
+    Returns:
+        torch.Tensor
+            Tensor of shape (num_frames, num_persons, 24, 3) with 3D joint positions. 
+    """
+    frame_files = sorted(gt_joints_dir_path.glob("*.npz"))
+    frame_smpl_joints: list[np.ndarray] = []
+
+    for idx, path in enumerate(frame_files):
+        data = np.load(path, allow_pickle=False)
+        joints = data["joints_3d"].astype(np.float32) # [P, 24, 3]
+        frame_smpl_joints.append(joints)
+
+    smpl_joints = np.stack(frame_smpl_joints, axis=0)  # [F, P, 24, 3] 
+    return torch.from_numpy(smpl_joints).float()
+
+def get_3d_joint_load_function(ds: str):
+    if ds == "hi4d":
+        return load_hi4d_gt_joints
+    elif ds == "ours":
+        return load_ours_pred_joints
     else:
-        print("SUCCESS: predicted and GT tensors share the same shape.")
+        raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 
+def load_3d_joints_for_evaluation(gt_joints_dir_path: Path, gt_ds: str, pred_joints_dir_path: Optional[Path], pred_ds: Optional[str], device: str = "cuda") -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
 
-if __name__ == "__main__":
-    PREDICTION_CKPT = "/scratch/izar/cizinsky/thesis/output/hi4d_pair00_dance00_cam76/checkpoints/v7_hi4d_pair00_dance00_cam76/smpl/iter_005000.pt"
-    GT_SMPL_DIR = "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/smpl"
-    PREPROCESS_DIR = "/scratch/izar/cizinsky/multiply-output/preprocessing/data/hi4d_pair00_dance00_cam76"
-    demo_predictions_vs_gt(PREDICTION_CKPT, GT_SMPL_DIR, PREPROCESS_DIR)
+    gt_joint_loader = get_3d_joint_load_function(gt_ds)
+    gt_joints = gt_joint_loader(gt_joints_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
+
+    if pred_joints_dir_path is not None and pred_ds is not None:
+        pred_joint_loader = get_3d_joint_load_function(pred_ds)
+        pred_joints = pred_joint_loader(pred_joints_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
+    else:
+        pred_joints = None
+    return gt_joints, pred_joints
