@@ -17,34 +17,34 @@ exp_version=v7
 seq_name=hi4d_pair00_dance00_cam76
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
 cam_id=76
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
 # V7 / Hi4d / pair01 / Ours
 seq_name="hi4d_pair01_hug01_cam76"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair01/pair01/hug01
 cam_id=76
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
 # V7 / Hi4d / pair15 / Ours
 seq_name="hi4d_pair15_fight15_cam4"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15
 cam_id=4
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
 # V7 / Hi4d / pair16 / Ours
 seq_name="hi4d_pair16_jump16_cam4"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
 cam_id=4
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
 # V7 / Hi4d / pair17 / Ours
 seq_name="hi4d_pair17_dance17_cam28"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
 cam_id=28
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
 
 # V7 / Hi4d / pair19 / Ours
 seq_name="hi4d_pair19_piggyback19_cam4"
 gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
 cam_id=4
-bash eval_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version
+bash eval_ours_single_experiment.sh $seq_name $gt_dir $cam_id $exp_version

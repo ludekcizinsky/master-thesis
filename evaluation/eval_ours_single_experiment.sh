@@ -39,10 +39,11 @@ python run.py \
   --transformations-dir-path $preprocess_dir_path \
   --metrics-output-path $metrics_output_path
 
-cp $metrics_output_path/metrics.csv ${eval_dir_output}/metrics/${exp_version}_${seq_name}.csv
+cp $metrics_output_path/metrics.csv ${eval_dir_output}/metrics/ours/${exp_version}_${seq_name}.csv
+echo "Metrics CSV saved to: ${eval_dir_output}/metrics/ours/${exp_version}_${seq_name}.csv"
 
 masked_dir=$render_path/../masked_renders
-output_video=${eval_dir_output}/videos/masked_renders/${exp_version}_${seq_name}.mp4
+output_video=${eval_dir_output}/videos/masked_renders/ours/${exp_version}_${seq_name}.mp4
 ffmpeg -hide_banner -loglevel error -y -framerate 20 \
   -i "$masked_dir/%04d.png" \
   -c:v libx264 -pix_fmt yuv420p $output_video 

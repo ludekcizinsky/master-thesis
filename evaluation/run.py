@@ -190,12 +190,6 @@ def main() -> None:
             save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
-#    print("\nAverage metrics across frames:")
-    #for name in sorted(averages.keys()):
-        #value = averages.get(name, None)
-        #if value is None:
-            #continue
-        #print(f"  {name.upper():>5}: {value:.4f}")
     
     # save the metrics to csv file
     metrics_csv_path = metrics_output_dir / "metrics.csv"
@@ -203,8 +197,6 @@ def main() -> None:
         f.write("metric,value\n")
         for name, value in averages.items():
             f.write(f"{name},{value:.6f}\n")
-    print(f"\nMetrics saved to: {metrics_csv_path}")
-
 
 if __name__ == "__main__":
     main()
