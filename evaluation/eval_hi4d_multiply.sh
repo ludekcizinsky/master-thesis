@@ -9,22 +9,22 @@ module load gcc ffmpeg
 seq_name=$1
 gt_dir=$2
 cam_id=$3
-exp_version=$4
 
 # Construct paths from CLI arguments
 eval_dir_output=/scratch/izar/cizinsky/thesis/evaluation
 preprocess_dir_path=/scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq_name
 images_path=$preprocess_dir_path/image
-render_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/fg_render/all/rgb
+test_results_path=/scratch/izar/cizinsky/multiply-output/training/$seq_name/visualisations/
+render_path=$test_results_path/test_fg_rendering/-1
 gt_masks_path=$gt_dir/seg/img_seg_mask/$cam_id/all
 gt_masks_ds_type=multicolor_png
-pred_masks_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/progressive_sam
-pred_masks_ds_type=progressive_sam
+pred_masks_path=$test_results_path/test_mask/-1
+pred_masks_ds_type=binary_png
 gt_joints_path=$gt_dir/smpl
 gt_joints_ds_type=hi4d
-pred_joints_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/smpl
-pred_joints_ds_type=ours
-metrics_output_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name
+pred_joints_path=/scratch/izar/cizinsky/multiply-output/training/$seq_name/checkpoints
+pred_joints_ds_type=multiply
+metrics_output_path=$test_results_path
 python run.py \
   --images-path $images_path \
   --renders-path $render_path \
@@ -39,13 +39,14 @@ python run.py \
   --transformations-dir-path $preprocess_dir_path \
   --metrics-output-path $metrics_output_path
 
-mkdir -p ${eval_dir_output}/metrics/ours
-cp $metrics_output_path/metrics.csv ${eval_dir_output}/metrics/ours/${exp_version}_${seq_name}.csv
-echo "Metrics CSV saved to: ${eval_dir_output}/metrics/ours/${exp_version}_${seq_name}.csv"
+mkdir -p ${eval_dir_output}/metrics/hi4d/multiply
+scene_name=${seq_name#hi4d_}
+cp $metrics_output_path/metrics.csv ${eval_dir_output}/metrics/hi4d/multiply/${scene_name}.csv
+echo "Metrics CSV saved to: ${eval_dir_output}/metrics/hi4d/multiply/${scene_name}.csv"
 
-mkdir -p ${eval_dir_output}/videos/masked_renders/ours
+mkdir -p ${eval_dir_output}/videos/masked_renders/hi4d/multiply
 masked_dir=$render_path/../masked_renders
-output_video=${eval_dir_output}/videos/masked_renders/ours/${exp_version}_${seq_name}.mp4
+output_video=${eval_dir_output}/videos/masked_renders/hi4d/multiply/${scene_name}.mp4
 ffmpeg -hide_banner -loglevel error -y -framerate 20 \
   -i "$masked_dir/%04d.png" \
   -c:v libx264 -pix_fmt yuv420p $output_video 
