@@ -14,17 +14,20 @@ exp_version=$4
 # Construct paths from CLI arguments
 eval_dir_output=/scratch/izar/cizinsky/thesis/evaluation
 preprocess_dir_path=/scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq_name
+eval_dir_path=/scratch/izar/cizinsky/thesis/output/$seq_name/evaluation/${exp_version}
+ckpt_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}
+# Derive other paths
 images_path=$preprocess_dir_path/image
-render_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/fg_render/all/rgb
+render_path=$eval_dir_path/fg_render/all/rgb
 gt_masks_path=$gt_dir/seg/img_seg_mask/$cam_id/all
 gt_masks_ds_type=multicolor_png
-pred_masks_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/progressive_sam
+pred_masks_path=$ckpt_path/progressive_sam
 pred_masks_ds_type=progressive_sam
 gt_joints_path=$gt_dir/smpl
 gt_joints_ds_type=hi4d
-pred_joints_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name/smpl
+pred_joints_path=$ckpt_path/smpl
 pred_joints_ds_type=ours
-metrics_output_path=/scratch/izar/cizinsky/thesis/output/$seq_name/checkpoints/${exp_version}_$seq_name
+metrics_output_path=$eval_dir_path
 python run.py \
   --images-path $images_path \
   --renders-path $render_path \

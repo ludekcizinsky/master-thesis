@@ -79,7 +79,6 @@ class Trainer:
             cfg.tids,
         )
         self.checkpoint_dir = self.ckpt_manager.root
-        self.ckpt_fg_render_dir = self.checkpoint_dir / "fg_render"
         self.baseline_vis_dir = Path(self.cfg.preprocess_dir) / "baseline_smpl_vis"
 
         if not cfg.resume:
@@ -162,6 +161,10 @@ class Trainer:
         if self.cfg.save_pose_overlays_every_epoch > 0 and not self.cfg.is_preprocessing:
             self._ensure_baseline_visualisations()
             self._copy_baseline_to_experiment()
+
+        # Evaluation
+        self.eval_dir = Path(self.cfg.output_dir) / "evaluation" / cfg.group_name
+        self.eval_fg_render_dir = self.eval_dir / "fg_render" 
 
     def _parse_batch(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         images = batch["image"].to(self.device)  # [B,H,W,3]
@@ -851,11 +854,11 @@ class Trainer:
         if len(selected_tids) > 0:
             save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / "all" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
-            save_checkpoint_rgb_dir = self.ckpt_fg_render_dir / "all" / "rgb"
+            save_eval_rgb_dir = self.eval_fg_render_dir / "all" / "rgb"
             # if exists, clean the checkpoint dir to save new eval renders
-            if save_checkpoint_rgb_dir.exists():
-                shutil.rmtree(save_checkpoint_rgb_dir)
-            os.makedirs(save_checkpoint_rgb_dir, exist_ok=True)
+            if save_eval_rgb_dir.exists():
+                shutil.rmtree(save_eval_rgb_dir)
+            os.makedirs(save_eval_rgb_dir, exist_ok=True)
             save_qual_mask_dir = save_qual_dir / "gt_mask"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
             os.makedirs(save_qual_mask_dir, exist_ok=True)
@@ -898,7 +901,7 @@ class Trainer:
                 img_pil = Image.fromarray(img_np)
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
                 # also save to checkpoint dir
-                img_pil.save(save_checkpoint_rgb_dir / f"{fid:04d}.png")
+                img_pil.save(save_eval_rgb_dir / f"{fid:04d}.png")
 
                 # save the mask image
                 mask_np = (gt_masks_joined[0].cpu().numpy() * 255).astype("uint8")
