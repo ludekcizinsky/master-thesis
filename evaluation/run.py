@@ -6,19 +6,17 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 import torch
-from PIL import Image
-import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from training.helpers.evaluation_metrics import (  # noqa: E402
+from training.helpers.evaluation_metrics import (
     compute_all_metrics,
     aggregate_batch_tid_metric_dicts,
 )
 
-from training.helpers.align_trace_to_gt import (  # noqa: E402
+from training.helpers.align_trace_to_gt import (
     run_alignment,
 )
 
@@ -43,6 +41,7 @@ def parse_args() -> argparse.Namespace:
         "--images-path",
         type=Path,
         help="Directory with reference RGB frames",
+        default=None,
     )
     parser.add_argument(
         "--renders-path",
@@ -53,11 +52,13 @@ def parse_args() -> argparse.Namespace:
         "--gt-masks-path",
         type=Path,
         help="Directory with ground-truth masks",
+        default=None,
     )
     parser.add_argument(
         "--gt-masks-ds-type",
         type=str,
         help="Dataset type for ground-truth (e.g., 'multiply', 'progressive_sam')",
+        default=None,
     )
     parser.add_argument(
         "--pred-masks-path",
@@ -105,6 +106,7 @@ def parse_args() -> argparse.Namespace:
         "--metrics-output-path",
         type=Path,
         help="Directory to save computed metrics",
+        default=None
     )
     parser.add_argument(
         "--batch-size",
@@ -133,24 +135,36 @@ def main() -> None:
     gt_joints_dir = args.gt_joints_path
     pred_joints_dir = args.pred_joints_path
     transformations_dir_path = args.transformations_dir_path
-    masked_output_dir = renders_dir.parent / "masked_renders"
-    renders_output_dir = renders_dir.parent / "renders"
-    masked_output_dir.mkdir(parents=True, exist_ok=True)
-    renders_output_dir.mkdir(parents=True, exist_ok=True)
+    masked_output_dir = renders_dir.parent / "masked_renders" if gt_masks_dir is not None else None
+    renders_output_dir = renders_dir.parent / "renders" if renders_dir is not None else None
     metrics_output_dir = args.metrics_output_path
-    metrics_output_dir.mkdir(parents=True, exist_ok=True)
+    if masked_output_dir is not None:
+        masked_output_dir.mkdir(parents=True, exist_ok=True)
+    if renders_output_dir is not None:
+        renders_output_dir.mkdir(parents=True, exist_ok=True)
+    if metrics_output_dir is not None:
+        metrics_output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data for evaluation
     frame_names = sorted(p.name for p in renders_dir.iterdir() if p.suffix.lower() == ".png")
-    images = torch.stack([load_image(images_dir / name) for name in frame_names], dim=0)
     renders = torch.stack([load_image(renders_dir / name) for name in frame_names], dim=0)
-    gt_masks, pred_masks = load_masks_for_evaluation(
-        gt_masks_dir_path=gt_masks_dir,
-        gt_ds=args.gt_masks_ds_type,
-        pred_masks_dir_path=pred_masks_dir,
-        pred_ds=args.pred_masks_ds_type,
-        device="cpu",
-    )
+    if images_dir is not None:
+        images = torch.stack([load_image(images_dir / name) for name in frame_names], dim=0)
+    else:
+        images = None
+
+    if gt_masks_dir is not None:
+        gt_masks, pred_masks = load_masks_for_evaluation(
+            gt_masks_dir_path=gt_masks_dir,
+            gt_ds=args.gt_masks_ds_type,
+            pred_masks_dir_path=pred_masks_dir,
+            pred_ds=args.pred_masks_ds_type,
+            device="cpu",
+        )
+    else:
+        gt_masks = None
+        pred_masks = None
+    
     if gt_joints_dir is not None:
 
         # Run the alignment to the gt dataset
@@ -187,39 +201,52 @@ def main() -> None:
             batch_end = min(batch_start + args.batch_size, len(frame_names))
             print(f"Processing frames {batch_start} to {batch_end-1}...")
 
-            # Images and Renders
-            images_batch = images[batch_start:batch_end].to(device)
-            renders_batch = renders[batch_start:batch_end].to(device)
+            # Full Evaluation (Images, Masks, 3D Joints)
+            if images is not None:
 
-            # Masks
-            gt_masks_batch = gt_masks[batch_start:batch_end].to(device)
-            if pred_masks is not None:
-                pred_masks_batch = pred_masks[batch_start:batch_end].to(device)
+                # Images and Renders
+                images_batch = images[batch_start:batch_end].to(device)
+                renders_batch = renders[batch_start:batch_end].to(device)
+
+                # Masks
+                gt_masks_batch = gt_masks[batch_start:batch_end].to(device)
+                if pred_masks is not None:
+                    pred_masks_batch = pred_masks[batch_start:batch_end].to(device)
+                else:
+                    pred_masks_batch = None
+
+                # 3D Joints
+                if gt_smpl_joints is not None:
+                    gt_smpl_joints_batch = gt_smpl_joints[batch_start:batch_end].to(device)
+                    pred_smpl_joints_batch = pred_smpl_joints[batch_start:batch_end].to(device)
+                else:
+                    gt_smpl_joints_batch = None
+                    pred_smpl_joints_batch = None
+
+                # Metric Computation
+                frame_names_batch = frame_names[batch_start:batch_end]
+                metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints_batch, pred_smpl_joints_batch)
+                metric_batches.append({k: v.detach().cpu() for k, v in metrics.items()})
+
+                # Save Renders
+                save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
+                save_renders(renders_batch, frame_names_batch, renders_output_dir)
+            
+            # Renders-Only Evaluation (qualitative only)
             else:
-                pred_masks_batch = None
-
-            # 3D Joints
-            if gt_smpl_joints is not None:
-                gt_smpl_joints_batch = gt_smpl_joints[batch_start:batch_end].to(device)
-                pred_smpl_joints_batch = pred_smpl_joints[batch_start:batch_end].to(device)
-            else:
-                gt_smpl_joints_batch = None
-                pred_smpl_joints_batch = None
-
-            frame_names_batch = frame_names[batch_start:batch_end]
-            metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints_batch, pred_smpl_joints_batch)
-            metric_batches.append({k: v.detach().cpu() for k, v in metrics.items()})
-            save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
-            save_renders(renders_batch, frame_names_batch, renders_output_dir)
+                renders_batch = renders[batch_start:batch_end].to(device)
+                frame_names_batch = frame_names[batch_start:batch_end]
+                save_renders(renders_batch, frame_names_batch, renders_output_dir)
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
     
     # save the metrics to csv file
-    metrics_csv_path = metrics_output_dir / "metrics.csv"
-    with open(metrics_csv_path, "w") as f:
-        f.write("metric,value\n")
-        for name, value in averages.items():
-            f.write(f"{name},{value:.6f}\n")
+    if metrics_output_dir is not None:
+        metrics_csv_path = metrics_output_dir / "metrics.csv"
+        with open(metrics_csv_path, "w") as f:
+            f.write("metric,value\n")
+            for name, value in averages.items():
+                f.write(f"{name},{value:.6f}\n")
 
 if __name__ == "__main__":
     main()
