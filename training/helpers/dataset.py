@@ -12,7 +12,7 @@ from training.helpers.progressive_sam import ProgressiveSAMManager
 
 
 class Hi4DDataset:
-    def __init__(self, mask_root: Optional[Union[str, Path]], smpl_root: Optional[Union[str, Path]], preprocess_dir: Optional[Union[str, Path]]):
+    def __init__(self, mask_root: Optional[Union[str, Path]], smpl_root: Optional[Union[str, Path]], preprocess_dir: Optional[Union[str, Path]], pred_method: str = "ours"):
 
         # Segmentation masks
         self.mask_root = Path(mask_root) if mask_root is not None else None
@@ -41,6 +41,8 @@ class Hi4DDataset:
         self.preprocess_dir = Path(preprocess_dir) if preprocess_dir is not None else None
         if self.preprocess_dir is not None and not self.preprocess_dir.exists():
             raise FileNotFoundError(f"Preprocessing directory '{self.preprocess_dir}' does not exist.")
+        
+        self.pred_method = pred_method
         
         # Load SMPL params
         self._load_gt_smpl_params() 
@@ -154,7 +156,7 @@ class Hi4DDataset:
         return self.smpl_root is not None and self.smpl_params is not None
 
     def _load_metric_alignment(self) -> Optional[dict]:
-        alignment_path = self.preprocess_dir / "smpl_joints_alignment_transforms" / "hi4d.npz"
+        alignment_path = self.preprocess_dir / "smpl_joints_alignment_transforms" / self.pred_method / "hi4d.npz"
         if not alignment_path.exists():
             raise FileNotFoundError(f"SMPL joints alignment transforms not found at {alignment_path}")
         data = np.load(alignment_path)
@@ -347,13 +349,14 @@ def build_training_dataset(cfg, mask_path: Path) -> Dataset:
     return dataset
 
 
-def build_evaluation_dataset(cfg) -> Dataset:
+def build_evaluation_dataset(cfg, pred_method) -> Dataset:
     ds_name = cfg.eval_ds_name
     if ds_name.lower() == "hi4d":
         dataset = Hi4DDataset(
             mask_root=cfg.gt_seg_masks_dir,
             smpl_root=cfg.gt_smpl_dir,
             preprocess_dir=cfg.preprocess_dir,
+            pred_method=pred_method,
         )
     else:
         raise ValueError(f"Unsupported evaluation dataset name: {ds_name}")

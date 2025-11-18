@@ -34,12 +34,13 @@ from training.helpers.render import render_splats
 from training.helpers.losses import prepare_input_for_loss
 from training.helpers.checkpointing import ModelCheckpointManager
 from training.helpers.progressive_sam import ProgressiveSAMManager
-from training.helpers.visualisation_utils import colourise_depth, save_orbit_visualization, save_epoch_smpl_overlays, save_smpl_overlay_image 
+from training.helpers.visualisation_utils import save_orbit_visualization, save_epoch_smpl_overlays 
 from training.helpers.evaluation_metrics import (
     compute_all_metrics, 
     aggregate_batch_tid_metric_dicts, 
-    aggregate_global_tids_metric_dicts
 )
+
+from training.helpers.align_trace_to_gt import run_alignment as align_smpl_joints_to_gt
 
 from fused_ssim import fused_ssim
 
@@ -765,92 +766,22 @@ class Trainer:
 
         gt_provided = self.cfg.gt_seg_masks_dir is not None or self.cfg.gt_smpl_dir is not None
         if gt_provided:
-            gt_dataset: Hi4DDataset = build_evaluation_dataset(self.cfg)
+            # Run alignment of SMPL joints from this pipeline to the ground-truth dataset
+            # the similarity transform is then saved to disk and loaded by the evaluation dataset
+            align_smpl_joints_to_gt(
+                self.ckpt_manager.smpl_dir,
+                Path(self.cfg.gt_smpl_dir),
+                Path(self.cfg.preprocess_dir),
+                gt_dataset="hi4d",
+                pred_method="ours_canonical"
+            )
+
+            # Setup ground-truth dataset for metrics
+            gt_dataset: Hi4DDataset = build_evaluation_dataset(self.cfg, pred_method="ours_canonical")
         else:
             gt_dataset = None
 
-        # --- Individual human evaluations
-        if len(selected_tids) > 0:
-            tid_video_metrics = dict()
-            for tid in selected_tids:
-                save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / f"tid_{tid}" / f"epoch_{epoch:04d}"
-                save_qual_rgb_dir = save_qual_dir / "rgb"
-                save_qual_mask_dir = save_qual_dir / "gt_mask"
-                os.makedirs(save_qual_rgb_dir, exist_ok=True)
-                os.makedirs(save_qual_mask_dir, exist_ok=True)
-                if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
-                    save_qual_pred_mask_dir = save_qual_dir / "pred_mask"
-                    os.makedirs(save_qual_pred_mask_dir, exist_ok=True)
-
-                tid_idx = self.cfg.tids.index(tid)
-                tid_metrics = list()
-                for batch in eval_dataloader:
-                    images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
-                    pred_masks = human_masks[:, tid_idx, ...]  # [B,H,W]
-                    colors, _, pred_smpl = self.evaluate(batch, [tid], render_bg=False)
-                    pred_smpl = pred_smpl.unsqueeze(0)  # [1,1,86]
-
-                    # Load predicted masks if available to compute segmentation metrics
-                    if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
-                        gt_masks_all = gt_dataset.load_segmentation_masks(fid).to(self.device)
-                        gt_masks = gt_masks_all[tid_idx, ...].unsqueeze(0)  # [B,H,W]
-                    else:
-                        gt_masks = pred_masks
-                        pred_masks = None
-
-                    # Load ground-truth SMPL if available
-                    if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
-                        gt_smpl_joints_all = gt_dataset.load_smpl_joints_for_frame(fid).to(self.device) # [P,24,3]
-                        gt_smpl_joints = gt_smpl_joints_all[tid_idx].unsqueeze(0)  # [B,24,3]
-
-                        # pred smpl pose params -> joints
-                        pred_smpl_joints_raw = get_joints_from_pose_params(pred_smpl[0]) # [1,86] -> [1,24,3]
-
-                        # align to the gt dataset
-                        pred_smpl_joints = gt_dataset.align_input_smpl_joints(pred_smpl_joints_raw[0], fid, tid_idx) # [24,3]
-                        pred_smpl_joints = pred_smpl_joints.unsqueeze(0)  # [1,24,3]
-                        
-                    else:
-                        gt_smpl_joints = None
-                        pred_smpl_joints = None
-
-                    # Compute quantitative rendering metrics
-                    metrics = compute_all_metrics(
-                        images=images,
-                        masks=gt_masks,
-                        renders=colors,
-                        pred_masks=pred_masks,
-                        gt_smpl_joints=gt_smpl_joints,
-                        pred_smpl_joints=pred_smpl_joints,
-                    )
-                    tid_metrics.append(metrics)
-
-                    # save the rendered image
-                    img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
-                    img_pil = Image.fromarray(img_np)
-                    img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
-
-                    # save the mask image
-                    mask_np = (gt_masks[0].cpu().numpy() * 255).astype("uint8")
-                    mask_pil = Image.fromarray(mask_np)
-                    mask_pil.save(save_qual_mask_dir / f"{fid:04d}.png")
-
-                    # if pred masks provided also save them
-                    if pred_masks is not None:
-                        pred_mask_np = (pred_masks[0].cpu().numpy() * 255).astype("uint8")
-                        pred_mask_pil = Image.fromarray(pred_mask_np)
-                        pred_mask_pil.save(save_qual_pred_mask_dir / f"{fid:04d}.png")
-                
-                # Aggregate metrics
-                tid_metrics_across_frames = aggregate_batch_tid_metric_dicts(tid_metrics)
-                tid_video_metrics[tid] = tid_metrics_across_frames
-            
-            # aggregate across tids
-            individual_tid_metrics_across_frames = aggregate_global_tids_metric_dicts(tid_video_metrics)
-        else:
-            individual_tid_metrics_across_frames = dict()
-
-        # --- Joined human evaluation (all selected tids together)
+        # --- Foreground render evaluation (person only)
         if len(selected_tids) > 0:
             save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / "all" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
@@ -882,8 +813,24 @@ class Trainer:
                     pred_masks_joined = None
 
                 # Load ground-truth SMPL if available
-                gt_smpl_joints = None
-                pred_smpl_joints = None
+                if gt_dataset is not None and gt_dataset.is_smpl_loading_available():
+                    gt_smpl_joints_all = gt_dataset.load_smpl_joints_for_frame(fid).to(self.device) # [P,24,3]
+                    gt_smpl_joints = gt_smpl_joints_all.unsqueeze(0)  # [B,P,24,3]
+
+                    # pred smpl pose params -> joints
+                    pred_smpl_joints_raw = get_joints_from_pose_params(pred_smpl[0]) # [P,86] -> [P,24,3]
+
+                    # align to the gt dataset
+                    pred_smpl_joints_aligned = list()
+                    for tid in selected_tids:
+                        tid_idx = self.cfg.tids.index(tid)
+                        pred_smpl_joints = gt_dataset.align_input_smpl_joints(pred_smpl_joints_raw[tid_idx], fid, tid_idx) # [24,3] -> [24,3] (aligned)
+                        pred_smpl_joints_aligned.append(pred_smpl_joints)
+                    pred_smpl_joints = torch.stack(pred_smpl_joints_aligned, dim=0)  # [P,24,3]
+                    pred_smpl_joints = pred_smpl_joints.unsqueeze(0)  # [B,P,24,3] 
+                else:
+                    gt_smpl_joints = None
+                    pred_smpl_joints = None
 
                 # Compute quantitative metrics
                 metrics = compute_all_metrics(
@@ -951,8 +898,6 @@ class Trainer:
 
         # Log to wandb
         dict_to_log = {}
-        for metric_name, value in individual_tid_metrics_across_frames.items():
-            dict_to_log[f"eval/individual_tids/{metric_name}"] = value
         for metric_name, value in joined_tid_metrics_across_frames.items():
             dict_to_log[f"eval/joined_tids/{metric_name}"] = value
         for metric_name, value in full_render_metrics_across_frames.items():
@@ -1018,6 +963,8 @@ class Trainer:
                     print(f"--- FYI: SMPL parameter optimization disabled from epoch {self.current_epoch} onwards.")
 
                 completed_epochs = epoch + 1
+
+                # Debug visualizations of SMPL overlays
                 if (
                     smpl_epoch_updated
                     and self.cfg.save_pose_overlays_every_epoch > 0
@@ -1033,6 +980,11 @@ class Trainer:
                         alpha=getattr(self.cfg, "pose_overlay_alpha", 0.6),
                     )
 
+                # Checkpointing
+                if self.cfg.save_freq > 0 and completed_epochs % self.cfg.save_freq == 0:
+                    self.ckpt_manager.save(self.all_gs, completed_epochs, smpl_params=self.smpl_params)
+
+                # Evaluation
                 if (
                     self.cfg.eval_every_epochs > 0
                     and completed_epochs % self.cfg.eval_every_epochs == 0
@@ -1044,10 +996,10 @@ class Trainer:
                         epoch=completed_epochs,
                     )
 
-                if self.cfg.save_freq > 0 and completed_epochs % self.cfg.save_freq == 0:
-                    self.ckpt_manager.save(self.all_gs, completed_epochs, smpl_params=self.smpl_params)
+
                 pbar.update(1)
 
+        # Final checkpoint if not already saved
         if self.cfg.save_freq > 0 and max_epochs > 0 and (max_epochs % self.cfg.save_freq != 0):
             self.ckpt_manager.save(self.all_gs, max_epochs, smpl_params=self.smpl_params)
         

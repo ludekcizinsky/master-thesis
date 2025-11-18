@@ -22,7 +22,6 @@ from training.helpers.smpl_utils import canon_to_posed
 from training.smpl_deformer.smpl_server import SMPLServer
 import pyrender
 import trimesh
-from evaluation.helpers.pose_estimation import load_gt_smpl_params, load_latest_smpl_checkpoint
 
 _SMPL_VIS_SERVER: Optional[SMPLServer] = None
 

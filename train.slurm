@@ -150,19 +150,19 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=football_high_res tids=[0,1] train_bg=false resume=false 'logger.tags=[v7, football]' group_name=$GROUP_NAME
 
 # --------------- V7 hi4d experiments
-# seq_name="hi4d_pair00_dance00_cam76"
-# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
-# cam_id=76
-# GROUP_NAME=v7_${seq_name}
-# python training/run.py \
-    # scene_name=$seq_name \
-    # tids=[0,1] \
-    # train_bg=false \
-    # resume=false \
-    # 'logger.tags=[v7]' \
-    # group_name=$GROUP_NAME \
-    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
-    # gt_smpl_dir=$gt_dir/smpl
+seq_name="hi4d_pair00_dance00_cam76"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+cam_id=76
+GROUP_NAME=v7_${seq_name}
+python training/run.py \
+    scene_name=$seq_name \
+    tids=[0,1] \
+    train_bg=false \
+    resume=false \
+    'logger.tags=[v7]' \
+    group_name=$GROUP_NAME \
+    gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    gt_smpl_dir=$gt_dir/smpl
 
 
 # seq_name="hi4d_pair01_hug01_cam76"

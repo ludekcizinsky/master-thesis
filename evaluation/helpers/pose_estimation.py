@@ -187,6 +187,25 @@ def align_input_smpl_joints(src_joints: torch.Tensor, frame_idx: int, person_idx
 
     return dst_joints 
 
+def load_ours_pred_joints_canonical(pred_joints_dir_path: Path) -> torch.Tensor:
+    """
+    Load predicted 3D joints from our method's SMPL checkpoints in canonical space.
+    Args:
+        pred_joints_dir_path: Path
+            Directory containing SMPL parameter checkpoints.
+    Returns:
+        torch.Tensor
+            Tensor of shape (num_frames, num_persons, 24, 3) with 3D joint positions.
+    """
+
+    # Load the unaligned smpl joints
+    smpl_params = _load_latest_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
+    num_frames, num_persons, _ = smpl_params.shape
+    smpl_params_reshaped = smpl_params.reshape(num_frames * num_persons, 86)
+    smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
+    smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
+
+    return smpl_joints
 
 def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path) -> torch.Tensor:
     """
@@ -202,12 +221,8 @@ def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: 
     """
 
     # Load the unaligned smpl joints
-    smpl_params = _load_latest_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
-    num_frames, num_persons, _ = smpl_params.shape
-    smpl_params_reshaped = smpl_params.reshape(num_frames * num_persons, 86)
-    smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
-    smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
-
+    smpl_joints = load_ours_pred_joints_canonical(pred_joints_dir_path)  # Shape (F, P, 24, 3)
+    num_frames, num_persons, _, _ = smpl_joints.shape
 
     # Align the joints to the gt dataset
     transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d")
@@ -280,6 +295,8 @@ def get_3d_joint_load_function(ds: str):
         return load_hi4d_gt_joints
     elif ds == "ours":
         return load_ours_pred_joints
+    elif ds == "ours_canonical":
+        return load_ours_pred_joints_canonical
     elif ds == "multiply":
         return load_multiply_pred_joints
     else:
