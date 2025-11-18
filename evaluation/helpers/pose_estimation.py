@@ -240,9 +240,17 @@ def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: 
 
     return aligned_smpl_joints
 
-
-def load_multiply_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path) -> torch.Tensor:
-
+def load_multiply_pred_joints_canonical(pred_joints_dir_path: Path) -> torch.Tensor:
+    """
+    Load predicted 3D joints from Multiply SMPL checkpoints in canonical space.
+    Args:
+        pred_joints_dir_path: Path
+            Directory containing SMPL parameter checkpoints.
+    Returns:
+        torch.Tensor
+            Tensor of shape (num_frames, num_persons, 24, 3) with 3D joint positions.
+    """
+    
     # Load the unaligned smpl joints
     smpl_params = _load_multiply_smpl_checkpoint(pred_joints_dir_path)  # Shape (F, P, 86)
     num_frames, num_persons, _ = smpl_params.shape
@@ -250,9 +258,17 @@ def load_multiply_pred_joints(pred_joints_dir_path: Path, transformations_dir_pa
     smpl_joints = get_joints_from_pose_params(torch.as_tensor(smpl_params_reshaped, device="cpu"))  # Shape (F*P, 24, 3)
     smpl_joints = smpl_joints.reshape(num_frames, num_persons, 24, 3)  # Shape (F, P, 24, 3)
 
+    return smpl_joints
+
+
+def load_multiply_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path, pred_method: str) -> torch.Tensor:
+
+    # Load the unaligned smpl joints
+    smpl_joints = load_multiply_pred_joints_canonical(pred_joints_dir_path)  # Shape (F, P, 24, 3)
+    num_frames, num_persons, _, _ = smpl_joints.shape
 
     # Align the joints to the gt dataset
-    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d")
+    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d", pred_method=pred_method)
     aligned_smpl_joints = torch.zeros_like(smpl_joints)
     for fidx in range(num_frames):
         for pidx in range(num_persons):
@@ -299,6 +315,8 @@ def get_3d_joint_load_function(ds: str):
         return load_ours_pred_joints_canonical
     elif ds == "multiply":
         return load_multiply_pred_joints
+    elif ds == "multiply_canonical":
+        return load_multiply_pred_joints_canonical
     else:
         raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 

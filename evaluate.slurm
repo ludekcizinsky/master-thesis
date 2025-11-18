@@ -14,10 +14,10 @@ cd /home/cizinsky/master-thesis/evaluation
 
 # exp_version=v7
 # # V7 / Hi4d / pair00 / Ours
-seq_name=hi4d_pair00_dance00_cam76
-gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
-cam_id=76
-bash eval_hi4d_ours.sh $seq_name $gt_dir $cam_id $exp_version
+# seq_name=hi4d_pair00_dance00_cam76
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# bash eval_hi4d_ours.sh $seq_name $gt_dir $cam_id $exp_version
 
 # # V7 / Hi4d / pair01 / Ours
 # seq_name="hi4d_pair01_hug01_cam76"
