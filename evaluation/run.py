@@ -18,6 +18,10 @@ from training.helpers.evaluation_metrics import (  # noqa: E402
     aggregate_batch_tid_metric_dicts,
 )
 
+from training.helpers.align_trace_to_gt import (  # noqa: E402
+    run_alignment,
+)
+
 from evaluation.helpers.misc import (
     load_image,
     save_masked_renders,
@@ -145,12 +149,27 @@ def main() -> None:
         device="cpu",
     )
     if gt_joints_dir is not None:
+
+        # Run the alignment to the gt dataset
+        run_alignment(
+            pred_dir=pred_joints_dir,
+            gt_dir=gt_joints_dir,
+            preprocess_dir=transformations_dir_path,
+            gt_dataset=args.gt_joints_ds_type,
+            pred_method=args.pred_joints_ds_type+"_canonical",
+            gt_camera_file=None,
+            camera_id=None,
+            visualize=False,
+        )
+
+        # Load the 3D joints
         gt_smpl_joints, pred_smpl_joints = load_3d_joints_for_evaluation(
             gt_joints_dir_path=gt_joints_dir,
             gt_ds=args.gt_joints_ds_type,
             pred_joints_dir_path=pred_joints_dir,
             pred_ds=args.pred_joints_ds_type,
             trnsfm_dir_path=transformations_dir_path,
+            pred_method=args.pred_joints_ds_type+"_canonical",
             device="cpu",
         )
     else:

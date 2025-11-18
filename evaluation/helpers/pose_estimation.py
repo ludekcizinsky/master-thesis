@@ -145,8 +145,8 @@ def _load_latest_smpl_checkpoint(checkpoint_dir: Union[str, Path]) -> np.ndarray
     stacked, _ = _stack_frame_params(params_dict)
     return stacked
 
-def _load_metric_alignment(preprocess_dir: Path, tgt_ds_name: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    alignment_path = preprocess_dir / "smpl_joints_alignment_transforms" / f"{tgt_ds_name}.npz"
+def _load_metric_alignment(preprocess_dir: Path, pred_method: str, tgt_ds_name: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    alignment_path = preprocess_dir / "smpl_joints_alignment_transforms" / pred_method / f"{tgt_ds_name}.npz"
     if not alignment_path.exists():
         raise FileNotFoundError(f"SMPL joints alignment transforms not found at {alignment_path}")
     data = np.load(alignment_path, allow_pickle=False)
@@ -207,7 +207,7 @@ def load_ours_pred_joints_canonical(pred_joints_dir_path: Path) -> torch.Tensor:
 
     return smpl_joints
 
-def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path) -> torch.Tensor:
+def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: Path, pred_method: str) -> torch.Tensor:
     """
     Load predicted 3D joints from our method's SMPL checkpoints.
     Args:
@@ -225,7 +225,7 @@ def load_ours_pred_joints(pred_joints_dir_path: Path, transformations_dir_path: 
     num_frames, num_persons, _, _ = smpl_joints.shape
 
     # Align the joints to the gt dataset
-    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d")
+    transformations = _load_metric_alignment(transformations_dir_path, tgt_ds_name="hi4d", pred_method=pred_method)
     aligned_smpl_joints = torch.zeros_like(smpl_joints)
     for fidx in range(num_frames):
         for pidx in range(num_persons):
@@ -302,14 +302,14 @@ def get_3d_joint_load_function(ds: str):
     else:
         raise ValueError(f"Unsupported dataset for mask loading: {ds}")
 
-def load_3d_joints_for_evaluation(gt_joints_dir_path: Path, gt_ds: str, pred_joints_dir_path: Optional[Path], pred_ds: Optional[str], trnsfm_dir_path: Optional[Path], device: str = "cuda") -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def load_3d_joints_for_evaluation(gt_joints_dir_path: Path, gt_ds: str, pred_joints_dir_path: Optional[Path], pred_ds: Optional[str], trnsfm_dir_path: Optional[Path], pred_method: Optional[str], device: str = "cuda") -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
 
     gt_joint_loader = get_3d_joint_load_function(gt_ds)
     gt_joints = gt_joint_loader(gt_joints_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
 
     if pred_joints_dir_path is not None and pred_ds is not None:
         pred_joint_loader = get_3d_joint_load_function(pred_ds)
-        pred_joints = pred_joint_loader(pred_joints_dir_path, trnsfm_dir_path).to(device) # Shape (num_frames, num_person, J, 3)
+        pred_joints = pred_joint_loader(pred_joints_dir_path, trnsfm_dir_path, pred_method).to(device) # Shape (num_frames, num_person, J, 3)
     else:
         pred_joints = None
     return gt_joints, pred_joints
