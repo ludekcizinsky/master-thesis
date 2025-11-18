@@ -42,3 +42,8 @@ def save_masked_renders(renders: torch.Tensor, masks: torch.Tensor, frame_names:
     masked_np = (masked.detach().cpu().numpy() * 255.0).round().astype(np.uint8)
     for idx, name in enumerate(frame_names):
         Image.fromarray(masked_np[idx]).save(output_dir / name)
+
+def save_renders(renders: torch.Tensor, frame_names: List[str], output_dir: Path) -> None:
+    renders_np = (renders.detach().cpu().numpy() * 255.0).round().astype(np.uint8)
+    for idx, name in enumerate(frame_names):
+        Image.fromarray(renders_np[idx]).save(output_dir / name)

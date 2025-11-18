@@ -25,6 +25,8 @@ gt_joints_ds_type=hi4d
 pred_joints_path=/scratch/izar/cizinsky/multiply-output/training/$seq_name/checkpoints
 pred_joints_ds_type=multiply
 metrics_output_path=$test_results_path
+
+# Run evaluation
 python run.py \
   --images-path $images_path \
   --renders-path $render_path \
@@ -39,11 +41,13 @@ python run.py \
   --transformations-dir-path $preprocess_dir_path \
   --metrics-output-path $metrics_output_path
 
+# Save metrics CSV
 mkdir -p ${eval_dir_output}/metrics/hi4d/multiply
 scene_name=${seq_name#hi4d_}
 cp $metrics_output_path/metrics.csv ${eval_dir_output}/metrics/hi4d/multiply/${scene_name}.csv
 echo "Metrics CSV saved to: ${eval_dir_output}/metrics/hi4d/multiply/${scene_name}.csv"
 
+# Generate video from masked renders
 mkdir -p ${eval_dir_output}/videos/masked_renders/hi4d/multiply
 masked_dir=$render_path/../masked_renders
 output_video=${eval_dir_output}/videos/masked_renders/hi4d/multiply/${scene_name}.mp4
@@ -51,3 +55,12 @@ ffmpeg -hide_banner -loglevel error -y -framerate 20 \
   -i "$masked_dir/%04d.png" \
   -c:v libx264 -pix_fmt yuv420p $output_video 
 echo "Video saved to: $output_video"
+
+# Generate video from original renders
+mkdir -p ${eval_dir_output}/videos/renders/hi4d/multiply
+render_dir=$render_path/../renders
+output_video=${eval_dir_output}/videos/renders/hi4d/multiply/${scene_name}.mp4
+ffmpeg -hide_banner -loglevel error -y -framerate 20 \
+  -i "$render_dir/%04d.png" \
+  -c:v libx264 -pix_fmt yuv420p $output_video 
+echo "Renders video saved to: $output_video"

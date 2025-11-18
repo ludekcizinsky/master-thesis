@@ -25,6 +25,7 @@ from training.helpers.align_trace_to_gt import (  # noqa: E402
 from evaluation.helpers.misc import (
     load_image,
     save_masked_renders,
+    save_renders,
 )
 
 from evaluation.helpers.segmentation import (
@@ -133,7 +134,9 @@ def main() -> None:
     pred_joints_dir = args.pred_joints_path
     transformations_dir_path = args.transformations_dir_path
     masked_output_dir = renders_dir.parent / "masked_renders"
+    renders_output_dir = renders_dir.parent / "renders"
     masked_output_dir.mkdir(parents=True, exist_ok=True)
+    renders_output_dir.mkdir(parents=True, exist_ok=True)
     metrics_output_dir = args.metrics_output_path
     metrics_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -207,6 +210,7 @@ def main() -> None:
             metrics = compute_all_metrics(images_batch, gt_masks_batch, renders_batch, pred_masks_batch, gt_smpl_joints_batch, pred_smpl_joints_batch)
             metric_batches.append({k: v.detach().cpu() for k, v in metrics.items()})
             save_masked_renders(renders_batch, gt_masks_batch, frame_names_batch, masked_output_dir)
+            save_renders(renders_batch, frame_names_batch, renders_output_dir)
 
     averages = aggregate_batch_tid_metric_dicts(metric_batches)
     
