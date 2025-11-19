@@ -3,12 +3,13 @@ set -e
 
 # parameter setup
 usage() {
-  echo "Usage: $0 --seq <sequence_name> --images-dir <path_to_images> [--gt-smpl-dir <path_to_gt_smpl_npz_dir>]"
+  echo "Usage: $0 --seq <sequence_name> --images-dir <path_to_images> [--num-people <N>]"
   exit 1
 }
 
 seq=""
 images_folder_path=""
+number_of_people=2
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -18,6 +19,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --images-dir|--images_folder_path)
       images_folder_path="$2"
+      shift 2
+      ;;
+    --num-people)
+      number_of_people="$2"
       shift 2
       ;;
     -h|--help)
@@ -35,7 +40,6 @@ if [[ -z "$seq" || -z "$images_folder_path" ]]; then
   usage
 fi
 
-number=2 # number of people
 source="custom" # "custom" if use custom data
 scripts_path="/home/cizinsky/master-thesis/preprocess/multiply_pipeline" # absolute path of preprocessing scripts
 folder_path="/scratch/izar/cizinsky/multiply-output/preprocessing" # absolute path of preprocessing folder
@@ -56,7 +60,7 @@ echo "---- Running Trace"
 conda activate $trace_env
 scene_dir=$folder_path/trace_results/$seq
 mkdir -p $scene_dir
-trace2 -i $images_folder_path --subject_num=$number --results_save_dir=$scene_dir --save_video --time2forget=40
+trace2 -i $images_folder_path --subject_num=$number_of_people --results_save_dir=$scene_dir --save_video --time2forget=40
 
 echo "---- Reformatting Trace output"
 conda deactivate && conda activate $trace_env
