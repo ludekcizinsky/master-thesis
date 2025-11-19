@@ -4,21 +4,23 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: downscale_mmm_dataset.sh DATASET_ROOT [--org-factor N] [--stage-factor M]
+Usage: downscale_mmm_dataset.sh DATASET_ROOT [--org-factor N] [--stage-factor M] [--downsample K]
 
   DATASET_ROOT  Path to a sequence directory that contains org_image/, stage_img/, cameras/, opt_cam/.
   --org-factor  Downscale factor for org_image/ + opt_cam/ (default: 2).
   --stage-factor
                 Downscale factor for stage_img/ + cameras/ (default: 4).
+  --downsample  Temporal downsample factor (use every K-th frame; default: 1).
 
 Example:
-  ./downscale_mmm_dataset.sh /scratch/.../mmm/dance --org-factor 2 --stage-factor 4
+  ./downscale_mmm_dataset.sh /scratch/.../mmm/dance --org-factor 2 --stage-factor 4 --downsample 2
 USAGE
 }
 
 DATASET_ROOT=""
 ORG_FACTOR=2
 STAGE_FACTOR=4
+DOWNSAMPLE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +42,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       STAGE_FACTOR=$2
+      shift 2
+      ;;
+    --downsample)
+      if [[ $# -lt 2 ]]; then
+        echo "--downsample requires an integer argument" >&2
+        exit 1
+      fi
+      DOWNSAMPLE=$2
       shift 2
       ;;
     -*)
@@ -74,4 +84,5 @@ fi
 
 conda run -n thesis python "$PY_SCRIPT" "$DATASET_ROOT" \
   --org-factor "$ORG_FACTOR" \
-  --stage-factor "$STAGE_FACTOR"
+  --stage-factor "$STAGE_FACTOR" \
+  --downsample "$DOWNSAMPLE"

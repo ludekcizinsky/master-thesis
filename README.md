@@ -1,29 +1,7 @@
-## Reconstruction of dynamic football scene
+## Relatively Fast and Robust 4D Reconstruction of (MultiPle) Humans from Monocular Video
 
-will tell you when I actually know haha
-
-## Instalation
-
-```bash
-git clone git@github.com:ludekcizinsky/master-thesis.git
-git submodule update --init --recursive
-conda env create -f environment.yaml
-conda activate thesis
-```
-
-## Run
-
-```bash
-bash train.sh
-```
-
-
-## TODOs
-
-Preprocessing:
-
-- [] PHALP assumed F=5000 when projecting 3D points to 2D, how does that affect the results?
-
-
-General:
-- [] in the very far future, when you have to submit this, check all TODOs throughout this codebase and resolve them
+YouTube is full of videss of people dancing, doing sports, or just walking around. Most of the times, these videos capture not just a single person, but multiple people interacting with each other. Being able to reconstruct such multi-person scenes in 3D + model temporal dynamics (4D) from just a single camera would open up many exciting applications such as:
+1. VFX for movies and games which would no longer require expensive multi-camera setups
+2. Sports replays: imagine being able to see a 3D replay of a soccer match from any angle you want, even from the perspective of a player
+3. Physical AI (markeless motion capture): having access to highly accurate estimates of people's joint positions and body shapes in 3D over time from just video could enable collection of large-scale motion datasets for humanoid robots (e.g. retarget human motion to robots)
+ 
