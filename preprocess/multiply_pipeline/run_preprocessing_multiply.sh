@@ -96,7 +96,12 @@ python normalize_cameras_trace.py --input_cameras_file $folder_path/data/$seq/ca
 echo "---- Running mask refinement with SAM"
 conda deactivate && conda activate $thesis_env
 cd /home/cizinsky/master-thesis
-python training/run.py scene_name=$seq tids=[0,1] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true 
+tids=()
+for ((i=0; i<number_of_people; i++)); do
+  tids+=($i)
+done
+tids_csv=$(IFS=, ; echo "${tids[*]}") 
+python training/run.py scene_name=$seq tids=[$tids_csv] train_bg=false resume=false group_name=dev debug=true is_preprocessing=true 
 
 # echo "---- Running unidepth to obtain per frame depth maps"
 # conda activate $unidepth_env

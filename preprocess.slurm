@@ -2,7 +2,7 @@
 #SBATCH --job-name=prep_mmm
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=08:00:00
+#SBATCH --time=01:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -29,18 +29,18 @@ cd /home/cizinsky/master-thesis
 
 # MMM
 # 1. Downscale the dataset
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/cheer --org-factor 2 --stage-factor 4 --downsample 2
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/dance --org-factor 2 --stage-factor 4 --downsample 2
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/hug --org-factor 2 --stage-factor 4 --downsample 2
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/lift --org-factor 2 --stage-factor 4 --downsample 2
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/selfie --org-factor 2 --stage-factor 4 --downsample 2
-bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/cheer --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/dance --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/hug --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/lift --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/selfie --org-factor 2 --stage-factor 4 --downsample 2
+# bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance --org-factor 2 --stage-factor 4 --downsample 2
 
 # 2. Run the full preprocessing pipeline
 multiply_ds_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_cheer_camorg --images-dir $multiply_ds_dir/cheer/org_img_down2x_subsample2x --num-people 3
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_dance_camorg --images-dir $multiply_ds_dir/dance/org_image_down2x_subsample2x --num-people 4
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_hug_camorg --images-dir $multiply_ds_dir/hug/org_img_down2x_subsample2x --num-people 2
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_lift_camorg --images-dir $multiply_ds_dir/lift/org_image_down2x_subsample2x --num-people 3
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_selfie_camorg --images-dir $multiply_ds_dir/selfie/org_img_down2x_subsample2x --num-people 2
-bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_walkdance_camorg --images-dir $multiply_ds_dir/walkdance/org_image_down2x_subsample2x --num-people 3
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_cheer_camorg --images-dir $multiply_ds_dir/cheer/org_img_down2x_subsample2x --num-people 3
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_dance_camorg --images-dir $multiply_ds_dir/dance/org_image_down2x_subsample2x --num-people 4
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_hug_camorg --images-dir $multiply_ds_dir/hug/org_img_down2x_subsample2x --num-people 2
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_lift_camorg --images-dir $multiply_ds_dir/lift/org_image_down2x_subsample2x --num-people 3
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_selfie_camorg --images-dir $multiply_ds_dir/selfie/org_img_down2x_subsample2x --num-people 2
+# bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_walkdance_camorg --images-dir $multiply_ds_dir/walkdance/org_image_down2x_subsample2x --num-people 3

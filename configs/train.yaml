@@ -104,10 +104,6 @@ depth_loss:
   normalise_by_pixels: true
   decay_milestone: 1000
 
-# --- Visualization settings
-eval_depth_vis_min: 1.5 # if set, use this min depth for visualisation
-eval_depth_vis_max: 3.5 # if set, use this max depth for visualisation
-
 # --- Wandb logging settings
 logger:
   project: master-thesis
