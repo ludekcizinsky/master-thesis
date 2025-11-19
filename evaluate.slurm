@@ -113,3 +113,4 @@ bash eval_custom_multiply.sh $seq_name
 # Summary
 # python summarise.py --metrics-root /scratch/izar/cizinsky/thesis/evaluation/metrics --output-dir summaries
 # bash compare_videos.sh /scratch/izar/cizinsky/thesis/evaluation/videos/renders/hi4d
+# bash compare_videos.sh /scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom
