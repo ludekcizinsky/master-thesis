@@ -29,7 +29,12 @@ cd /home/cizinsky/master-thesis
 
 # MMM
 # 1. Downscale the dataset
+bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/cheer --org-factor 2 --stage-factor 4 --downsample 2
 bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/dance --org-factor 2 --stage-factor 4 --downsample 2
+bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/hug --org-factor 2 --stage-factor 4 --downsample 2
+bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/lift --org-factor 2 --stage-factor 4 --downsample 2
+bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/selfie --org-factor 2 --stage-factor 4 --downsample 2
+bash preprocess/ait_datasets/mmm/downscale_mmm_dataset.sh /scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance --org-factor 2 --stage-factor 4 --downsample 2
 
 # 2. Run the full preprocessing pipeline
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq hi4d_pair00_dance00_cam76 --images-dir /scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00/images/76

@@ -4,4 +4,7 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 1. VFX for movies and games which would no longer require expensive multi-camera setups
 2. Sports replays: imagine being able to see a 3D replay of a soccer match from any angle you want, even from the perspective of a player
 3. Physical AI (markeless motion capture): having access to highly accurate estimates of people's joint positions and body shapes in 3D over time from just video could enable collection of large-scale motion datasets for humanoid robots (e.g. retarget human motion to robots)
+
+
+
  

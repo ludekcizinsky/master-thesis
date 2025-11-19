@@ -170,22 +170,51 @@ def main() -> None:
         f"(org_image x{args.org_factor}, stage_img x{args.stage_factor}, "
         f"downsample every {args.downsample})"
     )
+    org_src = None
+    for candidate in ("org_image", "org_img"):
+        path = root / candidate
+        if path.exists():
+            org_src = path
+            break
+    if org_src is None:
+        raise FileNotFoundError(
+            f"Neither org_image nor org_img exists in {root}, nothing to process."
+        )
+    org_dst = (
+        root
+        / f"{org_src.name}_down{args.org_factor}x_subsample{args.downsample}x"
+    )
     downscale_flat_folder(
-        root / "org_image",
-        root / f"org_image_down{args.org_factor}x_subsample{args.downsample}x",
+        org_src,
+        org_dst,
         args.org_factor,
         args.downsample,
     )
-    downscale_stage_images(
-        root / "stage_img",
-        root / f"stage_img_down{args.stage_factor}x_subsample{args.downsample}x",
-        args.stage_factor,
-        args.downsample,
-    )
-    update_rgb_cameras(
-        root / "cameras", args.stage_factor, args.org_factor, args.downsample
-    )
-    update_opt_cam(root / "opt_cam", args.org_factor, args.downsample)
+    stage_src = root / "stage_img"
+    if stage_src.exists():
+        downscale_stage_images(
+            stage_src,
+            root
+            / f"stage_img_down{args.stage_factor}x_subsample{args.downsample}x",
+            args.stage_factor,
+            args.downsample,
+        )
+    else:
+        print("[INFO] stage_img directory missing; skipping stage outputs.")
+
+    cameras_dir = root / "cameras"
+    if cameras_dir.exists():
+        update_rgb_cameras(
+            cameras_dir, args.stage_factor, args.org_factor, args.downsample
+        )
+    else:
+        print("[INFO] cameras directory missing; skipping rgb_cameras output.")
+
+    opt_cam_dir = root / "opt_cam"
+    if opt_cam_dir.exists():
+        update_opt_cam(opt_cam_dir, args.org_factor, args.downsample)
+    else:
+        print("[INFO] opt_cam directory missing; skipping opt_cam outputs.")
     print("[INFO] Done.")
 
 
