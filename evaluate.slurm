@@ -102,12 +102,29 @@ cd /home/cizinsky/master-thesis/evaluation
 # -----
 
 # Custom / football_high_res / Multiply
-seq_name=football_high_res
-bash eval_custom_multiply.sh $seq_name
+# seq_name=football_high_res
+# bash eval_custom_multiply.sh $seq_name
 
-# Custom / taichi / Multiply
-seq_name=taichi01
-bash eval_custom_multiply.sh $seq_name
+# # Custom / taichi / Multiply
+# seq_name=taichi01
+# bash eval_custom_multiply.sh $seq_name
+
+
+# -----
+
+exp_version=v7
+# MMM / cheer / Ours 
+seq_name=mmm_cheer_camorg
+bash eval_mmm_ours.sh $seq_name $exp_version
+
+seq_name=mmm_lift_camorg
+bash eval_mmm_ours.sh $seq_name $exp_version
+
+seq_name=mmm_dance_camorg
+bash eval_mmm_ours.sh $seq_name $exp_version
+
+seq_name=mmm_walkdance_camorg
+bash eval_mmm_ours.sh $seq_name $exp_version
 
 # -----
 # Summary
