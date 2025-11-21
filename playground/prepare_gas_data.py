@@ -1,6 +1,6 @@
 """
 Usage example:
-    playground/prepare_gas_data.py group_name=v7_default_corrected scene_name=taichi resume=true
+    python playground/prepare_gas_data.py group_name=v7 scene_name=hi4d_pair01_hug01_cam76 resume=true tids=[0,1] offset_along_z=-0.2
 """
 
 import os
@@ -15,6 +15,8 @@ import hydra
 from PIL import Image
 import pyrender
 import trimesh
+
+from tqdm import tqdm
 
 # Make training and evaluation modules available
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,95 @@ from training.helpers.model_init import create_splats_with_optimizers
 from training.helpers.render import render_splats
 from training.helpers.smpl_utils import update_skinning_weights
 from training.smpl_deformer.smpl_server import SMPLServer
+
+import cv2
+
+def compute_pelvis_y_after_align(
+    smpl_server: SMPLServer,
+    smpl_param: torch.Tensor,
+    R_align: np.ndarray,   # (3,3), world-space rotation you already use
+) -> float:
+    pelvis_ys = []
+    for idx in range(smpl_param.shape[0]):
+        out = smpl_server(smpl_param[idx:idx+1], absolute=True)
+        joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()  # (J,3)
+        pelvis = joints[0]  # SMPL root / pelvis
+
+        pelvis_rot = R_align @ pelvis  # (3,)
+        pelvis_ys.append(pelvis_rot[1])  # y-component
+
+    # choose how you want to define "pelvis at 0":
+    #   - np.mean(pelvis_ys): average pelvis on ground
+    #   - pelvis_ys[0]: first person's pelvis exactly at 0
+    #   - min(pelvis_ys): lowest pelvis touches ground, others maybe above
+    return float(np.mean(pelvis_ys))
+
+def compute_global_alignment(
+    smpl_server: SMPLServer,
+    smpl_param: torch.Tensor,
+    device: str = "cuda",
+):
+    """
+    Returns:
+      R_align: (3,3) rotation in world space
+      t_align: (3,) translation in world space
+    Such that aligned_verts = (R_align @ (verts - t_align))
+    is used for *all* persons.
+    """
+
+    pelvis_idx = 0  # SMPL joint 0 is pelvis in standard SMPL
+
+    pelvis_list = []
+    # If you want to define orientation from one reference person, use idx_ref = 0
+    idx_ref = 0
+    R_align = None
+
+    for idx in range(smpl_param.shape[0]):
+        out = smpl_server(smpl_param[idx:idx+1], absolute=True)
+        verts = out["smpl_verts"].squeeze(0)             # (V,3) torch
+        joints = out["smpl_jnts"].squeeze(0)           # (J,3) torch, if you have it
+
+        pelvis_world = joints[pelvis_idx].detach().cpu().numpy()
+        pelvis_list.append(pelvis_world)
+
+        if idx == idx_ref:
+            # Example: make this person’s pelvis-up vector align with +Y
+            head_idx = 15  # any upper body joint (e.g. neck/head) – adjust as you like
+            up_vec = (joints[head_idx] - joints[pelvis_idx]).detach()
+            up_vec = up_vec / (up_vec.norm() + 1e-8)
+
+            world_up = torch.tensor([0.0, 1.0, 0.0], device=up_vec.device)
+            v = up_vec
+            u = world_up
+
+            # rotation that maps v -> u
+            cross = torch.cross(v, u)
+            sin_theta = cross.norm()
+            cos_theta = torch.dot(v, u)
+            if sin_theta < 1e-6:
+                R_align = torch.eye(3, device=device)
+            else:
+                k = cross / (sin_theta + 1e-8)
+                K = torch.tensor(
+                    [[0, -k[2], k[1]],
+                     [k[2], 0, -k[0]],
+                     [-k[1], k[0], 0]], device=device
+                )
+                R_align = (
+                    torch.eye(3, device=device) * cos_theta
+                    + K * sin_theta
+                    + (1 - cos_theta) * torch.ger(k, k)
+                )
+
+    # translation: average pelvis over all people
+    pelvis_center = np.mean(np.stack(pelvis_list, axis=0), axis=0)  # (3,)
+    t_align = torch.from_numpy(pelvis_center).to(device=device, dtype=torch.float32)
+
+    if R_align is None:
+        R_align = torch.eye(3, device=device)
+
+    return R_align, t_align
+
 
 
 @torch.no_grad()
@@ -56,12 +147,21 @@ def render_smpl_normal_map(
         faces_np = faces_np[0]
     faces_np = faces_np.astype(np.int64)
 
+    # compute pelvis->canonical transform for person 0
+    R_align, t_align = compute_global_alignment(smpl_server, smpl_param, device="cuda")
+    pelvis_y = compute_pelvis_y_after_align(smpl_server, smpl_param, R_align.cpu().numpy())
+
+
     verts_all: List[np.ndarray] = []
     faces_all: List[np.ndarray] = []
     vert_offset = 0
     for idx in range(smpl_param.shape[0]):
         out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
         verts = out["smpl_verts"].squeeze(0).detach().cpu().numpy()
+
+        # apply pelvis->canonical transform
+        verts = (R_align.cpu().numpy() @ verts.T).T + t_align.cpu().numpy() # (V,3)
+        verts[:,1] -= pelvis_y   # align pelvis y to 0
         verts_all.append(verts)
         faces_all.append(faces_np + vert_offset)
         vert_offset += verts.shape[0]
@@ -102,6 +202,7 @@ def render_smpl_normal_map(
     scene = pyrender.Scene(bg_color=[0,0,0,0], ambient_light=[1,1,1,1])
     scene.add(pr_mesh)
     scene.add(cam, pose=c2w_gl)
+    add_coordinate_frame(scene, center=np.array([0.0,0.0,0.0]), scale=0.2)
 
     # Render and extract normal map
     renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
@@ -142,11 +243,39 @@ def compute_scene_center(
     person_bboxes = list(zip(bbox_mins, bbox_maxs))
     return scene_center, person_bboxes
 
+def cam_center_from_w2c(w2c: torch.Tensor):
+    R = w2c[0,:3,:3]
+    t = w2c[0,:3,3]
+    C = -R.T @ t     # camera center in world coords
+    return C
+
+def add_coordinate_frame(scene, center, scale=0.3):
+    """
+    Adds an RGB coordinate frame at `center`.
+    X = red, Y = green, Z = blue.
+    Works with older trimesh + pyrender (face colors allowed).
+    """
+    # Create axis mesh using trimesh (face-colored)
+    axis_tm = trimesh.creation.axis(
+        origin_size=scale * 0.1,
+        axis_length=scale
+    )
+
+    # IMPORTANT: force pyrender to accept face colors
+    axis_pr = pyrender.Mesh.from_trimesh(axis_tm, smooth=False)
+
+    # Add to scene
+    node = pyrender.Node(
+        mesh=axis_pr,
+        translation=np.asarray(center, dtype=np.float32)
+    )
+    scene.add_node(node)
 
 def create_new_w2c_orbit(
     rot_degree: float,
     w2c: torch.Tensor,                               # (1,4,4) or (4,4) world->camera (OpenCV)
     scene_center: Union[np.ndarray, torch.Tensor],   # (3,)
+    offset_along_z: float = 0.3,
     device: str = "cuda",
 ) -> torch.Tensor:
     """
@@ -219,8 +348,7 @@ def create_new_w2c_orbit(
     new_w2c[3, :] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
 
     # add offset to move camera slightly back along its viewing direction
-    offset_dist = 0.3
-    offset_vec = -z_axis * offset_dist  # (3,)
+    offset_vec = -z_axis * offset_along_z  # (3,)
     new_w2c[:3, 3] += offset_vec
 
     return new_w2c.unsqueeze(0)  # (1,4,4)
@@ -228,7 +356,7 @@ def create_new_w2c_orbit(
 
 @hydra.main(version_base=None, config_path=str(REPO_ROOT / "configs"), config_name="train")
 def main(cfg: DictConfig) -> None:
-    render_output_dir = Path("/scratch/izar/cizinsky/thesis/playground_output")
+    render_output_dir = Path(f"/scratch/izar/cizinsky/thesis/playground_output/{cfg.scene_name}")
 
     device = "cuda"
     ckpt_manager = ModelCheckpointManager(
@@ -264,17 +392,18 @@ def main(cfg: DictConfig) -> None:
     H, W = int(sample["H"]), int(sample["W"])
     smpl_param = smpl_params_map[frame_id].to(device)
 
-
     # compute scene center and per-person bounding boxes
     smpl_server = SMPLServer(gender=cfg.smpl_gender)
     scene_center, person_bboxes = compute_scene_center(smpl_server, smpl_param)
 
-    # compute 45 degree rotated camera pose for better visualization
-    w2c_rotated = create_new_w2c_orbit(45, w2c[0], scene_center, device=device)
-    all_w2cs.append(w2c_rotated)
+    # compute rotated camera poses 
+    degrees = [45, 90, 135, 180, 225, 270, 315]
+    for deg in degrees:
+        w2c_rotated = create_new_w2c_orbit(deg, w2c[0], scene_center, device=device, offset_along_z=cfg.offset_along_z)
+        all_w2cs.append(w2c_rotated)
 
 
-    for idx, w2c in enumerate(all_w2cs):
+    for idx, w2c in tqdm(enumerate(all_w2cs), total=len(all_w2cs), desc="Rendering views"):
 
         with torch.no_grad():
             colors, _, _ = render_splats(
@@ -290,10 +419,10 @@ def main(cfg: DictConfig) -> None:
             )
 
         image = (colors.squeeze(0).clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
-        image_path = render_output_dir / f"render_frame_{frame_id:04d}_cam_{idx}.png"
+        image_dir = render_output_dir / "rgb"/ f"cam_{idx}"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        image_path = image_dir / f"{frame_id:04d}.png"
         Image.fromarray(image).save(image_path)
-
-
 
         normal_rgb = render_smpl_normal_map(
             smpl_server=smpl_server,
@@ -304,9 +433,12 @@ def main(cfg: DictConfig) -> None:
             W=W,
         )
         normal_image = Image.fromarray(normal_rgb.astype(np.uint8))
-        normal_path = render_output_dir / f"render_frame_{frame_id:04d}_cam_{idx}_normals.png"
+        normal_dir = render_output_dir / "normals"/ f"cam_{idx}"
+        normal_dir.mkdir(parents=True, exist_ok=True)
+        normal_path = normal_dir / f"{frame_id:04d}.png"
         normal_image.save(normal_path)
 
+    print(f"Rendered images saved to: {render_output_dir}")
 
 if __name__ == "__main__":
     main()

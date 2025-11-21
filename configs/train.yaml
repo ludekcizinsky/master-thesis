@@ -4,6 +4,9 @@ group_name: dev
 # --- Debugging and visualization
 debug: False # if true -> disable wandb logging
 debug_vis_freq: 10
+offset_along_z: 0.1 # whenever we are trying to compute new cam trajectory (for debug vis), offset the cameras along z axis by this value
+
+# --- Preprocessing settings
 is_preprocessing: False  # if true -> save sam masks to preprocessing folder
 
 # --- Input / output paths
