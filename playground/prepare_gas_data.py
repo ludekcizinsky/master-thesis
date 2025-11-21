@@ -160,8 +160,8 @@ def render_smpl_normal_map(
         verts = out["smpl_verts"].squeeze(0).detach().cpu().numpy()
 
         # apply pelvis->canonical transform
-        verts = (R_align.cpu().numpy() @ verts.T).T + t_align.cpu().numpy() # (V,3)
-        verts[:,1] -= pelvis_y   # align pelvis y to 0
+        # verts = (R_align.cpu().numpy() @ verts.T).T + t_align.cpu().numpy() # (V,3)
+        # verts[:,1] -= pelvis_y   # align pelvis y to 0
         verts_all.append(verts)
         faces_all.append(faces_np + vert_offset)
         vert_offset += verts.shape[0]
@@ -437,6 +437,14 @@ def main(cfg: DictConfig) -> None:
         normal_dir.mkdir(parents=True, exist_ok=True)
         normal_path = normal_dir / f"{frame_id:04d}.png"
         normal_image.save(normal_path)
+
+        # overlay RGB and normal map for visualization
+        overlay = cv2.addWeighted(image, 0.5, normal_rgb.astype(np.uint8), 0.5, 0)
+        overlay_image = Image.fromarray(overlay.astype(np.uint8))
+        overlay_dir = render_output_dir / "overlay"/ f"cam_{idx}"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        overlay_path = overlay_dir / f"{frame_id:04d}.png"
+        overlay_image.save(overlay_path)
 
     print(f"Rendered images saved to: {render_output_dir}")
 
