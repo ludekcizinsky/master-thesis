@@ -15,6 +15,7 @@ class ModelCheckpointManager:
         scene_output_dir: Path,
         group_name: str,
         tids: Iterable[int],
+        ckpt_epoch: Optional[int] = None,
     ):
         self.scene_output_dir = Path(scene_output_dir)
         self.group_name = group_name
@@ -25,6 +26,7 @@ class ModelCheckpointManager:
             tid: self.root / f"human_{tid}"
             for tid in self.tids
         }
+        self.ckpt_epoch = ckpt_epoch
 
         self.static_dir.mkdir(parents=True, exist_ok=True)
         for directory in self.human_dirs.values():
@@ -141,10 +143,24 @@ class ModelCheckpointManager:
         self.smpl_base_epoch = int(epoch) if epoch is not None else 0
         return params, epoch
 
+    def _epoch_ckpt_path(
+        self, target_dir: Path, epoch: int
+    ) -> Path:
+        # list of checkpoints for given epoch
+        files = sorted(list(target_dir.glob("*")))
+        for file in files:
+            if str(epoch) in file.name:
+                return target_dir / file.name
+        raise FileNotFoundError(f"No checkpoint for epoch {epoch} in {target_dir}.")
+
     def _load_param_dict_from_dir(
         self, target_dir: Path, device: torch.device | str
     ) -> Tuple[Optional[nn.ParameterDict], Optional[int]]:
-        ckpt_path = self._latest_checkpoint_path(target_dir)
+        if self.ckpt_epoch is not None:
+            ckpt_path = self._epoch_ckpt_path(target_dir, self.ckpt_epoch)
+        else:
+            ckpt_path = self._latest_checkpoint_path(target_dir)
+
         if ckpt_path is None:
             return None, None
 

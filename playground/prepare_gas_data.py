@@ -38,6 +38,90 @@ from training.smpl_deformer.smpl_server import SMPLServer
 
 import cv2
 
+def compute_scene_up_from_joints(
+    joints_list: List[np.ndarray],
+    pelvis_index: int = 0,
+    head_index: int = 15,
+) -> np.ndarray:
+    """
+    Computes a stable 'scene up' vector from a list of SMPL joint arrays.
+
+    Args:
+        joints_list: List of (J,3) joints arrays for each person.
+        pelvis_index: index of SMPL pelvis joint (usually 0).
+        head_index: index of SMPL head joint (usually 15).
+
+    Returns:
+        up_vec: (3,) normalized numpy array representing scene up direction.
+    """
+
+    up_vectors = []
+
+    for joints in joints_list:
+        pelvis = joints[pelvis_index]
+        head = joints[head_index]
+        up = head - pelvis
+        norm = np.linalg.norm(up)
+        if norm > 1e-5:
+            up_vectors.append(up / norm)
+
+    if len(up_vectors) == 0:
+        # fallback: default world Y 
+        return np.array([0.0, 1.0, 0.0], dtype=np.float64)
+
+    # average across people
+    up_avg = np.mean(np.stack(up_vectors, axis=0), axis=0)
+    up_avg = up_avg / (np.linalg.norm(up_avg) + 1e-8)
+
+    return up_avg.astype(np.float64)
+
+def add_scene_up_axis(
+    scene: pyrender.Scene,
+    center: np.ndarray,     # (3,)
+    up_vec: np.ndarray,     # (3,) unit
+    axis_length: float = 0.5
+):
+    """
+    Add an XYZ axis marker at `center` where the Y-axis is aligned with `up_vec`.
+    This lets you visually inspect the estimated 'scene up' in pyrender.
+    """
+    center = np.asarray(center, dtype=np.float64)
+    up_vec = np.asarray(up_vec, dtype=np.float64)
+    up_vec = up_vec / (np.linalg.norm(up_vec) + 1e-8)
+
+    # Build an orthonormal basis: y = up_vec
+    y_axis = up_vec
+
+    # Choose an arbitrary vector not parallel to y_axis to build x_axis
+    tmp = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if abs(np.dot(tmp, y_axis)) > 0.9:
+        tmp = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    x_axis = np.cross(y_axis, tmp)
+    x_axis = x_axis / (np.linalg.norm(x_axis) + 1e-8)
+
+    z_axis = np.cross(x_axis, y_axis)
+    z_axis = z_axis / (np.linalg.norm(z_axis) + 1e-8)
+
+    # Construct rotation matrix whose columns are basis vectors
+    R = np.stack([x_axis, y_axis, z_axis], axis=1)  # (3,3)
+
+    # 4x4 transform moving axis marker to scene_center with our orientation
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = R
+    T[:3, 3] = center
+
+    # Create an axis mesh and apply transform
+    axis_tm = trimesh.creation.axis(
+        origin_size=0.02,
+        axis_length=axis_length,
+        transform=T,
+    )
+
+    # Important: use smooth=False to avoid the face-color/smooth conflict error
+    axis_pr = pyrender.Mesh.from_trimesh(axis_tm, smooth=False)
+    scene.add(axis_pr)
+
 
 @torch.no_grad()
 def render_smpl_normal_map(
@@ -108,9 +192,20 @@ def render_smpl_normal_map(
     scene = pyrender.Scene(bg_color=[0,0,0,0], ambient_light=[1,1,1,1])
     scene.add(pr_mesh)
     scene.add(cam, pose=c2w_gl)
-    add_coordinate_frame(scene, center=np.array([0.0,0.0,0.0]), scale=0.2)
+    # add_coordinate_frame(scene, center=np.array([0.0,0.0,0.0]), scale=0.2)
     if people_center is not None:
         add_coordinate_frame(scene, center=people_center, scale=0.2)
+
+    # compute joints for each person to get scene up vector
+    joints_list: List[np.ndarray] = []
+    for idx in range(smpl_param.shape[0]):
+        out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
+        joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()
+        joints_list.append(joints)
+
+    scene_up = compute_scene_up_from_joints(joints_list)
+    add_scene_up_axis(scene, center=np.array([0.0,0.0,0.0]), up_vec=scene_up, axis_length=0.3)
+
 
     # Render and extract normal map
     renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
@@ -181,85 +276,97 @@ def add_coordinate_frame(scene, center, scale=0.3):
 
 def create_new_w2c_orbit(
     rot_degree: float,
-    w2c: torch.Tensor,                               # (1,4,4) or (4,4) world->camera (OpenCV)
-    scene_center: Union[np.ndarray, torch.Tensor],   # (3,)
+    w2c: torch.Tensor,                                 # (1,4,4) or (4,4)
+    scene_center: Union[np.ndarray, torch.Tensor],     # (3,)
+    scene_up: Union[np.ndarray, torch.Tensor],         # (3,) unit vector
     offset_along_z: float = 0.3,
     device: str = "cuda",
 ) -> torch.Tensor:
     """
-    Rotate the camera around `scene_center` by `rot_degree` (in degrees)
-    around the world Y axis, keeping the camera looking at `scene_center`.
+    Orbit the camera around `scene_center` by `rot_degree` degrees using
+    `scene_up` as the rotation axis. Builds world->camera (OpenCV) matrix.
 
-    Returns:
-        new_w2c: (1,4,4) tensor, world->camera (OpenCV convention).
+    Args:
+        scene_up: (3,) unit vector defining 'up' in the scene coordinates.
     """
     # --- prep inputs ---
     w2c = w2c.to(device=device, dtype=torch.float32)
     if w2c.ndim == 3:
-        # assume shape (1,4,4)
-        w2c = w2c[0]
+        w2c = w2c[0]  # unwrap (1,4,4)
 
     if isinstance(scene_center, np.ndarray):
         scene_center = torch.from_numpy(scene_center)
-    scene_center = scene_center.to(device=device, dtype=torch.float32)  # (3,)
+    scene_center = scene_center.to(device=device, dtype=torch.float32)
 
-    # --- extract camera pose in world coordinates ---
-    # world->cam: x_c = R_wc x_w + t_wc
-    R_wc = w2c[:3, :3]            # (3,3)
-    t_wc = w2c[:3, 3]             # (3,)
-    # camera center in world coords: C = -R_wc^T * t_wc
-    cam_pos = -R_wc.transpose(0, 1) @ t_wc   # (3,)
+    if isinstance(scene_up, np.ndarray):
+        scene_up = torch.from_numpy(scene_up)
+    scene_up = scene_up.to(device=device, dtype=torch.float32)
+    scene_up = scene_up / (scene_up.norm() + 1e-8)  # ensure unit
 
-    # --- build world-space rotation around Y ---
+    # --- extract camera position C (world coordinates) ---
+    R_wc = w2c[:3, :3]     # world->cam
+    t_wc = w2c[:3, 3]
+    cam_pos = -R_wc.transpose(0, 1) @ t_wc   # C = -R^T t
+
+    # =====================================================
+    # 1) ROTATE CAMERA POSITION AROUND scene_up (axis-angle)
+    # =====================================================
     angle = np.deg2rad(rot_degree)
-    cos_a = float(np.cos(angle))
-    sin_a = float(np.sin(angle))
-    R_y = torch.tensor(
-        [
-            [ cos_a, 0.0,  sin_a],
-            [ 0.0,   1.0,  0.0  ],
-            [-sin_a, 0.0,  cos_a],
-        ],
-        dtype=torch.float32,
-        device=device,
-    )
+    ux, uy, uz = scene_up
 
-    # --- rotate camera position around scene_center ---
-    v = cam_pos - scene_center          # vector from center to camera
-    v_rot = R_y @ v                     # rotated vector
-    new_cam_pos = scene_center + v_rot  # new world-space camera position
+    cos_a = float(torch.cos(torch.tensor(angle)))
+    sin_a = float(torch.sin(torch.tensor(angle)))
 
-    # --- build a "look-at" camera that looks at scene_center ---
-    up_world = torch.tensor([0.0, 1.0, 0.0], device=device)
+    # Rodrigues rotation matrix for axis=scene_up
+    R_axis = torch.tensor([
+        [cos_a + ux*ux*(1-cos_a),     ux*uy*(1-cos_a) - uz*sin_a, ux*uz*(1-cos_a) + uy*sin_a],
+        [uy*ux*(1-cos_a) + uz*sin_a,  cos_a + uy*uy*(1-cos_a),     uy*uz*(1-cos_a) - ux*sin_a],
+        [uz*ux*(1-cos_a) - uy*sin_a,  uz*uy*(1-cos_a) + ux*sin_a, cos_a + uz*uz*(1-cos_a)]
+    ], dtype=torch.float32, device=device)
 
-    # camera forward direction (OpenCV: z forward)
+    # apply rotation around scene center
+    v = cam_pos - scene_center
+    v_rot = R_axis @ v
+    new_cam_pos = scene_center + v_rot
+
+    # =====================================================
+    # 2) BUILD CAMERA ORIENTATION (c2w) USING SCENE UP
+    # =====================================================
+    up_world = scene_up  # now YOUR estimated up vector
+
+    # OpenCV: forward camera dir = +Z
     z_axis = (scene_center - new_cam_pos)
     z_axis = z_axis / (z_axis.norm() + 1e-8)
 
-    # right and up (use torch.linalg.cross to avoid deprecation warning)
+    # right axis
     x_axis = torch.linalg.cross(z_axis, up_world)
     x_axis = x_axis / (x_axis.norm() + 1e-8)
+
+    # corrected up
     y_axis = torch.linalg.cross(z_axis, x_axis)
     y_axis = y_axis / (y_axis.norm() + 1e-8)
 
-    # columns of rotation matrix are basis vectors in world coords (camera-to-world)
-    R_c2w = torch.stack([x_axis, y_axis, z_axis], dim=1)  # (3,3)
+    # camera-to-world orientation
+    R_c2w = torch.stack([x_axis, y_axis, z_axis], dim=1)
 
-    # --- convert camera-to-world -> world-to-camera analytically ---
-    # world->cam rotation is transpose, translation is -R^T * C
-    R_new_wc = R_c2w.transpose(0, 1)           # (3,3)
-    t_new_wc = -R_new_wc @ new_cam_pos         # (3,)
+    # =====================================================
+    # 3) CONVERT c2w → w2c  (OpenCV)
+    # =====================================================
+    R_new_wc = R_c2w.transpose(0, 1)            # inverse rotation
+    t_new_wc = -R_new_wc @ new_cam_pos          # inverse translation
 
     new_w2c = torch.eye(4, dtype=torch.float32, device=device)
     new_w2c[:3, :3] = R_new_wc
     new_w2c[:3, 3] = t_new_wc
-    new_w2c[3, :] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
 
-    # add offset to move camera slightly back along its viewing direction
-    offset_vec = -z_axis * offset_along_z  # (3,)
+    # =====================================================
+    # 4) SMALL OFFSET BACKWARD ALONG VIEW DIRECTION
+    # ====================================================
+    offset_vec = -z_axis * offset_along_z
     new_w2c[:3, 3] += offset_vec
 
-    return new_w2c.unsqueeze(0)  # (1,4,4)
+    return new_w2c.unsqueeze(0)
+
 
 
 @hydra.main(version_base=None, config_path=str(REPO_ROOT / "configs"), config_name="train")
@@ -271,6 +378,7 @@ def main(cfg: DictConfig) -> None:
         scene_output_dir=Path(cfg.output_dir),
         group_name=cfg.group_name,
         tids=cfg.tids,
+        ckpt_epoch=50,
     )
 
     # Use progressive SAM masks from the checkpoint folder (if present) to mirror training setup
@@ -292,7 +400,7 @@ def main(cfg: DictConfig) -> None:
     smpl_params_map, _ = ckpt_manager.load_smpl(device=device)
 
     all_w2cs = []
-    frame_id = 30
+    frame_id = 0
     sample = dataset[frame_id]
     w2c = sample["M_ext"].to(device).unsqueeze(0)
     all_w2cs.append(w2c)
@@ -304,10 +412,18 @@ def main(cfg: DictConfig) -> None:
     smpl_server = SMPLServer(gender=cfg.smpl_gender)
     scene_center, person_bboxes = compute_scene_center(smpl_server, smpl_param)
 
+    joints_list: List[np.ndarray] = []
+    for idx in range(smpl_param.shape[0]):
+        out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
+        joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()
+        joints_list.append(joints)
+
+    scene_up = compute_scene_up_from_joints(joints_list)
+
     # compute rotated camera poses 
     degrees = [45, 90, 135, 180, 225, 270, 315]
     for deg in degrees:
-        w2c_rotated = create_new_w2c_orbit(deg, w2c[0], scene_center, device=device, offset_along_z=cfg.offset_along_z)
+        w2c_rotated = create_new_w2c_orbit(deg, w2c[0], scene_center, device=device, offset_along_z=cfg.offset_along_z, scene_up=scene_up)
         all_w2cs.append(w2c_rotated)
 
 
