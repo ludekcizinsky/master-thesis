@@ -38,93 +38,6 @@ from training.smpl_deformer.smpl_server import SMPLServer
 
 import cv2
 
-def compute_pelvis_y_after_align(
-    smpl_server: SMPLServer,
-    smpl_param: torch.Tensor,
-    R_align: np.ndarray,   # (3,3), world-space rotation you already use
-) -> float:
-    pelvis_ys = []
-    for idx in range(smpl_param.shape[0]):
-        out = smpl_server(smpl_param[idx:idx+1], absolute=True)
-        joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()  # (J,3)
-        pelvis = joints[0]  # SMPL root / pelvis
-
-        pelvis_rot = R_align @ pelvis  # (3,)
-        pelvis_ys.append(pelvis_rot[1])  # y-component
-
-    # choose how you want to define "pelvis at 0":
-    #   - np.mean(pelvis_ys): average pelvis on ground
-    #   - pelvis_ys[0]: first person's pelvis exactly at 0
-    #   - min(pelvis_ys): lowest pelvis touches ground, others maybe above
-    return float(np.mean(pelvis_ys))
-
-def compute_global_alignment(
-    smpl_server: SMPLServer,
-    smpl_param: torch.Tensor,
-    device: str = "cuda",
-):
-    """
-    Returns:
-      R_align: (3,3) rotation in world space
-      t_align: (3,) translation in world space
-    Such that aligned_verts = (R_align @ (verts - t_align))
-    is used for *all* persons.
-    """
-
-    pelvis_idx = 0  # SMPL joint 0 is pelvis in standard SMPL
-
-    pelvis_list = []
-    # If you want to define orientation from one reference person, use idx_ref = 0
-    idx_ref = 0
-    R_align = None
-
-    for idx in range(smpl_param.shape[0]):
-        out = smpl_server(smpl_param[idx:idx+1], absolute=True)
-        verts = out["smpl_verts"].squeeze(0)             # (V,3) torch
-        joints = out["smpl_jnts"].squeeze(0)           # (J,3) torch, if you have it
-
-        pelvis_world = joints[pelvis_idx].detach().cpu().numpy()
-        pelvis_list.append(pelvis_world)
-
-        if idx == idx_ref:
-            # Example: make this person’s pelvis-up vector align with +Y
-            head_idx = 15  # any upper body joint (e.g. neck/head) – adjust as you like
-            up_vec = (joints[head_idx] - joints[pelvis_idx]).detach()
-            up_vec = up_vec / (up_vec.norm() + 1e-8)
-
-            world_up = torch.tensor([0.0, 1.0, 0.0], device=up_vec.device)
-            v = up_vec
-            u = world_up
-
-            # rotation that maps v -> u
-            cross = torch.cross(v, u)
-            sin_theta = cross.norm()
-            cos_theta = torch.dot(v, u)
-            if sin_theta < 1e-6:
-                R_align = torch.eye(3, device=device)
-            else:
-                k = cross / (sin_theta + 1e-8)
-                K = torch.tensor(
-                    [[0, -k[2], k[1]],
-                     [k[2], 0, -k[0]],
-                     [-k[1], k[0], 0]], device=device
-                )
-                R_align = (
-                    torch.eye(3, device=device) * cos_theta
-                    + K * sin_theta
-                    + (1 - cos_theta) * torch.ger(k, k)
-                )
-
-    # translation: average pelvis over all people
-    pelvis_center = np.mean(np.stack(pelvis_list, axis=0), axis=0)  # (3,)
-    t_align = torch.from_numpy(pelvis_center).to(device=device, dtype=torch.float32)
-
-    if R_align is None:
-        R_align = torch.eye(3, device=device)
-
-    return R_align, t_align
-
-
 
 @torch.no_grad()
 def render_smpl_normal_map(
@@ -134,6 +47,7 @@ def render_smpl_normal_map(
     K: torch.Tensor,
     H: int,
     W: int,
+    people_center: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Render a normal map of all persons' posed SMPL meshes."""
 
@@ -147,10 +61,6 @@ def render_smpl_normal_map(
         faces_np = faces_np[0]
     faces_np = faces_np.astype(np.int64)
 
-    # compute pelvis->canonical transform for person 0
-    R_align, t_align = compute_global_alignment(smpl_server, smpl_param, device="cuda")
-    pelvis_y = compute_pelvis_y_after_align(smpl_server, smpl_param, R_align.cpu().numpy())
-
 
     verts_all: List[np.ndarray] = []
     faces_all: List[np.ndarray] = []
@@ -158,10 +68,6 @@ def render_smpl_normal_map(
     for idx in range(smpl_param.shape[0]):
         out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
         verts = out["smpl_verts"].squeeze(0).detach().cpu().numpy()
-
-        # apply pelvis->canonical transform
-        # verts = (R_align.cpu().numpy() @ verts.T).T + t_align.cpu().numpy() # (V,3)
-        # verts[:,1] -= pelvis_y   # align pelvis y to 0
         verts_all.append(verts)
         faces_all.append(faces_np + vert_offset)
         vert_offset += verts.shape[0]
@@ -203,6 +109,8 @@ def render_smpl_normal_map(
     scene.add(pr_mesh)
     scene.add(cam, pose=c2w_gl)
     add_coordinate_frame(scene, center=np.array([0.0,0.0,0.0]), scale=0.2)
+    if people_center is not None:
+        add_coordinate_frame(scene, center=people_center, scale=0.2)
 
     # Render and extract normal map
     renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
