@@ -38,6 +38,22 @@ from training.smpl_deformer.smpl_server import SMPLServer
 
 import cv2
 
+def center_crop_512(img: Image.Image) -> Image.Image:
+    """
+    Center crop a PIL image to 512x512.
+    Raises if the input is smaller than the crop size.
+    """
+    target = 512
+    width, height = img.size
+    if width < target or height < target:
+        raise ValueError(f"Image is too small for a 512x512 crop: got {width}x{height}")
+
+    left = (width - target) // 2
+    top = (height - target) // 2
+    right = left + target
+    bottom = top + target
+    return img.crop((left, top, right, bottom))
+
 def compute_scene_up_from_joints(
     joints_list: List[np.ndarray],
     pelvis_index: int = 0,
@@ -197,14 +213,14 @@ def render_smpl_normal_map(
         add_coordinate_frame(scene, center=people_center, scale=0.2)
 
     # compute joints for each person to get scene up vector
-    joints_list: List[np.ndarray] = []
-    for idx in range(smpl_param.shape[0]):
-        out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
-        joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()
-        joints_list.append(joints)
+#     joints_list: List[np.ndarray] = []
+    # for idx in range(smpl_param.shape[0]):
+        # out = smpl_server(smpl_param[idx : idx + 1], absolute=True)
+        # joints = out["smpl_jnts"].squeeze(0).detach().cpu().numpy()
+        # joints_list.append(joints)
 
-    scene_up = compute_scene_up_from_joints(joints_list)
-    add_scene_up_axis(scene, center=np.array([0.0,0.0,0.0]), up_vec=scene_up, axis_length=0.3)
+    # scene_up = compute_scene_up_from_joints(joints_list)
+    # add_scene_up_axis(scene, center=np.array([0.0,0.0,0.0]), up_vec=scene_up, axis_length=0.3)
 
 
     # Render and extract normal map
@@ -403,7 +419,6 @@ def main(cfg: DictConfig) -> None:
     frame_id = 0
     sample = dataset[frame_id]
     w2c = sample["M_ext"].to(device).unsqueeze(0)
-    all_w2cs.append(w2c)
     K = sample["K"].to(device).unsqueeze(0)
     H, W = int(sample["H"]), int(sample["W"])
     smpl_param = smpl_params_map[frame_id].to(device)
@@ -421,7 +436,8 @@ def main(cfg: DictConfig) -> None:
     scene_up = compute_scene_up_from_joints(joints_list)
 
     # compute rotated camera poses 
-    degrees = [45, 90, 135, 180, 225, 270, 315]
+    degrees = [45, 90, 135, 180, 225, 270, 315, 360]
+    degrees = sorted(degrees, reverse=True)
     for deg in degrees:
         w2c_rotated = create_new_w2c_orbit(deg, w2c[0], scene_center, device=device, offset_along_z=cfg.offset_along_z, scene_up=scene_up)
         all_w2cs.append(w2c_rotated)
@@ -429,6 +445,7 @@ def main(cfg: DictConfig) -> None:
 
     for idx, w2c in tqdm(enumerate(all_w2cs), total=len(all_w2cs), desc="Rendering views"):
 
+        # rgb
         with torch.no_grad():
             colors, _, _ = render_splats(
                 all_gs,
@@ -442,12 +459,15 @@ def main(cfg: DictConfig) -> None:
                 render_mode="RGB",
             )
 
+
         image = (colors.squeeze(0).clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
+        image = center_crop_512(Image.fromarray(image))
         image_dir = render_output_dir / "rgb"/ f"cam_{idx}"
         image_dir.mkdir(parents=True, exist_ok=True)
         image_path = image_dir / f"{frame_id:04d}.png"
-        Image.fromarray(image).save(image_path)
+        image.save(image_path)
 
+        # normal map
         normal_rgb = render_smpl_normal_map(
             smpl_server=smpl_server,
             smpl_param=smpl_param,
@@ -457,14 +477,18 @@ def main(cfg: DictConfig) -> None:
             W=W,
         )
         normal_image = Image.fromarray(normal_rgb.astype(np.uint8))
+        normal_image = center_crop_512(normal_image)
         normal_dir = render_output_dir / "normals"/ f"cam_{idx}"
         normal_dir.mkdir(parents=True, exist_ok=True)
         normal_path = normal_dir / f"{frame_id:04d}.png"
         normal_image.save(normal_path)
 
         # overlay RGB and normal map for visualization
-        overlay = cv2.addWeighted(image, 0.5, normal_rgb.astype(np.uint8), 0.5, 0)
+        image_arr = np.array(image)
+        normal_arr = np.array(normal_image)
+        overlay = cv2.addWeighted(image_arr, 0.5, normal_arr, 0.5, 0)
         overlay_image = Image.fromarray(overlay.astype(np.uint8))
+        overlay_image = center_crop_512(overlay_image)
         overlay_dir = render_output_dir / "overlay"/ f"cam_{idx}"
         overlay_dir.mkdir(parents=True, exist_ok=True)
         overlay_path = overlay_dir / f"{frame_id:04d}.png"
