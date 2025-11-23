@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=v7_mmm
+#SBATCH --job-name=v8_hyp
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=10:00:00
+#SBATCH --time=06:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -239,8 +239,114 @@ cd /home/cizinsky/master-thesis
     # gt_smpl_dir=$gt_dir/smpl
 
 # ------- V7 MMM experiments
-GROUP_NAME=v7
+# GROUP_NAME=v7
 # python training/run.py scene_name=mmm_cheer_camorg tids=[0,1,2] train_bg=false resume=false 'logger.tags=[v7, mmm]' group_name=$GROUP_NAME
 # python training/run.py scene_name=mmm_dance_camorg tids=[0,1,2,3] train_bg=false resume=false 'logger.tags=[v7, mmm]' group_name=$GROUP_NAME
 # python training/run.py scene_name=mmm_lift_camorg tids=[0,1,2] train_bg=false resume=false 'logger.tags=[v7, mmm]' group_name=$GROUP_NAME
 # python training/run.py scene_name=mmm_walkdance_camorg tids=[0,1,2] train_bg=false resume=false 'logger.tags=[v7, mmm]' group_name=$GROUP_NAME
+
+# --------------- V8 hi4d pair00_dance00_cam76 experiments to determine best hyper params
+# -- reg start iter 1000
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=v8
+# reg_start=1000
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # dist_loss=true \
+    # dist_start_iter=$reg_start \
+    # normal_loss=true \
+    # normal_start_iter=$reg_start \
+    # 'logger.tags=[v8, hi4d]'
+
+# -- reg start iter 5000
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=v8
+# reg_start=5000
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # dist_loss=true \
+    # dist_start_iter=$reg_start \
+    # normal_loss=true \
+    # normal_start_iter=$reg_start \
+    # 'logger.tags=[v8, hi4d]'
+
+# -- adaptive densification off
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=v8
+# reg_start=1000
+# super_high_number=1000000
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # dist_loss=true \
+    # dist_start_iter=$reg_start \
+    # normal_loss=true \
+    # normal_start_iter=$reg_start \
+    # 'logger.tags=[v8, hi4d, adaptive_densification_off]' \
+    # gs_refine_stop_iter=$super_high_number \
+    # gs_refine_start_iter=$super_high_number
+
+# -- high distortion loss weight (0.1 instead of 0.01)
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=v8
+# reg_start=1000
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # dist_loss=true \
+    # dist_start_iter=$reg_start \
+    # normal_loss=true \
+    # normal_start_iter=$reg_start \
+    # 'logger.tags=[v8, hi4d, high_distortion_loss_weight]' \
+    # dist_lambda=0.1 
+
+# high norma loss weight (0.5 instead of 0.05)
+seq_name="hi4d_pair00_dance00_cam76"
+gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+cam_id=76
+GROUP_NAME=v8
+reg_start=1000
+python training/run.py \
+    scene_name=$seq_name \
+    tids=[0,1] \
+    train_bg=false \
+    resume=false \
+    group_name=$GROUP_NAME \
+    gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    gt_smpl_dir=$gt_dir/smpl \
+    dist_loss=true \
+    dist_start_iter=$reg_start \
+    normal_loss=true \
+    normal_start_iter=$reg_start \
+    'logger.tags=[v8, hi4d, high_normal_loss_weight]' \
+    normal_lambda=0.5 
