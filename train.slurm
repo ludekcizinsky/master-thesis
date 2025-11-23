@@ -246,11 +246,11 @@ cd /home/cizinsky/master-thesis
 # python training/run.py scene_name=mmm_walkdance_camorg tids=[0,1,2] train_bg=false resume=false 'logger.tags=[v7, mmm]' group_name=$GROUP_NAME
 
 # --------------- V8 hi4d pair00_dance00_cam76 experiments to determine best hyper params
-# -- reg start iter 1000
+# # -- reg start iter 1000
 # seq_name="hi4d_pair00_dance00_cam76"
 # gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
 # cam_id=76
-# GROUP_NAME=v8
+# GROUP_NAME=v8_regstart1000
 # reg_start=1000
 # python training/run.py \
     # scene_name=$seq_name \
@@ -270,7 +270,7 @@ cd /home/cizinsky/master-thesis
 # seq_name="hi4d_pair00_dance00_cam76"
 # gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
 # cam_id=76
-# GROUP_NAME=v8
+# GROUP_NAME=v8_regstart5000
 # reg_start=5000
 # python training/run.py \
     # scene_name=$seq_name \
@@ -290,7 +290,7 @@ cd /home/cizinsky/master-thesis
 # seq_name="hi4d_pair00_dance00_cam76"
 # gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
 # cam_id=76
-# GROUP_NAME=v8
+# GROUP_NAME=v8_adaptiveoff
 # reg_start=1000
 # super_high_number=1000000
 # python training/run.py \
@@ -305,7 +305,7 @@ cd /home/cizinsky/master-thesis
     # dist_start_iter=$reg_start \
     # normal_loss=true \
     # normal_start_iter=$reg_start \
-    # 'logger.tags=[v8, hi4d, adaptive_densification_off]' \
+    # 'logger.tags=[v8, hi4d]' \
     # gs_refine_stop_iter=$super_high_number \
     # gs_refine_start_iter=$super_high_number
 
@@ -313,7 +313,7 @@ cd /home/cizinsky/master-thesis
 # seq_name="hi4d_pair00_dance00_cam76"
 # gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
 # cam_id=76
-# GROUP_NAME=v8
+# GROUP_NAME=v8_distlambda01
 # reg_start=1000
 # python training/run.py \
     # scene_name=$seq_name \
@@ -327,26 +327,26 @@ cd /home/cizinsky/master-thesis
     # dist_start_iter=$reg_start \
     # normal_loss=true \
     # normal_start_iter=$reg_start \
-    # 'logger.tags=[v8, hi4d, high_distortion_loss_weight]' \
+    # 'logger.tags=[v8, hi4d]' \
     # dist_lambda=0.1 
 
-# high norma loss weight (0.5 instead of 0.05)
-seq_name="hi4d_pair00_dance00_cam76"
-gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
-cam_id=76
-GROUP_NAME=v8
-reg_start=1000
-python training/run.py \
-    scene_name=$seq_name \
-    tids=[0,1] \
-    train_bg=false \
-    resume=false \
-    group_name=$GROUP_NAME \
-    gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
-    gt_smpl_dir=$gt_dir/smpl \
-    dist_loss=true \
-    dist_start_iter=$reg_start \
-    normal_loss=true \
-    normal_start_iter=$reg_start \
-    'logger.tags=[v8, hi4d, high_normal_loss_weight]' \
-    normal_lambda=0.5 
+# -- high normal loss weight (0.5 instead of 0.05)
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=v8_normlambda05
+# reg_start=1000
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # dist_loss=true \
+    # dist_start_iter=$reg_start \
+    # normal_loss=true \
+    # normal_start_iter=$reg_start \
+    # 'logger.tags=[v8, hi4d]' \
+    # normal_lambda=0.5 
