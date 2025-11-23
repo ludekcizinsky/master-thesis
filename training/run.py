@@ -134,6 +134,11 @@ class Trainer:
             preprocessing_dir=Path(cfg.preprocess_dir),
             is_preprocessing=cfg.is_preprocessing, 
             training_dir=self.experiment_dir,
+            near_plane=self.cfg.near_plane,
+            far_plane=self.cfg.far_plane,
+            packed=self.cfg.packed,
+            absgrad=getattr(self.cfg, "absgrad", False),
+            sparse_grad=getattr(self.cfg, "sparse_grad", False),
         )
         self.progressive_sam.init_state(
             cfg.resume, self.dataset, 
@@ -275,15 +280,33 @@ class Trainer:
             smpl_c_info=self.all_gs.smpl_c_info,
         )
 
-        renders, _, _ = render_splats(
-            gs_to_render, smpl_param_forward, 
-            lbs_weights, w2c, K, H, W, 
+        (
+            renders,
+            _,
+            normals,
+            _,
+            render_distort,
+            render_median,
+            _,
+        ) = render_splats(
+            gs_to_render,
+            smpl_param_forward,
+            lbs_weights,
+            w2c,
+            K,
+            H,
+            W,
             sh_degree=self.cfg.sh_degree,
-            render_mode="RGB+ED"
+            near_plane=self.cfg.near_plane,
+            far_plane=self.cfg.far_plane,
+            render_mode="RGB+ED",
+            packed=self.cfg.packed,
+            absgrad=getattr(self.cfg, "absgrad", False),
+            sparse_grad=getattr(self.cfg, "sparse_grad", False),
         )
         colors, depths = renders[..., 0:3], renders[..., 3:4]
 
-        return colors, depths, smpl_param_forward
+        return colors, depths, normals, render_distort, render_median, smpl_param_forward
 
     def step(self, batch: Dict[str, Any], it_number: int) -> Dict[str, float]:
         # Parse batch
@@ -302,11 +325,31 @@ class Trainer:
         should_update_gaussians = not (pose_only_window or delayed_pose_window)
 
         # Forward pass: render
-        colors, alphas, info = render_splats(
-            self.all_gs, smpl_param_forward, 
-            self.lbs_weights, w2c, K, H, W, 
-            sh_degree=self.cfg.sh_degree
+        (
+            renders,
+            alphas,
+            normals,
+            normals_from_depth,
+            render_distort,
+            render_median,
+            info,
+        ) = render_splats(
+            self.all_gs,
+            smpl_param_forward,
+            self.lbs_weights,
+            w2c,
+            K,
+            H,
+            W,
+            sh_degree=self.cfg.sh_degree,
+            near_plane=self.cfg.near_plane,
+            far_plane=self.cfg.far_plane,
+            render_mode="RGB+D",
+            packed=self.cfg.packed,
+            absgrad=getattr(self.cfg, "absgrad", False),
+            sparse_grad=getattr(self.cfg, "sparse_grad", False),
         )
+        colors = renders[..., 0:3]
 
         # Neccessary step for later adaptive densification
         self.all_strategies.pre_backward_step(
@@ -360,8 +403,32 @@ class Trainer:
                 human_masks_combined
             )
 
-        # - Combined
-        loss = l1_loss*self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + alpha_loss * self.cfg.alpha_lambda
+        # - Combined base terms
+        loss = l1_loss * self.cfg.l1_lambda + ssim_loss * self.cfg.ssim_lambda + alpha_loss * self.cfg.alpha_lambda
+
+        # - Normal consistency (2DGS surface normals vs. depth normals)
+        normal_loss = torch.tensor(0.0, device=self.device)
+        if getattr(self.cfg, "normal_loss", False) and it_number >= getattr(self.cfg, "normal_start_iter", 0):
+            if normals.dim() == 3:
+                normals = normals.unsqueeze(0)
+            if normals_from_depth.dim() == 3:
+                normals_from_depth = normals_from_depth.unsqueeze(0)
+            if alphas.dim() == 3:
+                alphas = alphas.unsqueeze(-1)
+            normals_bchw = normals.permute(0, 3, 1, 2)
+            normals_from_depth_bchw = normals_from_depth.permute(0, 3, 1, 2)
+            alpha_mask = alphas.permute(0, 3, 1, 2).detach()
+            normals_from_depth_bchw = normals_from_depth_bchw * alpha_mask
+            normal_error = 1.0 - (normals_bchw * normals_from_depth_bchw).sum(dim=1, keepdim=True)
+            normal_loss = normal_error.mean() * float(getattr(self.cfg, "normal_lambda", 0.0))
+            loss += normal_loss
+
+        # - Distortion regularization
+        dist_loss = torch.tensor(0.0, device=self.device)
+        if getattr(self.cfg, "dist_loss", False) and render_distort is not None:
+            if it_number >= getattr(self.cfg, "dist_start_iter", 0):
+                dist_loss = render_distort.mean() * float(getattr(self.cfg, "dist_lambda", 0.0))
+                loss += dist_loss
 
         # - Add Regularizers
         static_splats = [self.all_gs.static] if self.all_gs.static is not None else []
@@ -496,6 +563,11 @@ class Trainer:
                     image_size=(H, W),
                     device=self.device,
                     sh_degree=self.cfg.sh_degree,
+                    near_plane=self.cfg.near_plane,
+                    far_plane=self.cfg.far_plane,
+                    packed=self.cfg.packed,
+                    absgrad=getattr(self.cfg, "absgrad", False),
+                    sparse_grad=getattr(self.cfg, "sparse_grad", False),
                     out_path=orbit_out_path,
                 )
 
@@ -506,6 +578,8 @@ class Trainer:
             "loss/masked_ssim": float(ssim_loss.item()),
             "loss/opacity_reg": float(op_reg_loss.item()),
             "loss/scale_reg": float(scale_reg_loss.item()),
+            "loss/normal": float(normal_loss.item()) if isinstance(normal_loss, torch.Tensor) else float(normal_loss),
+            "loss/distortion": float(dist_loss.item()) if isinstance(dist_loss, torch.Tensor) else float(dist_loss),
             "smpl_optim/step": 1.0 if smpl_optim_performed else 0.0,
             "smpl_optim/grad_norm": smpl_grad_norm,
             "epoch": self.current_epoch,
@@ -559,7 +633,7 @@ class Trainer:
             smpl_c_info=self.all_gs.smpl_c_info,
         )
 
-        renders, _, _ = render_splats(
+        renders, _, _, _, _, _, _ = render_splats(
             gs_to_render,
             smpl_param_forward,
             lbs_weights,
@@ -568,7 +642,12 @@ class Trainer:
             H,
             W,
             sh_degree=self.cfg.sh_degree,
+            near_plane=self.cfg.near_plane,
+            far_plane=self.cfg.far_plane,
             render_mode="RGB+ED",
+            packed=self.cfg.packed,
+            absgrad=getattr(self.cfg, "absgrad", False),
+            sparse_grad=getattr(self.cfg, "sparse_grad", False),
         )
         depths = renders[..., 3:4]
         return depths
@@ -785,6 +864,9 @@ class Trainer:
         if len(selected_tids) > 0:
             save_qual_dir = self.experiment_dir / "visualizations" / "fg_render" / "all" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
+            save_qual_normal_dir = save_qual_dir / "normal"
+            save_qual_distortion_dir = save_qual_dir / "distortion"
+            save_qual_median_depth_dir = save_qual_dir / "median_depth"
             save_eval_rgb_dir = self.eval_fg_render_dir / "all" / "rgb"
             # if exists, clean the checkpoint dir to save new eval renders
             if save_eval_rgb_dir.exists():
@@ -793,6 +875,9 @@ class Trainer:
             save_qual_mask_dir = save_qual_dir / "gt_mask"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
             os.makedirs(save_qual_mask_dir, exist_ok=True)
+            os.makedirs(save_qual_normal_dir, exist_ok=True)
+            os.makedirs(save_qual_distortion_dir, exist_ok=True)
+            os.makedirs(save_qual_median_depth_dir, exist_ok=True)
             if gt_dataset is not None and gt_dataset.is_seg_mask_loading_available():
                 save_qual_pred_mask_dir = save_qual_dir / "pred_mask"
                 os.makedirs(save_qual_pred_mask_dir, exist_ok=True)
@@ -801,7 +886,14 @@ class Trainer:
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
                 pred_masks_joined = (human_masks.sum(dim=1).clamp(0.0, 1.0))  # [B,H,W] 
-                colors, _, pred_smpl = self.evaluate(batch, selected_tids, render_bg=False)
+                (
+                    colors,
+                    depths,
+                    normals,
+                    render_distort,
+                    render_median,
+                    pred_smpl,
+                ) = self.evaluate(batch, selected_tids, render_bg=False)
                 pred_smpl = pred_smpl.unsqueeze(0)  # [B,len(tids),86]
 
                 # Load predicted masks if available to compute segmentation metrics
@@ -850,6 +942,30 @@ class Trainer:
                 # also save to checkpoint dir
                 img_pil.save(save_eval_rgb_dir / f"{fid:04d}.png")
 
+                # save normals
+                normals_np = ((normals[0] * 0.5 + 0.5).clamp(0.0, 1.0).cpu().numpy() * 255).astype(
+                    "uint8"
+                )
+                Image.fromarray(normals_np).save(save_qual_normal_dir / f"{fid:04d}.png")
+
+                # save median depth (normalized per frame)
+                depth_map = render_median[0]
+                if depth_map.dim() == 3 and depth_map.shape[-1] == 1:
+                    depth_map = depth_map[..., 0]
+                depth_min, depth_max = depth_map.min(), depth_map.max()
+                depth_norm = (depth_map - depth_min) / (depth_max - depth_min + 1e-8)
+                depth_np = (depth_norm.unsqueeze(-1).repeat(1, 1, 3).cpu().numpy() * 255).astype("uint8")
+                Image.fromarray(depth_np).save(save_qual_median_depth_dir / f"{fid:04d}.png")
+
+                # save distortion map
+                dist_map = render_distort[0]
+                if dist_map.dim() == 3 and dist_map.shape[-1] == 1:
+                    dist_map = dist_map[..., 0]
+                dist_min, dist_max = dist_map.min(), dist_map.max()
+                dist_norm = (dist_map - dist_min) / (dist_max - dist_min + 1e-8)
+                dist_np = (dist_norm.unsqueeze(-1).repeat(1, 1, 3).cpu().numpy() * 255).astype("uint8")
+                Image.fromarray(dist_np).save(save_qual_distortion_dir / f"{fid:04d}.png")
+
                 # save the mask image
                 mask_np = (gt_masks_joined[0].cpu().numpy() * 255).astype("uint8")
                 mask_pil = Image.fromarray(mask_np)
@@ -870,12 +986,25 @@ class Trainer:
         if render_bg:
             save_qual_dir = self.experiment_dir / "visualizations" / "full_render" / f"epoch_{epoch:04d}"
             save_qual_rgb_dir = save_qual_dir / "rgb"
+            save_qual_normal_dir = save_qual_dir / "normal"
+            save_qual_distortion_dir = save_qual_dir / "distortion"
+            save_qual_median_depth_dir = save_qual_dir / "median_depth"
             os.makedirs(save_qual_rgb_dir, exist_ok=True)
+            os.makedirs(save_qual_normal_dir, exist_ok=True)
+            os.makedirs(save_qual_distortion_dir, exist_ok=True)
+            os.makedirs(save_qual_median_depth_dir, exist_ok=True)
 
             full_render_metrics = list()
             for batch in eval_dataloader:
                 images, human_masks, _, _, _, _, fid = self._parse_batch(batch)
-                colors, _, pred_smpl = self.evaluate(batch, selected_tids, render_bg=True)
+                (
+                    colors,
+                    depths,
+                    normals,
+                    render_distort,
+                    render_median,
+                    pred_smpl,
+                ) = self.evaluate(batch, selected_tids, render_bg=True)
 
                 # Compute quantitative metrics
                 masks_include_all = torch.ones_like(human_masks[:, 0, ...])  # [B,H,W]
@@ -890,6 +1019,27 @@ class Trainer:
                 img_np = (colors[0].cpu().numpy() * 255).astype("uint8")
                 img_pil = Image.fromarray(img_np)
                 img_pil.save(save_qual_rgb_dir / f"{fid:04d}.png")
+                # save normals
+                normals_np = ((normals[0] * 0.5 + 0.5).clamp(0.0, 1.0).cpu().numpy() * 255).astype(
+                    "uint8"
+                )
+                Image.fromarray(normals_np).save(save_qual_normal_dir / f"{fid:04d}.png")
+                # save median depth
+                depth_map = render_median[0]
+                if depth_map.dim() == 3 and depth_map.shape[-1] == 1:
+                    depth_map = depth_map[..., 0]
+                depth_min, depth_max = depth_map.min(), depth_map.max()
+                depth_norm = (depth_map - depth_min) / (depth_max - depth_min + 1e-8)
+                depth_np = (depth_norm.unsqueeze(-1).repeat(1, 1, 3).cpu().numpy() * 255).astype("uint8")
+                Image.fromarray(depth_np).save(save_qual_median_depth_dir / f"{fid:04d}.png")
+                # save distortion
+                dist_map = render_distort[0]
+                if dist_map.dim() == 3 and dist_map.shape[-1] == 1:
+                    dist_map = dist_map[..., 0]
+                dist_min, dist_max = dist_map.min(), dist_map.max()
+                dist_norm = (dist_map - dist_min) / (dist_max - dist_min + 1e-8)
+                dist_np = (dist_norm.unsqueeze(-1).repeat(1, 1, 3).cpu().numpy() * 255).astype("uint8")
+                Image.fromarray(dist_np).save(save_qual_distortion_dir / f"{fid:04d}.png")
         
             # aggregate metrics
             full_render_metrics_across_frames = aggregate_batch_tid_metric_dicts(full_render_metrics)

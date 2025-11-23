@@ -1,39 +1,42 @@
-from typing import Tuple, List
-from gsplat import rasterization
+from typing import List, Optional, Union
+
 import torch
+from gsplat.rendering import rasterization_2dgs
+
 from training.helpers.smpl_utils import canon_to_posed
 from training.helpers.model_init import SceneSplats
-
-def _unit_quat(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    return q / (q.norm(dim=-1, keepdim=True) + eps)
 
 def _prep_splats(
     splats: torch.nn.ParameterDict,
     clamp_sigma: tuple = (1e-4, 1.0),
     dtype: torch.dtype = torch.float32,
     device: str = "cuda",
-    means_override: torch.Tensor | None = None,
-) -> Tuple[torch.Tensor]:
+    means_override: Optional[torch.Tensor] = None,
+) -> dict:
     means_src = means_override if means_override is not None else splats["means"]
     means = means_src.to(device, dtype)
-    quats = _unit_quat(splats["quats"].to(device, dtype))
+    # rasterization_2dgs normalizes quats internally, but we keep them close to unit.
+    quats = splats["quats"].to(device, dtype)
     scales = torch.exp(splats["scales"].to(device, dtype)).clamp(*clamp_sigma)
     opacity = torch.sigmoid(splats["opacities"].to(device, dtype))
     colors = torch.cat([splats["sh0"], splats["shN"]], dim=1).to(device, dtype)
 
     return dict(
-        means=means, quats=quats, scales=scales,
-        opacity=opacity, colors=colors
+        means=means,
+        quats=quats,
+        scales=scales,
+        opacity=opacity,
+        colors=colors,
     )
 
 def _prep_splats_for_render(
     *,
     all_gs: SceneSplats,
-    smpl_param: torch.Tensor = None, # [P, 86] 
-    lbs_weights: torch.Tensor = None, # [P, M, 24]
+    smpl_param: torch.Tensor = None,  # [P, 86]
+    lbs_weights: torch.Tensor = None,  # [P, M, 24]
     clamp_sigma: tuple = (1e-4, 1.0),
     dtype: torch.dtype = torch.float32,
-    device: str = "cuda"
+    device: Union[str, torch.device] = "cuda",
 ):
 
     # Static (background)
@@ -110,7 +113,10 @@ def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
                 start_idx, end_idx = prev_n_gs, prev_n_gs + curr_n_gs
                 if value.requires_grad:
                     value.retain_grad()
-                subset = value[:, start_idx:end_idx]
+                if value.dim() == 1:
+                    subset = value[start_idx:end_idx]
+                else:
+                    subset = value[:, start_idx:end_idx]
                 setattr(subset, "_parent_tensor", value)
                 setattr(subset, "_parent_slice", (start_idx, end_idx))
                 new_info[key] = subset
@@ -132,24 +138,72 @@ def _parse_info(info: dict, all_gs: SceneSplats) -> List[dict]:
 
     return static_info, dynamic_info
 
-def render_splats(all_gs, smpl_param, lbs_weights, w2c, K, H, W, sh_degree, render_mode="RGB"):
+
+def render_splats(
+    all_gs: SceneSplats,
+    smpl_param: torch.Tensor,
+    lbs_weights: torch.Tensor,
+    w2c: torch.Tensor,
+    K: torch.Tensor,
+    H: int,
+    W: int,
+    *,
+    sh_degree: int,
+    near_plane: float,
+    far_plane: float,
+    render_mode: str = "RGB+D",
+    packed: bool = False,
+    absgrad: bool = False,
+    sparse_grad: bool = False,
+    backgrounds: Optional[torch.Tensor] = None,
+):
+    """
+    Render static + dynamic splats with the 2DGS rasterizer.
+    """
+    device = w2c.device
 
     # Prep splats
     p = _prep_splats_for_render(
         all_gs=all_gs,
-        smpl_param=smpl_param, 
+        smpl_param=smpl_param,
         lbs_weights=lbs_weights,
         clamp_sigma=(1e-4, 1.0),
         dtype=torch.float32,
+        device=device,
     )
 
     # Render
-    colors, alphas, info = rasterization(
-        p["means"], p["quats"], p["scales"], p["opacity"], p["colors"],
-        w2c, K, W, H, sh_degree=sh_degree, packed=False, render_mode=render_mode
+    renders, alphas, normals, normals_from_depth, render_distort, render_median, info = (
+        rasterization_2dgs(
+            means=p["means"],
+            quats=p["quats"],
+            scales=p["scales"],
+            opacities=p["opacity"],
+            colors=p["colors"],
+            viewmats=w2c,
+            Ks=K,
+            width=W,
+            height=H,
+            sh_degree=sh_degree,
+            near_plane=near_plane,
+            far_plane=far_plane,
+            render_mode=render_mode,
+            packed=packed,
+            absgrad=absgrad,
+            sparse_grad=sparse_grad,
+            backgrounds=backgrounds,
+        )
     )
 
     # Parse info per model
     new_info = _parse_info(info, all_gs)
 
-    return colors, alphas, new_info
+    return (
+        renders,
+        alphas,
+        normals,
+        normals_from_depth,
+        render_distort,
+        render_median,
+        new_info,
+    )

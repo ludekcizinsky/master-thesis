@@ -35,13 +35,30 @@ eval_every_epochs: 50
 device: cuda
 # Resolution of the input video frames (width, height)
 downscale: 1 
-# if true -> use packed gaussian representation (more memory efficient)
+# Near and far clipping planes for rendering (meters)
+# Anything with depth < near or > far is clipped out. Depth is normalized between these planes for rendering and for depth/normal outputs from the 2DGS rasterizer. 
+near_plane: 0.01 # default: 0.01
+far_plane: 1e10 # default: 1e10 
+# if true -> use packed gaussian representation (more memory efficient, required for sparse grads)
 packed: False 
+# if true -> use absolute image-space gradients for pruning/growth (2DGS option)
+absgrad: False
+# if true -> request sparse gradients (requires packed=True, saves memory)
+# If true, the gradients for {means, quats, scales} will be stored in a COO sparse layout. This can be helpful for saving memory. Default is False.
+sparse_grad: False
 
-# --- 3DGS settings
+# --- 2DGS densification settings
 gs_refine_every: 100      # frequency of applying the densification strategy
 gs_refine_stop_iter: 5000 # stop applying the densification strategy after these many iterations
 gs_refine_start_iter: 1000 # default is normally 500
+
+# --- 2DGS regularization
+dist_loss: False          # enable distortion regularization from 2DGS renderer
+dist_lambda: 1.0e-2       # weight for distortion loss once enabled
+dist_start_iter: 3000     # iteration to start applying distortion loss
+normal_loss: False        # enable normal consistency between rendered normals and depth normals
+normal_lambda: 5.0e-2     # weight for normal consistency loss
+normal_start_iter: 7000   # iteration to start applying normal consistency loss
 
 # --- SMPL optimisation settings
 pose_correction_epoch: 100

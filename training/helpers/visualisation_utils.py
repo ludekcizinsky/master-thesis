@@ -276,6 +276,11 @@ def save_orbit_visualization(
     out_path: Path,
     num_frames: int = 120,
     fps: int = 24,
+    near_plane: float = 0.2,
+    far_plane: float = 200.0,
+    packed: bool = False,
+    absgrad: bool = False,
+    sparse_grad: bool = False,
 ) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -318,7 +323,7 @@ def save_orbit_visualization(
     H, W = image_size
     frames = []
     for w2c_single in orbit_w2c:
-        colors, _, _ = render_splats(
+        colors, _, _, _, _, _, _ = render_splats(
             scene_splats,
             smpl_params,
             lbs_prepared,
@@ -327,6 +332,12 @@ def save_orbit_visualization(
             H,
             W,
             sh_degree=sh_degree,
+            near_plane=near_plane,
+            far_plane=far_plane,
+            render_mode="RGB+D",
+            packed=packed,
+            absgrad=absgrad,
+            sparse_grad=sparse_grad,
         )
         frame = torch.clamp(colors[0], 0.0, 1.0).detach().cpu().numpy()
         frame_uint8 = (frame * 255.0).astype(np.uint8)

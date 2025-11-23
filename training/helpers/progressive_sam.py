@@ -105,6 +105,12 @@ def _render_alpha_mask(
     alpha_threshold: float,
     sh_degree: int,
     device: torch.device,
+    *,
+    near_plane: float = 0.2,
+    far_plane: float = 200.0,
+    packed: bool = False,
+    absgrad: bool = False,
+    sparse_grad: bool = False,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     H, W = image_size
 
@@ -116,7 +122,7 @@ def _render_alpha_mask(
     smpl_param = smpl_params[dynamic_index].unsqueeze(0).to(device)
     lbs_weight = [lbs_weights[dynamic_index]]
 
-    renders, alphas, _ = render_splats(
+    renders, alphas, _, _, _, _, _ = render_splats(
         single_scene,
         smpl_param,
         lbs_weight,
@@ -125,7 +131,12 @@ def _render_alpha_mask(
         H,
         W,
         sh_degree=sh_degree,
+        near_plane=near_plane,
+        far_plane=far_plane,
         render_mode="RGB+ED",
+        packed=packed,
+        absgrad=absgrad,
+        sparse_grad=sparse_grad,
     )
 
     render_map = renders[0].detach()
@@ -439,6 +450,11 @@ def get_sam_input_prompts(
     lbs_knn: int = 30,
     device: Optional[torch.device | str] = None,
     use_raw_smpl: bool = False,
+    near_plane: float = 0.2,
+    far_plane: float = 200.0,
+    packed: bool = False,
+    absgrad: bool = False,
+    sparse_grad: bool = False,
 ) -> List[SamInputPrompt]:
     if not all_gs.dynamic:
         raise ValueError("SceneSplats contains no dynamic components to process.")
@@ -491,6 +507,11 @@ def get_sam_input_prompts(
                     alpha_threshold,
                     sh_degree,
                     render_device,
+                    near_plane=near_plane,
+                    far_plane=far_plane,
+                    packed=packed,
+                    absgrad=absgrad,
+                    sparse_grad=sparse_grad,
                 )
             masks.append(mask)
             alphas.append(alpha_map)
@@ -708,6 +729,11 @@ def compute_refined_masks(
     lbs_knn: int = 30,
     device: Optional[torch.device | str] = None,
     use_raw_smpl: bool = False,
+    near_plane: float = 0.2,
+    far_plane: float = 200.0,
+    packed: bool = False,
+    absgrad: bool = False,
+    sparse_grad: bool = False,
 ) -> List[RefinedMaskResult]:
     sam_input_prompts = get_sam_input_prompts(
         scene_splats,
@@ -720,6 +746,11 @@ def compute_refined_masks(
         lbs_knn=lbs_knn,
         device=device,
         use_raw_smpl=use_raw_smpl,
+        near_plane=near_plane,
+        far_plane=far_plane,
+        packed=packed,
+        absgrad=absgrad,
+        sparse_grad=sparse_grad,
     )
 
     max_pos_points = int(predictor_cfg.max_pos_points)
@@ -746,7 +777,13 @@ class ProgressiveSAMManager:
         checkpoint_dir: Path,
         training_dir: Path,
         preprocessing_dir: Path,
-        is_preprocessing: bool = False, 
+        is_preprocessing: bool = False,
+        *,
+        near_plane: float = 0.2,
+        far_plane: float = 200.0,
+        packed: bool = False,
+        absgrad: bool = False,
+        sparse_grad: bool = False,
     ) -> None:
         # cfg
         mask_cfg = mask_cfg or {}
@@ -793,6 +830,12 @@ class ProgressiveSAMManager:
         self._unreliable_frame_set: set[int] = set()
         self.base_iteration: int = 0
         self.rebuild_iteration: int = 0
+        # rendering params for mask refinement (keep in sync with training renderer)
+        self.near_plane = float(near_plane)
+        self.far_plane = float(far_plane)
+        self.packed = bool(packed)
+        self.absgrad = bool(absgrad)
+        self.sparse_grad = bool(sparse_grad)
 
     def should_update(self, epoch: int) -> bool:
         return (epoch - self.last_update_epoch) >= self.rebuild_every_epochs and epoch <= self.rebuild_max_epoch
@@ -1137,6 +1180,11 @@ class ProgressiveSAMManager:
                         lbs_knn=self.default_lbs_knn,
                         device=self.device,
                         use_raw_smpl=epoch <= self.use_raw_smpl_until_epoch,
+                        near_plane=self.near_plane,
+                        far_plane=self.far_plane,
+                        packed=self.packed,
+                        absgrad=self.absgrad,
+                        sparse_grad=self.sparse_grad,
                     )
 
                 entry, iou_scores = self._build_mask_entry(refined_results, self.device)
