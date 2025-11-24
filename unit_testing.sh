@@ -41,24 +41,34 @@ cd /home/cizinsky/master-thesis
     # save_freq=5
 
 # 2. with dist and normal loss
-seq_name="hi4d_pair00_dance00_cam76"
-gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
-cam_id=76
-GROUP_NAME=dev
+# seq_name="hi4d_pair00_dance00_cam76"
+# gt_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair00_1/dance00
+# cam_id=76
+# GROUP_NAME=dev
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # debug=false \
+    # group_name=$GROUP_NAME \
+    # gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
+    # gt_smpl_dir=$gt_dir/smpl \
+    # max_epochs=30 \
+    # eval_every_epochs=15 \
+    # save_freq=5 \
+    # dist_loss=true \
+    # dist_start_iter=500 \
+    # normal_loss=true \
+    # normal_start_iter=1000 \
+    # 'logger.tags=[v8, hi4d]'
+
+seq_name="male_3_casual"
+GROUP_NAME=v8
 python training/run.py \
     scene_name=$seq_name \
-    tids=[0,1] \
+    tids=[0] \
     train_bg=false \
     resume=false \
-    debug=false \
-    group_name=$GROUP_NAME \
-    gt_seg_masks_dir=$gt_dir/seg/img_seg_mask/$cam_id \
-    gt_smpl_dir=$gt_dir/smpl \
-    max_epochs=30 \
-    eval_every_epochs=15 \
-    save_freq=5 \
-    dist_loss=true \
-    dist_start_iter=500 \
-    normal_loss=true \
-    normal_start_iter=1000 \
-    'logger.tags=[v8, hi4d]'
+    'logger.tags=[v8, people_snapshot]' \
+    group_name=$GROUP_NAME max_epochs=10 eval_every_epochs=5

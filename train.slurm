@@ -352,12 +352,23 @@ cd /home/cizinsky/master-thesis
     # normal_lambda=0.5 
 
 # ----- v8 taichi
-seq_name="taichi"
+# seq_name="taichi"
+# GROUP_NAME=v8
+# python training/run.py \
+    # scene_name=$seq_name \
+    # tids=[0,1] \
+    # train_bg=false \
+    # resume=false \
+    # 'logger.tags=[v8, taichi]' \
+    # group_name=$GROUP_NAME
+
+# ----- v8 taichi
+seq_name="male_3_casual"
 GROUP_NAME=v8
 python training/run.py \
     scene_name=$seq_name \
-    tids=[0,1] \
+    tids=[0] \
     train_bg=false \
     resume=false \
-    'logger.tags=[v8, taichi]' \
+    'logger.tags=[v8, people_snapshot]' \
     group_name=$GROUP_NAME
