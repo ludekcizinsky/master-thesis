@@ -112,22 +112,36 @@ cd /home/cizinsky/master-thesis/evaluation
 
 # -----
 
-exp_version=v7
-# MMM / cheer / Ours 
+# exp_version=v7
+# # MMM /  Ours 
+# seq_name=mmm_cheer_camorg
+# bash eval_mmm_ours.sh $seq_name $exp_version
+
+# seq_name=mmm_lift_camorg
+# bash eval_mmm_ours.sh $seq_name $exp_version
+
+# seq_name=mmm_dance_camorg
+# bash eval_mmm_ours.sh $seq_name $exp_version
+
+# seq_name=mmm_walkdance_camorg
+# bash eval_mmm_ours.sh $seq_name $exp_version
+
+# MMM / MultiPly
 seq_name=mmm_cheer_camorg
-bash eval_mmm_ours.sh $seq_name $exp_version
+bash eval_mmm_multiply.sh $seq_name
 
 seq_name=mmm_lift_camorg
-bash eval_mmm_ours.sh $seq_name $exp_version
+bash eval_mmm_multiply.sh $seq_name
 
 seq_name=mmm_dance_camorg
-bash eval_mmm_ours.sh $seq_name $exp_version
+bash eval_mmm_multiply.sh $seq_name
 
 seq_name=mmm_walkdance_camorg
-bash eval_mmm_ours.sh $seq_name $exp_version
+bash eval_mmm_multiply.sh $seq_name
 
 # -----
 # Summary
 # python summarise.py --metrics-root /scratch/izar/cizinsky/thesis/evaluation/metrics --output-dir summaries
 # bash compare_videos.sh /scratch/izar/cizinsky/thesis/evaluation/videos/renders/hi4d
-# bash compare_videos.sh /scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom
+bash compare_videos.sh /scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom
+bash mp4_to_gif.sh  /scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/comparison /scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/comparison_gif
