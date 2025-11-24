@@ -44,3 +44,6 @@ multiply_ds_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_lift_camorg --images-dir $multiply_ds_dir/lift/org_image_down2x_subsample2x --num-people 3
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_selfie_camorg --images-dir $multiply_ds_dir/selfie/org_img_down2x_subsample2x --num-people 2
 # bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq mmm_walkdance_camorg --images-dir $multiply_ds_dir/walkdance/org_image_down2x_subsample2x --num-people 3
+
+# Custom 
+bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq taichi --images-dir /scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image --num-people 2 

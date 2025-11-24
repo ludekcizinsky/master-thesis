@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=v8_hyp
+#SBATCH --job-name=v8_taichi
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
 #SBATCH --time=06:00:00
@@ -350,3 +350,14 @@ cd /home/cizinsky/master-thesis
     # normal_start_iter=$reg_start \
     # 'logger.tags=[v8, hi4d]' \
     # normal_lambda=0.5 
+
+# ----- v8 taichi
+seq_name="taichi"
+GROUP_NAME=v8
+python training/run.py \
+    scene_name=$seq_name \
+    tids=[0,1] \
+    train_bg=false \
+    resume=false \
+    'logger.tags=[v8, taichi]' \
+    group_name=$GROUP_NAME

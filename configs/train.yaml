@@ -55,10 +55,10 @@ gs_refine_start_iter: 1000 # default is normally 500
 # --- 2DGS regularization
 dist_loss: False          # enable distortion regularization from 2DGS renderer
 dist_lambda: 1.0e-2       # weight for distortion loss once enabled
-dist_start_iter: 3000     # iteration to start applying distortion loss
+dist_start_iter: 1000     # iteration to start applying distortion loss
 normal_loss: False        # enable normal consistency between rendered normals and depth normals
 normal_lambda: 5.0e-2     # weight for normal consistency loss
-normal_start_iter: 7000   # iteration to start applying normal consistency loss
+normal_start_iter: 1000   # iteration to start applying normal consistency loss
 
 # --- SMPL optimisation settings
 pose_correction_epoch: 100
