@@ -47,3 +47,8 @@ multiply_ds_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm
 
 # Custom 
 bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq taichi --images-dir /scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/image --num-people 2 
+
+# People SnapShots
+# - male 3 casual
+bash preprocess/people_snapshots/video_to_frame.sh /scratch/izar/cizinsky/people_snapshot_public/male-3-casual/male-3-casual.mp4 3
+bash preprocess/multiply_pipeline/run_preprocessing_multiply.sh --seq male_3_casual --images-dir /scratch/izar/cizinsky/people_snapshot_public/male-3-casual/male-3-casual_frames --num-people 1

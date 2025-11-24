@@ -100,6 +100,16 @@ def _scene_tables(dataset_df: pd.DataFrame) -> Dict[str, Tuple[pd.DataFrame, Lis
     return tables
 
 
+def _average_table(dataset_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[int]]:
+    """Return a table of per-method averages across all scenes plus separator placement."""
+    metric_columns = [col for col in dataset_df.columns if col not in {"dataset", "scene", "method"}]
+    ordered_metrics, separator_positions = _ordered_metrics(metric_columns)
+    if not ordered_metrics:
+        return dataset_df.set_index("method"), []
+    averages = dataset_df.groupby("method")[ordered_metrics].mean(numeric_only=True)
+    return averages, separator_positions
+
+
 def _format_scene_table(table: pd.DataFrame, separators: Sequence[int]) -> str:
     """Return a markdown table string with separators and bold best metrics."""
     columns = list(table.columns)
@@ -151,8 +161,18 @@ def _format_scene_table(table: pd.DataFrame, separators: Sequence[int]) -> str:
 
 def _dataset_markdown(dataset_name: str, dataset_df: pd.DataFrame) -> str:
     """Build markdown containing one table per scene."""
+    avg_table, avg_separators = _average_table(dataset_df)
     tables = _scene_tables(dataset_df)
+
     lines: List[str] = [f"# {dataset_name} metrics", ""]
+    print("building md tables")
+    if not avg_table.empty:
+        print("building md table for avg")
+        lines.append("## Average across scenes")
+        lines.append("")
+        lines.append(_format_scene_table(avg_table, avg_separators))
+        lines.append("")
+
     for scene_name in sorted(tables):
         lines.append(f"## {scene_name}")
         lines.append("")
