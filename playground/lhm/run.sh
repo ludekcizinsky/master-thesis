@@ -49,5 +49,5 @@ default_ref_frame_idx=0
 # bash inference.sh $seq_name 0 $default_ref_frame_idx LHM-1B
 # bash inference.sh $seq_name 1 $default_ref_frame_idx LHM-1B
 gs_model_dir=/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/lhm/inference_results
-save_dir=/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/lhm/inference_results
-python LHM/infer_multi_humans.py --gs_model_dir=$gs_model_dir --save_dir=$save_dir
+save_dir=/scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/lhm
+python LHM/infer_multi_humans.py --gs_model_dir=$gs_model_dir --save_dir=$save_dir --scene_name=$seq_name
