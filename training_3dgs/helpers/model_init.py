@@ -1,0 +1,426 @@
+import math
+from typing import Dict, List, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
+
+from training.smpl_deformer.smpl_server import SMPLServer
+from gsplat.strategy import DefaultStrategy
+
+from dataclasses import dataclass, field
+
+@dataclass
+class SceneSplats:
+    static: Optional[nn.ParameterDict] = None
+    dynamic: list[nn.ParameterDict] = field(default_factory=list)
+    smpl_c_info: Optional[Dict] = None
+
+@dataclass
+class SceneSplatsOptimizers:
+    static: Optional[Dict[str, torch.optim.Optimizer]] = None
+    dynamic: list[Dict[str, torch.optim.Optimizer]] = field(default_factory=list)
+
+@dataclass
+class SceneSplatsStrategies:
+    static: Optional[Tuple[DefaultStrategy, Dict]] = None
+    dynamic: list[Tuple[DefaultStrategy, Dict]] = field(default_factory=list)
+
+    @torch.no_grad()
+    def pre_backward_step(self, scene_splats: SceneSplats, optimizers: SceneSplatsOptimizers, it_number: int, info: Tuple[Optional[Dict], List[Dict]]):
+
+        # Static
+        if self.static is not None:
+            strategy, state = self.static
+            info_static, _ = info
+            strategy.step_pre_backward(
+                params=scene_splats.static,
+                optimizers=optimizers.static,
+                state=state,
+                step=it_number,
+                info=info_static,
+            )
+
+        # Dynamic
+        if len(self.dynamic) > 0:
+            for i in range(len(self.dynamic)):
+                strategy, state = self.dynamic[i]
+                _, info_dynamic = info
+                strategy.step_pre_backward(
+                    params=scene_splats.dynamic[i],
+                    optimizers=optimizers.dynamic[i],
+                    state=state,
+                    step=it_number,
+                    info=info_dynamic[i],
+                )
+
+    @torch.no_grad()
+    def post_backward_step(self, scene_splats: SceneSplats, optimizers: SceneSplatsOptimizers, it_number: int, info: Tuple[Optional[Dict], List[Dict]], packed: bool = False):
+
+        # Static
+        if self.static is not None:
+            strategy, state = self.static
+            info_static, _ = info
+            strategy.step_post_backward(
+                params=scene_splats.static,
+                optimizers=optimizers.static,
+                state=state,
+                step=it_number,
+                info=info_static,
+                packed=packed,
+            )
+
+        # Dynamic
+        if len(self.dynamic) > 0:
+            for i in range(len(self.dynamic)):
+                strategy, state = self.dynamic[i]
+                _, info_dynamic = info
+                strategy.step_post_backward(
+                    params=scene_splats.dynamic[i],
+                    optimizers=optimizers.dynamic[i],
+                    state=state,
+                    step=it_number,
+                    info=info_dynamic[i],
+                    packed=packed,
+                )
+
+
+C0 = 0.28209479177387814
+
+def srgb_to_linear(x: torch.Tensor) -> torch.Tensor:
+    a = 0.055
+    return torch.where(x <= 0.04045, x/12.92, ((x + a)/(1+a))**2.4)
+
+def unit_quat(q: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    return q / (q.norm(dim=-1, keepdim=True) + eps)
+
+
+def make_paramdict(means, log_scales, quats, opacity_logits, colors_sh, sh_degree) -> nn.ParameterDict:
+    K = (sh_degree + 1) ** 2
+    assert colors_sh.shape[1] == K and colors_sh.shape[2] == 3
+    return nn.ParameterDict({
+        "means":     nn.Parameter(means.contiguous()),
+        "scales":    nn.Parameter(log_scales.contiguous()),   # log-scales
+        "quats":     nn.Parameter(quats.contiguous()),
+        "opacities": nn.Parameter(opacity_logits.contiguous()),
+        "sh0":       nn.Parameter(colors_sh[:, :1, :].contiguous()),
+        "shN":       nn.Parameter(colors_sh[:, 1:, :].contiguous()),
+    })
+
+
+def init_sh_colors(color_mode: str, M: int, sh_degree: int = 3, given_colors: Optional[torch.Tensor] = None, device: str = "cuda") -> torch.Tensor:
+
+    K = (sh_degree + 1) ** 2
+    colors_sh = torch.zeros(M, K, 3, device=device)
+
+    if color_mode == "random":
+        base_rgb = torch.rand(M, 3, device=device)                  # sRGB in [0,1]
+        base_rgb = srgb_to_linear(base_rgb)                         # -> linear
+    elif color_mode == "gray":
+        base_rgb = torch.full((M, 3), 0.5, device=device)           # sRGB mid-gray
+        base_rgb = srgb_to_linear(base_rgb)                         # ≈ 0.214 in linear
+    elif color_mode == "given":
+        assert given_colors is not None and given_colors.shape == (M, 3)
+        base_rgb = srgb_to_linear(given_colors.to(device).clamp(0, 1))
+    else:
+        raise ValueError("color_mode must be 'random'|'gray'|'given'")
+
+    colors_sh[:, 0, :] = base_rgb / C0
+
+    return colors_sh    
+
+
+def init_isotropic_scales_from_knn(pts: np.array, k_for_scale: int = 16, scale_percentile: float = 50.0, device: str = "cuda") -> torch.Tensor:
+    """Initialize isotropic scales from k-NN distances."""
+    nbrs = NearestNeighbors(n_neighbors=k_for_scale + 1, algorithm='kd_tree').fit(pts)
+    distances, _ = nbrs.kneighbors(pts)  # [N, k+1]
+
+    # skip the first column (self-distance 0)
+    distances = distances[:, 1:]                       # [N, k]
+    kth_distances = distances[:, -1]                   # [N]
+    sigma_init = np.percentile(kth_distances, scale_percentile)
+
+    sigmas = torch.full((pts.shape[0],), sigma_init, device=device)
+    return sigmas
+
+def init_smpl_server(device):
+    smpl_server = SMPLServer().to(device).eval()
+    verts_c = smpl_server.verts_c[0].to(device)    
+    weights_c = smpl_server.weights_c[0].to(device)
+    smpl_c_info = {"verts_c": verts_c, "weights_c": weights_c, "smpl_server": smpl_server}
+    return smpl_c_info
+
+
+@torch.no_grad()
+def init_trainable_smpl_params(dataset, cfg, device: torch.device, checkpoint_manager=None):
+
+    tids = list(cfg.tids)
+    if len(tids) == 0:
+        return {}, []
+
+    def _init_from_dataset() -> tuple[dict[int, nn.Parameter], list[nn.Parameter]]:
+        smpl_params: dict[int, nn.Parameter] = {}
+        params_list: list[nn.Parameter] = []
+        scale_value = float(dataset.scale)
+        for fid in range(len(dataset)):
+            param_tensor = torch.zeros((len(tids), 86), dtype=torch.float32, device=device)
+            for idx, tid in enumerate(tids):
+                param_tensor[idx, 0] = scale_value
+                param_tensor[idx, 1:4] = torch.as_tensor(
+                    dataset.trans[fid][tid], dtype=torch.float32, device=device
+                ) * scale_value
+                param_tensor[idx, 4:76] = torch.as_tensor(
+                    dataset.poses[fid][tid], dtype=torch.float32, device=device
+                )
+                param_tensor[idx, 76:] = torch.as_tensor(
+                    dataset.shape[tid], dtype=torch.float32, device=device
+                )
+            param = nn.Parameter(param_tensor)
+            smpl_params[fid] = param
+            params_list.append(param)
+        assert len(params_list) > 0, "Across all frames, no SMPL parameters were found."
+        return smpl_params, params_list
+
+    smpl_params: dict[int, nn.Parameter]
+    params_list: list[nn.Parameter]
+
+    resume_enabled = bool(getattr(cfg, "resume", False)) and checkpoint_manager is not None
+    if resume_enabled:
+        loaded_params, loaded_epoch = checkpoint_manager.load_smpl(device=device)
+        if loaded_params is not None:
+            missing_frames = [fid for fid in range(len(dataset)) if fid not in loaded_params]
+            if missing_frames:
+                print(f"--- FYI: SMPL checkpoint missing frames {missing_frames}; initializing from scratch.")
+                smpl_params, params_list = _init_from_dataset()
+            else:
+                smpl_params = {fid: loaded_params[fid] for fid in range(len(dataset))}
+                params_list = [smpl_params[fid] for fid in range(len(dataset))]
+                if loaded_epoch is not None and loaded_epoch >= 0:
+                    print(f"--- FYI: Loaded SMPL params from epoch {loaded_epoch}.")
+                else:
+                    print("--- FYI: Loaded SMPL params from checkpoint with unknown epoch.")
+        else:
+            print("--- FYI: Resume enabled but no SMPL checkpoint found; initializing SMPL params from scratch.")
+            smpl_params, params_list = _init_from_dataset()
+    else:
+        smpl_params, params_list = _init_from_dataset()
+        print("--- FYI: Initializing SMPL params from dataset.")
+
+    # Return both the mapping (for frame lookup) and the list (for optimiser construction)
+    return smpl_params, params_list
+
+
+@torch.no_grad()
+def init_3dgs_humans(
+    n_humans,
+    *,
+    device: str = "cuda",
+    sh_degree: int = 3,
+    init_sigma: float = 0.02,
+    init_opacity: float = 0.10,
+    color_mode: str = "random",           # "random" | "gray" | "given"
+    given_colors: Optional[torch.Tensor] = None,  # [M,3] in [0,1] if color_mode="given"
+    seed: Optional[int] = 1000,
+) -> Tuple[nn.ParameterDict, Dict]:
+
+    smpl_c_info = init_smpl_server(device)
+    verts_c = smpl_c_info["verts_c"]
+    M = verts_c.shape[0]
+
+    # means (canonical)
+    means = verts_c.clone()            
+
+    # log-scales 
+    log_scales = torch.full((M, 3), math.log(init_sigma), device=device)
+
+    # quats (identity)
+    quats = torch.zeros(M, 4, device=device); quats[:, 0] = 1.0
+
+    # opacity logits
+    opacity_logits = torch.full((M,), torch.logit(torch.tensor(init_opacity))).to(device)
+
+    # SH colors
+    colors_sh = init_sh_colors(color_mode, M, sh_degree, given_colors, device)
+
+    # Load dataset
+    splats = list()
+    for _ in range(n_humans):
+        splats.append(
+            make_paramdict(
+                means.clone(),
+                log_scales.clone(),
+                quats.clone(),
+                opacity_logits.clone(),
+                colors_sh.clone(),
+                sh_degree,
+            )
+        )
+    
+
+    return splats, smpl_c_info 
+
+@torch.no_grad()
+def init_3dgs_background(
+    ds,
+    *,
+    device: str = "cuda",
+    sh_degree: int = 3,
+    k_for_scale: int = 10,
+    scale_percentile: float = 50.0,
+    init_opacity: float = 0.05,
+) -> Tuple[nn.ParameterDict, Dict]:
+
+    # init from point cloud
+    pts, cols = ds.point_cloud
+
+    # means
+    means = torch.from_numpy(pts).to(device)
+
+    # scales
+    sigmas = init_isotropic_scales_from_knn(pts, k_for_scale=k_for_scale, scale_percentile=scale_percentile, device=device)
+    sigmas = sigmas.clamp(1e-4, 1.0)
+    log_scales = torch.log(sigmas.unsqueeze(1).expand(-1, 3)).to(device)   # [N,3]
+
+    # quats (identity)
+    quats = torch.zeros(pts.shape[0], 4, device=device)
+    quats[:, 0] = 1.0
+
+    # SH colors 
+    col_mode = "given" if cols is not None else "random"
+    given_colors = None
+    if cols is not None:
+        given_colors = torch.from_numpy(cols).to(device=device, dtype=torch.float32) / 255.0
+    sh_colors = init_sh_colors(col_mode, pts.shape[0], sh_degree, given_colors=given_colors, device=device)
+ 
+    # opacity logits
+    opacity_logits = torch.full((pts.shape[0],), torch.logit(torch.tensor(init_opacity))).to(device)
+
+    splats = make_paramdict(means, log_scales, quats, opacity_logits, sh_colors, sh_degree)
+
+    return splats
+
+
+def init_optimizers(scene_splats, cfg):
+
+    def _init_optimizers_for_splats(splats):
+        BS = cfg.batch_size
+        optimizers = {
+            name: torch.optim.Adam(
+                [{"params": params, "lr": cfg.get(f"{name}_lr", 1e-3) * math.sqrt(BS), "name": name}],
+                eps=1e-15 / math.sqrt(BS),
+                # TODO: check betas logic when BS is larger than 10 betas[0] will be zero.
+                betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
+            )
+            for name, params in splats.items()
+        }
+        return optimizers
+
+
+    static_optimizers = _init_optimizers_for_splats(scene_splats.static) if scene_splats.static is not None else None
+    dynamic_optimizers = [_init_optimizers_for_splats(splats) for splats in scene_splats.dynamic] if len(scene_splats.dynamic) > 0 else []
+    all_optimizers = SceneSplatsOptimizers(static=static_optimizers, dynamic=dynamic_optimizers)
+
+    return all_optimizers
+
+
+def init_densification_strategy(scene_splats: SceneSplats, scene_optimisers: SceneSplatsOptimizers, cfg) -> SceneSplatsStrategies:
+
+    def _init_single_strategy(splats, optimizers):
+        strategy = DefaultStrategy(
+            verbose=False,
+            key_for_gradient="gradient_2dgs",
+            absgrad=getattr(cfg, "absgrad", False),
+        )
+        strategy.refine_stop_iter = cfg.gs_refine_stop_iter
+        strategy.refine_every = cfg.gs_refine_every
+        strategy.refine_start_iter = cfg.gs_refine_start_iter
+        strategy.check_sanity(splats, optimizers)
+        strategy_state = strategy.initialize_state(scene_scale=1.0)
+        return strategy, strategy_state
+
+
+    # Static splats
+    static_strategy = _init_single_strategy(scene_splats.static, scene_optimisers.static) if scene_splats.static is not None else None
+
+    # Dynamic splats
+    if len(scene_splats.dynamic) > 0:
+        dynamic_strategies = [_init_single_strategy(splats, optimizers) for splats, optimizers in zip(scene_splats.dynamic, scene_optimisers.dynamic)]
+    else:
+        dynamic_strategies = []
+
+    all_strategies = SceneSplatsStrategies(static=static_strategy, dynamic=dynamic_strategies)
+
+    return all_strategies
+
+def create_splats_with_optimizers(device, cfg, ds, checkpoint_manager=None):
+
+    resume_enabled = bool(getattr(cfg, "resume", False)) and checkpoint_manager is not None
+
+    # Static
+    if cfg.train_bg:
+        static_gs = None
+        if resume_enabled:
+            static_gs, static_epoch = checkpoint_manager.load_static(device=device)
+            if static_gs is not None:
+                if static_epoch is not None and static_epoch >= 0:
+                    print(f"--- FYI: Loaded static splats from epoch {static_epoch}.")
+                else:
+                    print(f"--- FYI: Loaded static splats from checkpoint with unknown epoch.")
+
+        if static_gs is None:
+            static_gs = init_3dgs_background(
+                ds, device=device, sh_degree=cfg.sh_degree
+            )
+            print(f"--- FYI: Initialized {static_gs['means'].shape[0]} static splats from point cloud.")
+    else:
+        static_gs = None
+
+    # Dynamic
+    if len(cfg.tids) > 0:
+        dynamic_gs_per_human, smpl_c_info = init_3dgs_humans(
+            n_humans=len(cfg.tids), device=device, sh_degree=cfg.sh_degree,
+            color_mode="random"
+        )
+        loaded_summary = []
+        if resume_enabled:
+            for idx, tid in enumerate(cfg.tids):
+                loaded_pdict, loaded_epoch = checkpoint_manager.load_human(tid, device=device)
+                if loaded_pdict is not None:
+                    dynamic_gs_per_human[idx] = loaded_pdict
+                    loaded_summary.append((tid, loaded_epoch, loaded_pdict["means"].shape[0]))
+
+        n_human_gs = [g["means"].shape[0] for g in dynamic_gs_per_human]
+        if loaded_summary:
+            loaded_ids = {tid for tid, _, _ in loaded_summary}
+            for tid, epoch, count in loaded_summary:
+                if epoch is not None and epoch >= 0:
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from epoch {epoch}.")
+                else:
+                    print(f"--- FYI: Loaded {count} splats for human {tid} from checkpoint with unknown epoch.")
+            remaining = [(idx, tid) for idx, tid in enumerate(cfg.tids) if tid not in loaded_ids]
+            if remaining:
+                total_initialized = sum(dynamic_gs_per_human[idx]["means"].shape[0] for idx, _ in remaining)
+                remaining_tids = [tid for _, tid in remaining]
+                print(f"--- FYI: Initialized {total_initialized} splats from scratch for humans {remaining_tids}.")
+        else:
+            print(f"--- FYI: Initialized {sum(n_human_gs)} dynamic splats for {len(cfg.tids)} humans.")
+        print(f"--- FYI: Active dynamic splats total {sum(n_human_gs)} across {len(cfg.tids)} humans.")
+    else:
+        dynamic_gs_per_human = list()
+        smpl_c_info = None
+
+    # Combined
+    scene_splats = SceneSplats(
+        static=static_gs,
+        dynamic=dynamic_gs_per_human,
+        smpl_c_info=smpl_c_info
+    )
+
+    # Optimizers
+    all_optimizers = init_optimizers(scene_splats, cfg)
+
+    # Densification strategies
+    all_strategies = init_densification_strategy(scene_splats, all_optimizers, cfg)
+
+    return scene_splats, all_optimizers, all_strategies
