@@ -43,12 +43,19 @@ cd /home/cizinsky/master-thesis/playground/lhm
 
 # TODO: manual inspection needed at this point and making sure that mask track ids match motion track ids.
 # TODO: another todo is to pick a frame index for each person track to be used as reference frame during inference.
-echo "--- [4/4] Running inference.sh to generate animations"
-cd /home/cizinsky/LHM
-conda deactivate && conda activate lhm
-default_ref_frame_idx=0
+# echo "--- [4/4] Running inference.sh to generate animations"
+# cd /home/cizinsky/LHM
+# conda deactivate && conda activate lhm
+# default_ref_frame_idx=0
 # bash inference.sh $seq_name 0 $default_ref_frame_idx LHM-1B
 # bash inference.sh $seq_name 1 $default_ref_frame_idx LHM-1B
-gs_model_dir=/scratch/izar/cizinsky/multiply-output/preprocessing/data/taichi/lhm/inference_results
-save_dir=/scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/lhm
-python LHM/infer_multi_humans.py --gs_model_dir=$gs_model_dir --save_dir=$save_dir --scene_name=$seq_name --nv_rot_degree=$nv_rot_degree
+# gs_model_dir=/scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq_name/lhm/inference_results
+# save_dir=/scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/lhm
+# python LHM/infer_multi_humans.py --gs_model_dir=$gs_model_dir --save_dir=$save_dir --scene_name=$seq_name --nv_rot_degree=$nv_rot_degree
+
+echo "--- [5/4] Running finetuning for multi-human LHM"
+cd /home/cizinsky/LHM
+conda deactivate && conda activate lhm
+gs_model_dir=/scratch/izar/cizinsky/multiply-output/preprocessing/data/$seq_name/lhm/inference_results
+save_dir=/scratch/izar/cizinsky/thesis/evaluation/videos/renders/custom/lhm_finetuned
+python LHM/finetune_multi_humans.py --gs_model_dir=$gs_model_dir --save_dir=$save_dir --scene_name=$seq_name --nv_rot_degree=$nv_rot_degree
