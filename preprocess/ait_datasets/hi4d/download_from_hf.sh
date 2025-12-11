@@ -23,8 +23,8 @@ zip_files_to_download=(
 
 export UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE
 for zip_file in "${zip_files_to_download[@]}"; do
-#   echo "Downloading $zip_file from Hugging Face..."
-  # hf download --repo-type dataset ludekcizinsky/hi4d "$zip_file" --local-dir "$compressed_dir"
+  echo "Downloading $zip_file from Hugging Face..."
+  hf download --repo-type dataset ludekcizinsky/hi4d "$zip_file" --local-dir "$compressed_dir"
 
   # extract filename from zip_file
   base_filename=$(basename "$zip_file" .tar.gz)
