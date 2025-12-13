@@ -33,8 +33,8 @@ mkdir -p $results_dir
 #echo "--- [3/?] Running Depth Anything 3 to generate depth maps"
 #bash submodules/da3/run_inference.sh $seq_name
 
-echo "--- [4/?] Running SAM3 to generate masks and masked images"
-bash submodules/sam3/run_inference.sh $seq_name $default_ref_frame_idx
+#echo "--- [4/?] Running SAM3 to generate masks and masked images"
+#bash submodules/sam3/run_inference.sh $seq_name $default_ref_frame_idx
 
 # echo "--- [5/?] Running inference.sh to obtain canonical 3dgs models for each human"
 # conda deactivate && conda activate lhm
