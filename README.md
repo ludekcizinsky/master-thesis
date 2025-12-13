@@ -10,6 +10,6 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 ## Preprocessing limitations and notes:
 - it can happen that sam3 actually fails to detect any humans in the scene, so here I would also need to check if everything went fine.
 - it can happen that sam3 will fail to detect certain human for a subset of the frames, so be aware of that
-- manual inspection needed at this point and making sure that mask track ids match motion track ids.
+- manual inspection needed at this point and making sure that mask track ids match motion track ids as well gt track ids
 - another todo is to pick a frame index for each person track to be used as reference frame during inference.
 - I need to ensure I am running over all humans detected in the scene.

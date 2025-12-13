@@ -13,12 +13,15 @@ cd /home/cizinsky/master-thesis
 
 # configurable settings
 seq_name=$1
+src_camera_id=$2 
+gt_root_dir=$3 # currently expects hi4d format root dir
 
 # for now default settings
-default_ref_frame_idx=60
-input_frames_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17/images/28
+sam_frame_idx=60
+lhm_input_frame_idx=0
 
 # derived paths
+input_frames_path=$gt_root_dir/images/$src_camera_id
 results_dir=/scratch/izar/cizinsky/thesis/results/$seq_name
 mkdir -p $results_dir
 
@@ -34,9 +37,7 @@ mkdir -p $results_dir
 #bash submodules/da3/run_inference.sh $seq_name
 
 #echo "--- [4/?] Running SAM3 to generate masks and masked images"
-#bash submodules/sam3/run_inference.sh $seq_name $default_ref_frame_idx
+#bash submodules/sam3/run_inference.sh $seq_name $sam_frame_idx
 
-# echo "--- [5/?] Running inference.sh to obtain canonical 3dgs models for each human"
-# conda deactivate && conda activate lhm
-# bash inference.sh $seq_name 0 $default_ref_frame_idx LHM-1B
-# bash inference.sh $seq_name 1 $default_ref_frame_idx LHM-1B
+echo "--- [5/?] Running inference.sh to obtain canonical 3dgs models for each human"
+bash submodules/lhm/run_inference.sh $seq_name $lhm_input_frame_idx $gt_root_dir
