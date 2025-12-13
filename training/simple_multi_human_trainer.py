@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(
     0,
     os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "submodules", "LHM")
+        os.path.join(os.path.dirname(__file__), "..", "submodules", "lhm")
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer

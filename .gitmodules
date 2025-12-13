@@ -1,9 +1,6 @@
 [submodule "submodules/smplx"]
 	path = submodules/smplx
 	url = git@github.com:ludekcizinsky/smplx.git
-[submodule "submodules/LHM"]
-	path = submodules/LHM
-	url = git@github.com:ludekcizinsky/LHM.git
 [submodule "submodules/human3r"]
 	path = submodules/human3r
 	url = git@github.com:ludekcizinsky/Human3R.git
