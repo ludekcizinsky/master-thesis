@@ -436,7 +436,9 @@ class MultiHumanTrainer:
         super().__init__()
         self.cfg = cfg
         self.tuner_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.preprocess_dir = Path(cfg.preprocessing_dir).expanduser()
         self.output_dir = Path(cfg.output_dir).expanduser()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.train_params = tuple(cfg.train_params)
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
@@ -444,7 +446,7 @@ class MultiHumanTrainer:
         # Directories
         #self.frames_dir = self.output_dir / "frames"
         #self.masks_dir = self.output_dir / "masks" / "union"
-        self.depth_dir = self.output_dir / "depth_maps" / "raw"
+        self.depth_dir = self.preprocess_dir / "depth_maps" / "raw"
 
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
         self.frames_dir = root_gt_dir_path / "images" / str(self.cfg.nvs_eval.source_camera_id)
@@ -496,21 +498,9 @@ class MultiHumanTrainer:
         self.gt_query_points, self.gt_smplx = self.renderer.get_query_points(gt_smplx, self.tuner_device)
 
         # Canonical 3DGS
-        root_gs_model_dir = self.output_dir / "initial_scene_recon"
-        track_ids = sorted(
-            [
-                track_id
-                for track_id in os.listdir(root_gs_model_dir)
-                if (root_gs_model_dir / track_id).is_dir()
-            ]
-        )
-        self.gt_gs_model_list = []
-        for track_id in track_ids:
-            gs_model_dir = root_gs_model_dir / track_id
-            gs_model_list = torch.load(gs_model_dir / "gt_gs_model_list.pt", map_location=self.tuner_device)
-            self.gt_gs_model_list.extend(gs_model_list)
+        root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
+        self.gt_gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device)
         
-
     # ---------------- Evaluation utilities ----------------
     def _load_gt_smplx_params(self, frame_paths: List[str], smplx_dir: Path):
         """Load per-frame SMPL-X params in world coordinates (no camera transform)."""

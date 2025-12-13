@@ -1,7 +1,8 @@
 scene_name: ???
 num_persons: ???
 exp_name: ???
-output_dir: /scratch/izar/cizinsky/thesis/preprocessing/${scene_name}/lhm
+preprocessing_dir: /scratch/izar/cizinsky/thesis/preprocessing/${scene_name}
+output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
 epochs: 100
 batch_size: 5
 lr: 1e-4
