@@ -10,3 +10,9 @@
 [submodule "submodules/lhm"]
 	path = submodules/lhm
 	url = git@github.com:ludekcizinsky/LHM.git
+[submodule "submodules/da3"]
+	path = submodules/da3
+	url = git@github.com:ludekcizinsky/Depth-Anything-3.git
+[submodule "submodules/sam3"]
+	path = submodules/sam3
+	url = git@github.com:ludekcizinsky/sam3.git
