@@ -7,3 +7,6 @@
 [submodule "submodules/difix3d"]
 	path = submodules/difix3d
 	url = git@github.com:ludekcizinsky/Difix3D.git
+[submodule "submodules/lhm"]
+	path = submodules/lhm
+	url = git@github.com:ludekcizinsky/LHM.git
