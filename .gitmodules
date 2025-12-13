@@ -4,3 +4,9 @@
 [submodule "submodules/LHM"]
 	path = submodules/LHM
 	url = git@github.com:ludekcizinsky/LHM.git
+[submodule "submodules/human3r"]
+	path = submodules/human3r
+	url = git@github.com:ludekcizinsky/Human3R.git
+[submodule "submodules/difix3d"]
+	path = submodules/difix3d
+	url = git@github.com:ludekcizinsky/Difix3D.git
