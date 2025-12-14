@@ -6,8 +6,11 @@ from typing import List, Tuple, Optional
 from tqdm import tqdm
 import pandas as pd
 from collections import defaultdict
-
 from omegaconf import DictConfig
+
+# Silence noisy deprecation notices from upstream libs to keep logs readable.
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import hydra
 import numpy as np
@@ -31,6 +34,8 @@ sys.path.insert(
 )
 from training.helpers.gs_renderer import GS3DRenderer
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
+
+from submodules.difix3d.src.pipeline_difix import DifixPipeline
 
 # ---------------------------------------------------------------------------
 # Evaluation metrics
@@ -499,7 +504,7 @@ class MultiHumanTrainer:
 
         # Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
-        self.gt_gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device)
+        self.gt_gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device, weights_only=False)
         
     # ---------------- Evaluation utilities ----------------
     def _load_gt_smplx_params(self, frame_paths: List[str], smplx_dir: Path):
@@ -851,6 +856,19 @@ class MultiHumanTrainer:
             (num_tracks, num_frames, 3), device=self.tuner_device, dtype=torch.float32
         )  # black
 
+        # Init Difix if enabled for the evaluation
+        if self.cfg.difix.eval_enable:
+            difix_pipe = DifixPipeline.from_pretrained(self.cfg.difix.model_id, trust_remote_code=True, requires_safety_checker=False)
+            difix_pipe.to(self.tuner_device)
+            difix_pipe.set_progress_bar_config(disable=True)
+
+            src_cam_id = self.cfg.nvs_eval.source_camera_id  
+            src_gt_frames_dir_path = root_gt_dir_path / "images" / f"{src_cam_id}"
+            src_gt_masks_dir_path = root_gt_dir_path / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
+            src_cam_dataset = FrameMaskDataset(src_gt_frames_dir_path, src_gt_masks_dir_path, self.tuner_device, sample_every=1)
+        else:
+            difix_pipe = None
+
         # Collector for metrics
         metrics_all_cams_per_frame = list()
 
@@ -913,6 +931,48 @@ class MultiHumanTrainer:
                     masks3 = masks.repeat(1, 1, 1, 3)
                     masked_gt = frames * masks3
 
+                    # [Optional] Apply Difix to refine the renders
+                    if difix_pipe is not None:
+
+                        # - Run the refinement
+                        before_refinement_renders = renders.clone()
+                        refined_renders = []
+                        ref_images = []
+                        for i in tqdm(range(renders.shape[0]), desc="Difix refinement", total=renders.shape[0], leave=False):
+                            # -- Img to refine = rendered image
+                            img_to_refine = (renders[i].cpu().numpy() * 255).astype("uint8")
+                            # -- Reference image = src view gt image + mask
+                            _, src_frame, src_mask, _ = src_cam_dataset[frame_indices[i].item()]
+                            src_frame_np = (src_frame.cpu().numpy() * 255).astype("uint8")
+                            src_mask_np = src_mask.cpu().numpy().astype(np.float32)  # [H, W, 1]
+                            reference_image = (src_frame_np.astype(np.float32) * src_mask_np).clip(0, 255).astype("uint8")
+                            # -- Run Difix
+                            refined_image = difix_pipe(
+                                self.cfg.difix.prompt,
+                                image=Image.fromarray(img_to_refine),
+                                ref_image=Image.fromarray(reference_image),
+                                num_inference_steps=self.cfg.difix.num_inference_steps,
+                                timesteps=self.cfg.difix.timesteps,
+                                guidance_scale=self.cfg.difix.guidance_scale,
+                            ).images[0]
+                            # -- Collect results
+                            refined_image = torch.from_numpy(np.array(refined_image)).float() / 255.
+                            refined_renders.append(refined_image.to(self.tuner_device))
+                            reference_image = torch.from_numpy(reference_image).float() / 255.
+                            ref_images.append(reference_image.to(self.tuner_device))
+
+                        # - Stack refined renders and reference images
+                        renders = torch.stack(refined_renders, dim=0)
+                        ref_images = torch.stack(ref_images, dim=0)
+
+                        # - Save before vs after refinement images for debugging
+                        difix_debug_dir = save_dir / "difix_debug"
+                        difix_debug_dir.mkdir(parents=True, exist_ok=True)
+                        joined = torch.cat([ref_images, before_refinement_renders, renders, masked_gt], dim=2)  # side-by-side along width
+                        for i in range(joined.shape[0]):
+                            save_path = difix_debug_dir / Path(frame_paths[i]).name
+                            save_image(joined[i].permute(2, 0, 1), str(save_path))
+
                     # Combine masked render and masked GT with overlay
                     render_vs_gt_dir = save_dir / "render_vs_gt"
                     render_vs_gt_dir.mkdir(parents=True, exist_ok=True)
@@ -959,21 +1019,7 @@ class MultiHumanTrainer:
                     for i in range(joined.shape[0]):
                         save_path = metrics_debug_dir / Path(frame_paths[i]).name
                         save_image(joined[i].permute(2, 0, 1), str(save_path))
-
-                    
-#                    # debug - for difix
-                    #difix_debug_dir = save_dir / "difix_inputs"
-                    #difix_debug_render_dir = difix_debug_dir / "renders"
-                    #difix_debug_render_dir.mkdir(parents=True, exist_ok=True)
-                    #difix_debug_gt_dir = difix_debug_dir / "gt_frames"
-                    #difix_debug_gt_dir.mkdir(parents=True, exist_ok=True)
-                    #for i in range(frames.shape[0]):
-                        #save_path = difix_debug_render_dir / Path(frame_paths[i]).name
-                        #save_image(renders[i].permute(2, 0, 1), str(save_path))
-
-                        #save_path = difix_debug_gt_dir / Path(frame_paths[i]).name
-                        #save_image(frames[i].permute(2, 0, 1), str(save_path))
-                    
+                     
                     # Compute metrics
                     psnr_vals = psnr(
                         images=frames,
@@ -1049,12 +1095,18 @@ class MultiHumanTrainer:
             to_log = {f"eval_nv/all_cam/{metric_name}": v for metric_name, v in overall_avg.items()}
             to_log["epoch"] = epoch
             wandb.log(to_log)
-        
+
+        # Delete difix pipe to free memory
+        if difix_pipe is not None:
+            del difix_pipe
+            torch.cuda.empty_cache()
         quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
+    os.environ["TORCH_HOME"] = str(cfg.torch_home)
+    os.environ["HF_HOME"] = str(cfg.hf_home)
     tuner = MultiHumanTrainer(cfg)
     tuner.train_loop()
 
