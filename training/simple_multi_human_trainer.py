@@ -1049,6 +1049,8 @@ class MultiHumanTrainer:
             to_log = {f"eval_nv/all_cam/{metric_name}": v for metric_name, v in overall_avg.items()}
             to_log["epoch"] = epoch
             wandb.log(to_log)
+        
+        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
