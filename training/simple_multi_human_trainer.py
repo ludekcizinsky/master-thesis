@@ -931,6 +931,7 @@ class MultiHumanTrainer:
                     masks3 = masks.repeat(1, 1, 1, 3)
                     masked_gt = frames * masks3
 
+                    # debug - for difix goes here just in case
                     # [Optional] Apply Difix to refine the renders
                     if difix_pipe is not None:
 
