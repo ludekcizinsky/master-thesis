@@ -35,7 +35,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.datasets import Hi4dDataset
+from training.helpers.datasets import SceneDataset
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -333,7 +333,7 @@ class MultiHumanTrainer:
         self.depth_dir = self.preprocess_dir / "depth_maps" / "raw"
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
-        self.trn_dataset = Hi4dDataset(root_gt_dir_path, src_cam_id, self.depth_dir, self.tuner_device)
+        self.trn_dataset = SceneDataset(root_gt_dir_path, src_cam_id, self.depth_dir, self.tuner_device)
 
         # Preare model
         self._load_model()
@@ -471,7 +471,7 @@ class MultiHumanTrainer:
         params = self._trainable_tensors()
         optimizer = torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
-        self.difix_refine()
+        # self.difix_step()
 
         # Pre-optimization visualization (epoch 0).
         if self.cfg.eval_pretrain:
@@ -613,7 +613,7 @@ class MultiHumanTrainer:
 
 
     @torch.no_grad()
-    def difix_refine(self):
+    def difix_step(self):
 
         # Select next left/right cameras to process (if any left)
         previous_cams = []
@@ -636,12 +636,25 @@ class MultiHumanTrainer:
         save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize Difix pipeline
+        difix_pipe = DifixPipeline.from_pretrained(
+            self.cfg.difix.model_id, 
+            trust_remote_code=True, 
+            requires_safety_checker=False
+        )
+        difix_pipe.to(self.tuner_device)
+        difix_pipe.set_progress_bar_config(disable=True)
+
         # Process each new camera:
         # 1. render the new camera views (out: render_frames + alpha_masks)
-        # 2. load the previous refined frames (or source frames for the first cameras) (out: ref_frames)
+        # 2. refine the rendered frames using Difix with reference to previous camera views
         for cam_id, prev_cam_id in zip(new_cams, previous_cams):
             root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-            cam_dataset = Hi4dDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None)
+            cam_dataset = SceneDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None)
+            # TODO: i think here the root of prev cam dataset will have to be changed to the difix output dir
+            # -> i should keep track of this - ideally i have a flexible method that allows me to decide
+            # whether to use chaining like approach or always use the source cam as reference
+            prev_cam_dataset = SceneDataset(root_gt_dir_path, prev_cam_id, device=self.tuner_device, depth_dir=None)
             loader = DataLoader(
                 cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
@@ -662,56 +675,69 @@ class MultiHumanTrainer:
             # Render in batches novel views from target camera
             for batch in tqdm(loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
 
-                # Parse batch data
-                frames = batch["image"]             # [B, H, W, 3],
-                masks = batch["mask"]               # [B, H, W, 1],
+                # - Parse batch data
+                frames = batch["image"] # [B, H, W, 3]
                 bsize = int(frames.shape[0])
                 batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
-                gt_h, gt_w = frames.shape[1], frames.shape[2]
-                frame_indices = batch["frame_idx"]      # [B]
-                frame_paths = batch["frame_path"]      # List[B]
+                frame_indices = batch["frame_idx"] # [B]
 
-                # Forward pass to render novel views
+                # - Forward pass to render novel views
                 pred_rgb, pred_alpha, _ = self.forward(batch)
 
-                # Save results using the hi4d format
-                # - Rendered frames
+                # - Refine rendered images using Difix
+                # -- Load reference images from previous camera view
+                ref_images = []
+                for i in range(frame_indices.shape[0]):
+                    sample_dict = prev_cam_dataset[frame_indices[i].item()]
+                    ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
+                    ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
+                    ref_images.append(ref_frame.to(self.tuner_device))
+                ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
+                # -- Run difix refinement
+                refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
+
+                # Save results 
+                # - Refined rendered frames
                 frames_save_dir = save_dir / "images" / f"{cam_id}"
                 frames_save_dir.mkdir(parents=True, exist_ok=True)
-                for i in range(pred_rgb.shape[0]):
-                    save_path = frames_save_dir / f"{frame_indices[i].item():06d}.png"
-                    save_image(pred_rgb[i].permute(2, 0, 1), str(save_path))
+                for i in range(refined_rgb.shape[0]):
+                    save_path = frames_save_dir / f"{frame_indices[i].item()+1:06d}.jpg"
+                    save_image(refined_rgb[i].permute(2, 0, 1), str(save_path))
 
                 # - Alpha masks
                 masks_save_dir = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all" 
                 masks_save_dir.mkdir(parents=True, exist_ok=True)
                 for i in range(pred_alpha.shape[0]):
-                    save_path = masks_save_dir / f"{frame_indices[i].item():06d}.png"
-                    save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path)) 
-        
-        quit()
+                    save_path = masks_save_dir / f"{frame_indices[i].item()+1:06d}.png"
+                    save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path))
 
-    
-    def difix_eval_refine(self, input_data, difix_pipe: DifixPipeline, save_dir: Path, ):
+                # - Debug: save side-by-side comparison of reference, rendered, refined
+                difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{cam_id}"
+                difix_debug_dir.mkdir(parents=True, exist_ok=True)
+                joined = torch.cat([ref_images, pred_rgb, refined_rgb], dim=2)  # side-by-side along width
+                for i in range(joined.shape[0]):
+                    save_path = difix_debug_dir / f"{frame_indices[i].item()+1:06d}.png"
+                    save_image(joined[i].permute(2, 0, 1), str(save_path))
 
-        # Parse input data
-        renders, masked_gt, frame_indices = input_data  # renders: [B, H, W, 3], masked_gt: [B, H, W, 3], frame_indices: [B]
+    @torch.no_grad()
+    def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline):
+        """Refine rendered images using Difix with reference images.
+        Args:
+            renders: [B, H, W, 3] rendered images to refine
+            reference_images: [B, H, W, 3] reference images for refinement
+            difix_pipe: DifixPipeline instance
+        Returns:
+            refined_renders: [B, H, W, 3] refined rendered images
+        """
 
         # - Run the refinement
-        before_refinement_renders = renders.clone()
         refined_renders = []
-        ref_images = []
         for i in tqdm(range(renders.shape[0]), desc="Difix refinement", total=renders.shape[0], leave=False):
-            # -- Img to refine = rendered image
+            # -- Img to refine
             img_to_refine = (renders[i].cpu().numpy() * 255).astype("uint8")
-            # -- Reference image = src view gt image + mask
-            sample_dict = self.trn_dataset[frame_indices[i].item()]
-            src_frame = sample_dict["image"]  # [H, W, 3], 0-1
-            src_mask = sample_dict["mask"]    # [H, W, 1], 0-1 
-            src_frame_np = (src_frame.cpu().numpy() * 255).astype("uint8")
-            src_mask_np = src_mask.cpu().numpy().astype(np.float32)  # [H, W, 1]
-            reference_image = (src_frame_np.astype(np.float32) * src_mask_np).clip(0, 255).astype("uint8")
+            # -- Reference image
+            reference_image = (reference_images[i].cpu().numpy() * 255).astype("uint8")
             # -- Run Difix
             refined_image = difix_pipe(
                 self.cfg.difix.prompt,
@@ -724,22 +750,12 @@ class MultiHumanTrainer:
             # -- Collect results
             refined_image = torch.from_numpy(np.array(refined_image)).float() / 255.
             refined_renders.append(refined_image.to(self.tuner_device))
-            reference_image = torch.from_numpy(reference_image).float() / 255.
-            ref_images.append(reference_image.to(self.tuner_device))
 
-        # - Stack refined renders and reference images
-        renders = torch.stack(refined_renders, dim=0)
-        ref_images = torch.stack(ref_images, dim=0)
+        # - Stack refined renders
+        refined_renders = torch.stack(refined_renders, dim=0) # [B, H, W, 3]
 
-        # - Save before vs after refinement images for debugging
-        difix_debug_dir = save_dir / "difix_debug"
-        difix_debug_dir.mkdir(parents=True, exist_ok=True)
-        joined = torch.cat([ref_images, before_refinement_renders, renders, masked_gt], dim=2)  # side-by-side along width
-        for i in range(joined.shape[0]):
-            save_path = difix_debug_dir / f"{frame_indices[i].item():06d}.png"
-            save_image(joined[i].permute(2, 0, 1), str(save_path))
-
-        return renders
+        return refined_renders
+ 
 
     # ---------------- Evaluation -------------------
     @torch.no_grad()
@@ -750,6 +766,10 @@ class MultiHumanTrainer:
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
         root_save_dir: Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
         root_save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Init source camera dataset for Difix reference images
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_dataset = SceneDataset(root_gt_dir_path, src_cam_id, device=self.tuner_device, depth_dir=None)
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
@@ -763,9 +783,8 @@ class MultiHumanTrainer:
         metrics_all_cams_per_frame = list()
 
         for tgt_cam_id in target_camera_ids:
-
-
-            val_dataset = Hi4dDataset(root_gt_dir_path, tgt_cam_id, device=self.tuner_device, depth_dir=None)
+            # Prepare dataset and dataloader for target camera
+            val_dataset = SceneDataset(root_gt_dir_path, tgt_cam_id, device=self.tuner_device, depth_dir=None)
             loader = DataLoader(
                 val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
@@ -797,7 +816,28 @@ class MultiHumanTrainer:
                 # debug - for difix goes here just in case
                 # [Optional] Apply Difix to refine the renders
                 if difix_pipe is not None:
-                    renders = self.difix_eval_refine((renders, masked_gt, frame_indices), difix_pipe, save_dir)
+                    # - Refine rendered images using Difix
+                    # -- Load reference images from previous camera view
+                    ref_images = []
+                    for i in range(frame_indices.shape[0]):
+                        sample_dict = src_cam_dataset[frame_indices[i].item()]
+                        ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
+                        ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
+                        ref_images.append(ref_frame.to(self.tuner_device))
+                    ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
+                    # -- Run difix refinement
+                    refined_rgb = self.difix_refine(renders, ref_images, difix_pipe) # [B, H, W, 3]
+
+                    # - Debug: save side-by-side comparison of reference, rendered, refined
+                    difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{tgt_cam_id}"
+                    difix_debug_dir.mkdir(parents=True, exist_ok=True)
+                    joined = torch.cat([ref_images, renders, refined_rgb, masked_gt], dim=2)  # side-by-side along width
+                    for i in range(joined.shape[0]):
+                        save_path = difix_debug_dir / f"{frame_indices[i].item()+1:06d}.png"
+                        save_image(joined[i].permute(2, 0, 1), str(save_path))
+
+                    # - Use refined renders for evaluation
+                    renders = refined_rgb
 
                 # Combine masked render and masked GT with overlay
                 render_vs_gt_dir = save_dir / "render_vs_gt"

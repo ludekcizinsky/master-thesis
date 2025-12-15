@@ -51,4 +51,4 @@ exp_name="dev"
 source_cam_id=28
 target_cam_ids="[4,28,52]"
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id nvs_eval.target_camera_ids=$target_cam_ids wandb.enable=false difix.eval_enable=true eval_pretrain=false
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id nvs_eval.target_camera_ids=$target_cam_ids wandb.enable=false difix.eval_enable=true eval_pretrain=true

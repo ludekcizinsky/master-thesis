@@ -19,20 +19,46 @@ def intr_to_4x4(intr: torch.Tensor, device) -> torch.Tensor:
     return intr4
 
 
-class BaseDataset:
-    def __init__(self, frames_dir: Path, masks_dir: Path, device: torch.device, sample_every: int = 1, depth_dir: Optional[Path] = None):
+class SceneDataset(Dataset):
+    
+    def __init__(self, 
+                scene_root_dir: Path,
+                src_cam_id: int,
+                depth_dir: Optional[Path],
+                device: torch.device, 
+                sample_every: int = 1):
+        
+        # Initialize attributes
+        self.root_dir = scene_root_dir
+        self.src_cam_id = src_cam_id
         self.device = device
-        self._load_frames(frames_dir, sample_every)
-        self._load_masks(masks_dir)
+        frames_dir = scene_root_dir / "images" / f"{src_cam_id}"
+        masks_dir = scene_root_dir / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
 
+        # Load frame paths
+        self._load_frame_paths(frames_dir, sample_every)
+
+        # Load mask paths
+        self._load_mask_paths(masks_dir)
+
+        # Determine training resolution from first image
         first_image = self._load_img(self.frame_paths[0])
         self.trn_render_hw = (first_image.shape[0], first_image.shape[1])  # (H, W)
 
+        # Load depth paths (if provided)
         if depth_dir is not None:
             self._load_depths(depth_dir)
 
+        # Load camera parameters
+        self.camera_params_path = self.root_dir / "cameras" / "rgb_cameras.npz"
+        self._load_cameras()
+
+        # Load SMPLX parameters
+        self.smplx_dir: Path = self.root_dir / "smplx"
+        self._load_smplx()
+
     # --------- Path loaders
-    def _load_frames(self, frames_dir: Path, sample_every: int = 1):
+    def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1):
         frame_candidates = []
         for ext in ("*.png", "*.jpg", "*.jpeg"):
             frame_candidates.extend(frames_dir.glob(ext))
@@ -42,7 +68,7 @@ class BaseDataset:
         if not self.frame_paths:
             raise RuntimeError(f"No frames found in {frames_dir}")
 
-    def _load_masks(self, masks_dir: Path):
+    def _load_mask_paths(self, masks_dir: Path):
         self.mask_paths = []
         missing = []
         for p in self.frame_paths:
@@ -61,7 +87,8 @@ class BaseDataset:
         self.depth_paths = [depth_dir / p.name for p in depth_files]
         assert len(self.depth_paths) == len(self.frame_paths), "Number of depth files must match number of frames."
 
-    # --------- Data loaders
+
+    # -------- Data loaders for camera parameters and SMPLX
     def _load_img(self, path: Path) -> torch.Tensor:
         img = Image.open(path).convert("RGB")
         arr = torch.from_numpy(np.array(img)).float() / 255.0
@@ -97,32 +124,6 @@ class BaseDataset:
         return upsampled.squeeze(0).squeeze(0).to(self.device).unsqueeze(-1)  # HxWx1
 
 
-class Hi4dDataset(BaseDataset, Dataset):
-    
-    def __init__(self, 
-                hi4d_scene_root_dir: Path,
-                src_cam_id: int,
-                depth_dir: Optional[Path],
-                device: torch.device, 
-                sample_every: int = 1):
-        
-        # Initialize base dataset
-        self.root_dir = hi4d_scene_root_dir
-        self.src_cam_id = src_cam_id
-        self.device = device
-        frames_dir = hi4d_scene_root_dir / "images" / f"{src_cam_id}"
-        masks_dir = hi4d_scene_root_dir / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
-        super().__init__(frames_dir, masks_dir, device, sample_every, depth_dir)
-
-        # Load camera parameters
-        self.camera_params_path = self.root_dir / "cameras" / "rgb_cameras.npz"
-        self._load_cameras()
-
-        # Load SMPLX parameters
-        self.smplx_dir: Path = self.root_dir / "smplx"
-        self._load_smplx()
-
-    # -------- Data loaders for camera parameters and SMPLX
     def _load_camera_from_npz(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load intrinsics and extrinsics for a specific camera ID from a .npz file.
