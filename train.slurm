@@ -47,10 +47,10 @@ module load gcc ffmpeg
 # --- LHM finetune
 seq_name="hi4d_pair17_dance"
 num_persons=2
-exp_name="difix_tune_all_nv_loss_scale_0.5"
+exp_name="difix_tune_all_fixed_first_step"
 source_cam_id=28
 # target_cam_ids="[4,16,28,40,52,64,76,88]"
 # train_params="[shs]"
 target_cam_ids="[4,28,52]"
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id nvs_eval.target_camera_ids=$target_cam_ids difix.nv_loss_scale=0.5
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id nvs_eval.target_camera_ids=$target_cam_ids

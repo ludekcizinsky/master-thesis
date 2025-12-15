@@ -830,6 +830,7 @@ class MultiHumanTrainer:
 
         to_log = {"epoch": epoch}
 
+        is_first_difix_step = self.left_cam_id == self.right_cam_id
         # Select next left/right cameras to process (if any left)
         previous_cams = []
         new_cams = []
@@ -906,7 +907,7 @@ class MultiHumanTrainer:
         # Create new train and nv datasets
         to_log["difix/step_performed"] = 1
         # - train ds: current ds + all previous nv datasets
-        if len(prev_nv_dataset_list) > 0:
+        if len(prev_nv_dataset_list) > 0 and not is_first_difix_step:
             self.trn_datasets.extend(prev_nv_dataset_list)
             self.trn_dataset = ConcatDataset(self.trn_datasets)
         to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
