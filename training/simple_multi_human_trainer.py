@@ -35,7 +35,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.datasets import SceneDataset
+from training.helpers.dataset import SceneDataset
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -345,7 +345,10 @@ class MultiHumanTrainer:
     def _load_model(self):
 
         # Get query points + tranform from neural to zero pose
-        self.query_points, self.tranform_mat_neutral_pose = self.renderer.get_query_points(self.trn_dataset.smplx, self.tuner_device)
+        # - in theory, to infer query points, we can use betas, face and and joint offset
+        # - in practice, I currently use betas only
+        smplx_params = self.trn_dataset[0]["smplx_params"]
+        self.query_points, self.tranform_mat_neutral_pose = self.renderer.get_query_points(smplx_params, self.tuner_device)
 
         # Load Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"

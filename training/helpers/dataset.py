@@ -47,7 +47,8 @@ class SceneDataset(Dataset):
 
         # Load depth paths (if provided)
         if depth_dir is not None:
-            self._load_depths(depth_dir)
+            self.depth_dir = depth_dir
+            self._load_depth_paths()
 
         # Load camera parameters
         self.camera_params_path = self.root_dir / "cameras" / "rgb_cameras.npz"
@@ -55,7 +56,7 @@ class SceneDataset(Dataset):
 
         # Load SMPLX parameters
         self.smplx_dir: Path = self.root_dir / "smplx"
-        self._load_smplx()
+        self._load_smplx_paths()
 
     # --------- Path loaders
     def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1):
@@ -82,10 +83,29 @@ class SceneDataset(Dataset):
         if missing:
             raise RuntimeError(f"Missing masks for frames (by stem): {missing[:5]}")
 
-    def _load_depths(self, depth_dir: Path):
-        depth_files = sorted(p for p in depth_dir.glob("*.npy") if p.is_file())
-        self.depth_paths = [depth_dir / p.name for p in depth_files]
-        assert len(self.depth_paths) == len(self.frame_paths), "Number of depth files must match number of frames."
+    def _load_smplx_paths(self):
+        self.smplx_paths = []
+        missing = []
+        for p in self.frame_paths:
+            smplx_path = self.smplx_dir / f"{p.stem}.npz"
+            if not smplx_path.exists():
+                missing.append(p.stem)
+            else:
+                self.smplx_paths.append(smplx_path)
+        if missing:
+            raise RuntimeError(f"Missing SMPLX files for frames (by stem): {missing[:5]}")
+
+    def _load_depth_paths(self):
+        self.depth_paths = []
+        missing = []
+        for p in self.frame_paths:
+            depth_path = self.depth_dir / f"{p.stem}.npy"
+            if not depth_path.exists():
+                missing.append(p.stem)
+            else:
+                self.depth_paths.append(depth_path)
+        if missing:
+            raise RuntimeError(f"Missing depth files for frames (by stem): {missing[:5]}")
 
 
     # -------- Data loaders for camera parameters and SMPLX
@@ -117,7 +137,6 @@ class SceneDataset(Dataset):
         """
 
         depth_np = torch.from_numpy(np.load(path)) # H_depthxW_depth
-
         height, width = self.trn_render_hw
         batched = depth_np.unsqueeze(0).unsqueeze(0)
         upsampled = F.interpolate(batched, size=(height, width), mode="bilinear", align_corners=False)
@@ -153,38 +172,36 @@ class SceneDataset(Dataset):
 
         return intrinsics, extrinsics
 
-
     def _load_cameras(self):
         intr, extr = self._load_camera_from_npz()
         w2c = extr_to_w2c_4x4(extr, self.device)
         self.c2w = torch.inverse(w2c) # shape is [4, 4]
         self.K = intr_to_4x4(intr, self.device) # shape is [4,4]
 
-    def _load_smplx(self):
-        frame_paths = sorted([p for p in os.listdir(self.smplx_dir) if p.endswith(".npz")])
-        npzs = []
-        for fp in frame_paths:
-            npz = np.load(self.smplx_dir / f"{Path(fp).stem}.npz")
-            npzs.append(npz)
+    def _load_smplx(self, path: Path):
 
-        def stack_key(key):
-            arrs = [torch.from_numpy(n[key]).float() for n in npzs]
-            return torch.stack(arrs, dim=1).to(self.device)  # [P, F, ...]
+        npz = np.load(path)
 
-        self.smplx = {
-            "betas": stack_key("betas"),
-            "root_pose": stack_key("root_pose"),   # [P,F,3] world axis-angle
-            "body_pose": stack_key("body_pose"),
-            "jaw_pose": stack_key("jaw_pose"),
-            "leye_pose": stack_key("leye_pose"),
-            "reye_pose": stack_key("reye_pose"),
-            "lhand_pose": stack_key("lhand_pose"),
-            "rhand_pose": stack_key("rhand_pose"),
-            "trans": stack_key("trans"),           # [P,F,3] world translation
-            "expr": stack_key("expression"),
+        def add_key(key):
+            arrs = torch.from_numpy(npz[key]).float()
+            return arrs.to(self.device)  # [P, ...]
+
+        smplx = {
+            "betas": add_key("betas"),
+            "root_pose": add_key("root_pose"),   # [P,3] world axis-angle
+            "body_pose": add_key("body_pose"),
+            "jaw_pose": add_key("jaw_pose"),
+            "leye_pose": add_key("leye_pose"),
+            "reye_pose": add_key("reye_pose"),
+            "lhand_pose": add_key("lhand_pose"),
+            "rhand_pose": add_key("rhand_pose"),
+            "trans": add_key("trans"),           # [P,3] world translation
+            "expr": add_key("expression"),
         }
 
-        self.smplx["expr"] = torch.zeros(self.smplx["expr"].shape[0], self.smplx["expr"].shape[1], 100, device=self.device)
+        smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=self.device)
+
+        return smplx
 
 
     # -------- Dataset interface
@@ -194,9 +211,9 @@ class SceneDataset(Dataset):
     def __getitem__(self, idx: int):
         frame = self._load_img(self.frame_paths[idx])
         mask = self._load_mask(self.mask_paths[idx])
+        smplx_params = self._load_smplx(self.smplx_paths[idx])
         K = self.K
         c2w = self.c2w
-        smplx_params = {k: v[:, idx] for k, v in self.smplx.items()}
 
         # Prepare return values
         # - Mandatory
