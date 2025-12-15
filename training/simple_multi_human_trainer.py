@@ -540,15 +540,19 @@ class MultiHumanTrainer:
 
         # Training loop
         for epoch in range(self.cfg.epochs):
+            trn_ds_size, nv_ds_size = len(self.trn_dataset), len(self.nv_dataset) if self.nv_dataset is not None else 0
+            total_ds_size = trn_ds_size + nv_ds_size
+            n_batches_per_current_epoch = total_ds_size // self.cfg.batch_size
             running_loss = 0.0
             pbar = tqdm(
-                total=self.cfg.n_batches_per_epoch,
+                total=n_batches_per_current_epoch,
                 desc=f"Epoch {epoch + 1}/{self.cfg.epochs}",
                 leave=False,
             )
 
             batch_idx = 0
-            while batch_idx < self.cfg.n_batches_per_epoch:
+
+            while batch_idx < n_batches_per_current_epoch:
                 
                 # Choose between trn and nv dataset 
                 if torch.rand(1).item() < self.cfg.difix.train_ratio:
@@ -652,18 +656,35 @@ class MultiHumanTrainer:
             # End of epoch
             # - Progress bar stuff
             pbar.close()
-            # - Report average loss
-            avg_loss = running_loss / max(1, self.cfg.n_batches_per_epoch)
+            # - Log epoch level metrics
+            avg_loss = running_loss / max(1, n_batches_per_current_epoch)
             if self.wandb_run is not None:
-                to_log = {"loss/combined_epoch": avg_loss, "epoch": epoch + 1}
+                to_log = {
+                    "loss/combined_epoch": avg_loss, 
+                    "epoch": epoch + 1, 
+                    "loss/n_batches_per_epoch": n_batches_per_current_epoch,
+                    "loss/total_ds_size": total_ds_size,
+                    "loss/trn_ds_size": trn_ds_size,
+                    "loss/nv_ds_size": nv_ds_size,
+                }
                 wandb.log(to_log)
             # - Run Difix step if neccesary
             if (epoch + 1) % self.cfg.difix.step_every_epochs == 0:
+                # -- Update trn and nvs datasets
                 self.difix_step(epoch + 1)
+                # -- Rebuild dataloaders
+                trn_loader = self._build_loader(self.trn_dataset)
+                trn_iter = self._infinite_loader(trn_loader)
+                if self.nv_dataset is not None:
+                    nvs_loader = self._build_loader(self.nv_dataset)
+                    nvs_iter = self._infinite_loader(nvs_loader)
+                else:
+                    nvs_iter = trn_iter
             # - Run eval loop if neccesary
             if getattr(self.cfg, "eval_every_epoch", 0) > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
                 self.eval_loop(epoch + 1)
-            
+
+        # End of training    
         if self.wandb_run is not None:
             self.wandb_run.finish()
 
@@ -682,8 +703,6 @@ class MultiHumanTrainer:
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
-
-
     @torch.no_grad()
     def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int, save_dir: Path) -> Tuple[SceneDataset, SceneDataset]:
         """
@@ -698,12 +717,12 @@ class MultiHumanTrainer:
         Returns:
             new_cam_dataset: SceneDataset for the new camera with refined frames.
             prev_cam_dataset: SceneDataset for the previous camera used as reference.   
+
+        Notes:
+        1. render the new camera views (out: render_frames)
+        2. refine the rendered frames using Difix with reference to previous camera views
+        3. create new dataset from the refined frames copy other data from gt dataset
         """
-
-        # 1. render the new camera views (out: render_frames + alpha_masks)
-        # 2. refine the rendered frames using Difix with reference to previous camera views
-        # 3. create new dataset from the refined frames + alpha masks + copy other data from source dataset
-
 
         # Load GT dataset for the target camera (will use only smplx params + cameras) to render novel views
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)

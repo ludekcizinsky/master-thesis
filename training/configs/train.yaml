@@ -22,7 +22,7 @@ bbox_pad: 50
 
 difix:
   eval_enable: false
-  train_ratio: 0.3
+  train_ratio: 0.7
   step_every_epochs: 10
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
