@@ -115,7 +115,7 @@ class Hi4dDataset(BaseDataset, Dataset):
         super().__init__(frames_dir, masks_dir, device, sample_every, depth_dir)
 
         # Load camera parameters
-        self.camera_params_path = self.root_dir/ "cameras" / "rgb_cameras.npz"
+        self.camera_params_path = self.root_dir / "cameras" / "rgb_cameras.npz"
         self._load_cameras()
 
         # Load SMPLX parameters

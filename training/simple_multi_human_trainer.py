@@ -188,6 +188,27 @@ def save_image(tensor: torch.Tensor, filename: str):
     image = (image * 255).clip(0, 255).astype("uint8")
     Image.fromarray(image).save(filename)
 
+def save_binary_mask(tensor: torch.Tensor, filename: str):
+    """
+    Accepts HWC, CHW, or BCHW where C=1; if batch > 1, saves the first item.
+    Assumes values in [0,1]. Saves as a binary (0/255) PNG image.
+    """
+
+    # First item only
+    if tensor.dim() == 4:
+        tensor = tensor[0]
+    
+    # HWC or CHW with C=1 convert to HxWx1
+    if tensor.dim() == 3 and tensor.shape[0] == 1:
+        tensor = tensor.permute(1, 2, 0)
+    elif tensor.dim() == 3 and tensor.shape[-1] == 1:
+        pass
+    else:
+        raise ValueError(f"Unsupported tensor shape for save_binary_mask: {tensor.shape}")
+    
+    # Binarize and save
+    mask = (tensor.detach().cpu().numpy() > 0.5).astype("uint8") * 255
+    Image.fromarray(mask.squeeze(-1)).save(filename)
 
 
 def build_renderer():
@@ -450,6 +471,8 @@ class MultiHumanTrainer:
         params = self._trainable_tensors()
         optimizer = torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
+        self.difix_refine()
+
         # Pre-optimization visualization (epoch 0).
         if self.cfg.eval_pretrain:
             self.eval_loop(0)
@@ -609,15 +632,66 @@ class MultiHumanTrainer:
             new_cams.append(self.right_cam_id)
             previous_cams.append(prev_right_cam_id)
 
-        # Prepare rendering inputs
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-
+        # Prepare path where to save results
+        save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
+        save_dir.mkdir(parents=True, exist_ok=True)
 
         # Process each new camera:
         # 1. render the new camera views (out: render_frames + alpha_masks)
         # 2. load the previous refined frames (or source frames for the first cameras) (out: ref_frames)
         for cam_id, prev_cam_id in zip(new_cams, previous_cams):
-            pass
+            root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+            cam_dataset = Hi4dDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None)
+            loader = DataLoader(
+                cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            )
+
+            # Copy contents that stay the same from cam dataset to the save_dir
+            # - cameras
+            cameras_path = cam_dataset.camera_params_path
+            save_dir_cam_path = save_dir / "cameras" / f"rgb_cameras.npz"
+            save_dir_cam_path.parent.mkdir(parents=True, exist_ok=True)
+            if not save_dir_cam_path.exists():
+                subprocess.run(["cp", str(cameras_path), str(save_dir_cam_path)])
+            # - smplx params (full folder)
+            smplx_params_dir = cam_dataset.smplx_dir
+            save_dir_smplx_path = save_dir / "smplx"
+            if not save_dir_smplx_path.exists():
+                subprocess.run(["cp", "-r", str(smplx_params_dir), str(save_dir_smplx_path)])
+
+            # Render in batches novel views from target camera
+            for batch in tqdm(loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
+
+                # Parse batch data
+                frames = batch["image"]             # [B, H, W, 3],
+                masks = batch["mask"]               # [B, H, W, 1],
+                bsize = int(frames.shape[0])
+                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+                gt_h, gt_w = frames.shape[1], frames.shape[2]
+                frame_indices = batch["frame_idx"]      # [B]
+                frame_paths = batch["frame_path"]      # List[B]
+
+                # Forward pass to render novel views
+                pred_rgb, pred_alpha, _ = self.forward(batch)
+
+                # Save results using the hi4d format
+                # - Rendered frames
+                frames_save_dir = save_dir / "images" / f"{cam_id}"
+                frames_save_dir.mkdir(parents=True, exist_ok=True)
+                for i in range(pred_rgb.shape[0]):
+                    save_path = frames_save_dir / f"{frame_indices[i].item():06d}.png"
+                    save_image(pred_rgb[i].permute(2, 0, 1), str(save_path))
+
+                # - Alpha masks
+                masks_save_dir = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all" 
+                masks_save_dir.mkdir(parents=True, exist_ok=True)
+                for i in range(pred_alpha.shape[0]):
+                    save_path = masks_save_dir / f"{frame_indices[i].item():06d}.png"
+                    save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path)) 
+        
+        quit()
+
     
     def difix_eval_refine(self, input_data, difix_pipe: DifixPipeline, save_dir: Path, ):
 
