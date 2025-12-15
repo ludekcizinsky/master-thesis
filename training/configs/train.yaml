@@ -3,14 +3,13 @@ num_persons: ???
 exp_name: ???
 preprocessing_dir: /scratch/izar/cizinsky/thesis/preprocessing/${scene_name}
 output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
-epochs: 100
+epochs: 150
 batch_size: 5
-n_batches_per_epoch: 20
 lr: 1e-4
 weight_decay: 5e-4
 grad_clip: 0.1
-sample_every: 2
-eval_every_epoch: 50
+sample_every: 5
+eval_every_epoch: 25
 train_params:
   - offset_xyz
   - rotation
@@ -23,7 +22,7 @@ bbox_pad: 50
 difix:
   eval_enable: false
   train_ratio: 0.7
-  step_every_epochs: 10
+  step_every_epochs: 20
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
   num_inference_steps: 1
@@ -31,19 +30,20 @@ difix:
   guidance_scale: 0.0
   overwrite_existing: false
   resolution_multiple: 8
+  nv_loss_scale: 0.7
 
 wandb:
   enable: true
   project: "hybrid-lhm"
   entity: "ludekcizinsky"
   tags:
-    - v4
+    - v5
 
 loss_weights:
   rgb: 20.0
   sil: 4.0
   ssim: 0.4
-  depth: 10.0
+  depth: 1.0
 
 regularization:
   asap_w: 200.0

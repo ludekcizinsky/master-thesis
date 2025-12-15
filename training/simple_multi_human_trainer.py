@@ -557,8 +557,10 @@ class MultiHumanTrainer:
                 # Choose between trn and nv dataset 
                 if torch.rand(1).item() < self.cfg.difix.train_ratio:
                     batch = next(trn_iter)
+                    is_trn_batch = True
                 else:
                     batch = next(nvs_iter)
+                    is_trn_batch = False
 
                 # Parse batch data
                 frames = batch["image"] # [B, H, W, 3],
@@ -607,7 +609,9 @@ class MultiHumanTrainer:
                 asap_loss, acap_loss = self._canonical_regularization()
                 reg_loss = asap_loss + acap_loss
 
-                loss = rgb_loss + sil_loss + ssim_loss + reg_loss # + depth_loss 
+                loss = rgb_loss + sil_loss + ssim_loss + reg_loss # + depth_loss
+                if not is_trn_batch:
+                    loss = loss * self.cfg.difix.nv_loss_scale 
                 
                 # Backpropagation
                 loss.backward()
