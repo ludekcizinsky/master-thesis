@@ -18,12 +18,14 @@ from PIL import Image
 import kornia
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from fused_ssim import fused_ssim
 import pyiqa
 import wandb
+
+from collections import deque
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(
@@ -33,6 +35,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
+from training.helpers.datasets import Hi4dDataset
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -153,156 +156,11 @@ def lpips(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor) -> t
     return lpips_vals
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-class FrameMaskDataset(Dataset):
-    def __init__(self, frames_dir: Path, masks_dir: Path, device: torch.device, sample_every: int = 1, depth_dir: Optional[Path] = None):
-        self.device = device
-        self._load_frames(frames_dir, sample_every)
-        self._load_masks(masks_dir)
-
-        first_image = self._load_img(self.frame_paths[0])
-        self.trn_render_hw = (first_image.shape[0], first_image.shape[1])  # (H, W)
-
-        if depth_dir is not None:
-            self._load_depths(depth_dir)
-
-    # --------- Path loaders
-    def _load_frames(self, frames_dir: Path, sample_every: int = 1):
-        frame_candidates = []
-        for ext in ("*.png", "*.jpg", "*.jpeg"):
-            frame_candidates.extend(frames_dir.glob(ext))
-        self.frame_paths = sorted(set(frame_candidates))
-        if sample_every > 1:
-            self.frame_paths = self.frame_paths[::sample_every]
-        if not self.frame_paths:
-            raise RuntimeError(f"No frames found in {frames_dir}")
-
-    def _load_masks(self, masks_dir: Path):
-        self.mask_paths = []
-        missing = []
-        for p in self.frame_paths:
-            base = p.stem
-            candidates = [masks_dir / f"{base}{ext}" for ext in (".png", ".jpg", ".jpeg")]
-            mask_path = next((c for c in candidates if c.exists()), None)
-            if mask_path is None:
-                missing.append(base)
-            else:
-                self.mask_paths.append(mask_path)
-        if missing:
-            raise RuntimeError(f"Missing masks for frames (by stem): {missing[:5]}")
-
-    def _load_depths(self, depth_dir: Path):
-        depth_files = sorted(p for p in depth_dir.glob("*.npy") if p.is_file())
-        self.depth_paths = [depth_dir / p.name for p in depth_files]
-        assert len(self.depth_paths) == len(self.frame_paths), "Number of depth files must match number of frames."
-
-    # --------- Data loaders
-    def _load_img(self, path: Path) -> torch.Tensor:
-        img = Image.open(path).convert("RGB")
-        arr = torch.from_numpy(np.array(img)).float() / 255.0
-        return arr.to(self.device)
-
-    def _load_mask(self, path: Path, eps: float = 0.05) -> torch.Tensor:
-        arr = torch.from_numpy(np.array(Image.open(path))).float()  # HxWxC or HxW
-        if arr.dim() == 2:
-            arr = arr.unsqueeze(-1) / 255.0  # HxWx1
-            return arr.to(self.device) # already binary mask
-
-        if arr.shape[-1] == 4:
-            arr = arr[..., :3] # drop alpha
-        # Foreground is any pixel whose max channel exceeds eps*255
-        mask = (arr.max(dim=-1).values > eps * 255).float()  # HxW
-        return mask.to(self.device).unsqueeze(-1)  # HxWx1, range [0,1]
-    
-    def _load_depth(self, path: Path) -> torch.Tensor:
-        """
-        Load and upsample depth map to training resolution.
-
-        Args:
-            path (Path): Path to the depth map file.
-        Returns:
-            torch.Tensor: Upsampled depth map tensor of shape HxW. Unit is the same as input depth map, so meters.
-        """
-
-        depth_np = torch.from_numpy(np.load(path)) # H_depthxW_depth
-
-        height, width = self.trn_render_hw
-        batched = depth_np.unsqueeze(0).unsqueeze(0)
-        upsampled = F.interpolate(batched, size=(height, width), mode="bilinear", align_corners=False)
-        return upsampled.squeeze(0).squeeze(0).to(self.device).unsqueeze(-1)  # HxWx1
-
-    # -------- Dataset interface
-    def __len__(self):
-        return len(self.frame_paths)
-    
-    def __getitem__(self, idx: int):
-        frame = self._load_img(self.frame_paths[idx])
-        mask = self._load_mask(self.mask_paths[idx])
-        if hasattr(self, "depth_paths"):
-            depth = self._load_depth(self.depth_paths[idx])
-            return (
-                torch.tensor(idx, device=self.device, dtype=torch.long),
-                frame,
-                mask,
-                str(self.frame_paths[idx]),
-                depth,
-            )
-
-        else:
-            return (
-                torch.tensor(idx, device=self.device, dtype=torch.long),
-                frame,
-                mask,
-                str(self.frame_paths[idx]),
-            )
-
 
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 
-def extr_to_w2c_4x4(extr: torch.Tensor, device) -> torch.Tensor:
-    w2c = torch.eye(4, device=device, dtype=torch.float32)
-    w2c[:3, :4] = extr.to(device)
-    return w2c
-
-def intr_to_4x4(intr: torch.Tensor, device) -> torch.Tensor:
-    intr4 = torch.eye(4, device=device, dtype=torch.float32)
-    intr4[:3, :3] = intr.to(device)
-    return intr4
-
-def load_camera_from_npz(
-    camera_npz_path: str | Path, camera_id: int, device: torch.device | None = None
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Load intrinsics and extrinsics for a specific camera ID from a .npz file.
-
-    Expects keys "ids", "intrinsics" [N,3,3], and "extrinsics" [N,3,4] in the file.
-    Returns float tensors (intrinsics, extrinsics) optionally moved to `device`.
-    """
-    camera_npz_path = Path(camera_npz_path)
-    with np.load(camera_npz_path) as cams:
-        missing = [k for k in ("ids", "intrinsics", "extrinsics") if k not in cams.files]
-        if missing:
-            raise KeyError(f"Missing keys {missing} in camera file {camera_npz_path}")
-
-        ids = cams["ids"]
-        matches = np.nonzero(ids == camera_id)[0]
-        if len(matches) == 0:
-            raise ValueError(f"Camera id {camera_id} not found in {camera_npz_path}")
-        idx = int(matches[0])
-
-        intrinsics = torch.from_numpy(cams["intrinsics"][idx]).float()
-        extrinsics = torch.from_numpy(cams["extrinsics"][idx]).float()
-
-    if device is not None:
-        device = torch.device(device)
-        intrinsics = intrinsics.to(device)
-        extrinsics = extrinsics.to(device)
-
-    return intrinsics, extrinsics
 
 def save_image(tensor: torch.Tensor, filename: str):
     """
@@ -448,96 +306,35 @@ class MultiHumanTrainer:
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
 
-        # Directories
+        # Prepare dataset
         #self.frames_dir = self.output_dir / "frames"
         #self.masks_dir = self.output_dir / "masks" / "union"
         self.depth_dir = self.preprocess_dir / "depth_maps" / "raw"
-
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-        self.frames_dir = root_gt_dir_path / "images" / str(self.cfg.nvs_eval.source_camera_id)
-        self.masks_dir = root_gt_dir_path / "seg" / "img_seg_mask" / str(self.cfg.nvs_eval.source_camera_id) / "all"
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        self.trn_dataset = Hi4dDataset(root_gt_dir_path, src_cam_id, self.depth_dir, self.tuner_device)
 
-        self._load_gt_parameters()
+        # Preare model
+        self._load_model()
 
-    # ---------------- Model / data loading ----------------
-    def _load_gt_parameters(self):
+        # Initialize difix
+        self._init_difix()
 
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+    # ---------------- Model  ------------------------------
+    def _load_model(self):
 
-        # Load and prepare the gt camera parameters
-        camera_params_path: Path = root_gt_dir_path / "cameras" / "rgb_cameras.npz"
-        cam_id = self.cfg.nvs_eval.source_camera_id
-        intr, extr = load_camera_from_npz(camera_params_path, cam_id, device=self.tuner_device)
-        w2c = extr_to_w2c_4x4(extr, self.tuner_device)
-        self.c2w = torch.inverse(w2c) # shape is [4, 4]
-        self.K = intr_to_4x4(intr, self.tuner_device) # shape is [4,4]
+        # Get query points + tranform from neural to zero pose
+        self.query_points, self.tranform_mat_neutral_pose = self.renderer.get_query_points(self.trn_dataset.smplx, self.tuner_device)
 
-        # SMPLX
-        smplx_dir: Path = root_gt_dir_path / "smplx"
-        frame_paths = sorted([p for p in os.listdir(smplx_dir) if p.endswith(".npz")])
-        npzs = []
-        for fp in frame_paths:
-            npz = np.load(smplx_dir / f"{Path(fp).stem}.npz")
-            npzs.append(npz)
-
-        def stack_key(key):
-            arrs = [torch.from_numpy(n[key]).float() for n in npzs]
-            return torch.stack(arrs, dim=1).to(self.tuner_device)  # [P, F, ...]
-
-        betas = stack_key("betas")[:, 0, :10] # [P, 10]
-        gt_smplx = {
-            "betas": betas,
-            "root_pose": stack_key("root_pose"),   # [P,F,3] world axis-angle
-            "body_pose": stack_key("body_pose"),
-            "jaw_pose": stack_key("jaw_pose"),
-            "leye_pose": stack_key("leye_pose"),
-            "reye_pose": stack_key("reye_pose"),
-            "lhand_pose": stack_key("lhand_pose"),
-            "rhand_pose": stack_key("rhand_pose"),
-            "trans": stack_key("trans"),           # [P,F,3] world translation
-            "expr": stack_key("expression"),
-        }
-
-        gt_smplx["expr"] = torch.zeros(gt_smplx["expr"].shape[0], gt_smplx["expr"].shape[1], 100, device=self.tuner_device)
-
-        self.gt_query_points, self.gt_smplx = self.renderer.get_query_points(gt_smplx, self.tuner_device)
-
-        # Canonical 3DGS
+        # Load Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
-        self.gt_gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device, weights_only=False)
+        self.gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device, weights_only=False)
         
-    # ---------------- Evaluation utilities ----------------
-    def _load_gt_smplx_params(self, frame_paths: List[str], smplx_dir: Path):
-        """Load per-frame SMPL-X params in world coordinates (no camera transform)."""
-
-        npzs = [np.load(smplx_dir / f"{Path(fp).stem}.npz") for fp in frame_paths]
-
-        def stack_key(key):
-            arrs = [torch.from_numpy(n[key]).float() for n in npzs]
-            return torch.stack(arrs, dim=1).to(self.tuner_device)  # [P, F, ...]
-
-        betas = stack_key("betas")  # [P,F,10] (constant across frames)
-
-        smplx = {
-            "betas": betas[:, 0, :10],  # [P,10] keep first 10, assume constant over frames
-            "root_pose": stack_key("root_pose"),   # [P,F,3] world axis-angle
-            "body_pose": stack_key("body_pose"),
-            "jaw_pose": stack_key("jaw_pose"),
-            "leye_pose": stack_key("leye_pose"),
-            "reye_pose": stack_key("reye_pose"),
-            "lhand_pose": stack_key("lhand_pose"),
-            "rhand_pose": stack_key("rhand_pose"),
-            "trans": stack_key("trans"),           # [P,F,3] world translation
-            "expr": stack_key("expression"),
-            "transform_mat_neutral_pose": self.transform_mat_neutral_pose.to(self.tuner_device),
-        }
-
-        return smplx
 
     # ---------------- Training utilities ----------------
     def _trainable_tensors(self) -> List[torch.Tensor]:
         params = []
-        for pidx, gauss in enumerate(self.gt_gs_model_list):
+        for pidx, gauss in enumerate(self.gs_model_list):
             print(f"For the {pidx}-th gauss model, adding trainable tensors:")
             for name in self.train_params:
                 t = getattr(gauss, name, None)
@@ -548,104 +345,35 @@ class MultiHumanTrainer:
 
         return params
 
-    def _slice_motion_using_gt(self, frame_indices: torch.Tensor):
 
-        # Batched smplx params
-        keys = [
-            "root_pose",
-            "body_pose",
-            "jaw_pose",
-            "leye_pose",
-            "reye_pose",
-            "lhand_pose",
-            "rhand_pose",
-            "trans",
-            "expr",
-        ]
-        batch_smplx = dict()
-        batch_smplx["transform_mat_neutral_pose"] = self.gt_smplx["transform_mat_neutral_pose"]
-        batch_smplx["betas"] = self.gt_smplx["betas"]
-        for key in keys:
-            batch_smplx[key] = torch.index_select(
-                self.gt_smplx[key], 1, frame_indices.to(self.gt_smplx[key].device)
-            ).to(self.tuner_device)
+    def forward(self, batch):
 
-        # Camera parameters
-        bsize = frame_indices.shape[0]
+        # Parse batch data
+        Ks = batch["K"] # [B, 4, 4],
+        c2ws = batch["c2w"] # [B, 4, 4]
+        smplx_params = batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
 
-        batch_c2w = self.c2w.to(self.tuner_device)          # [4, 4]
-        batch_c2w = batch_c2w.unsqueeze(0).unsqueeze(1)     # [1, 1, 4, 4]
-        batch_c2w = batch_c2w.expand(1, bsize, 4, 4)        # [1, bsize, 4, 4]
-
-        batch_intr = self.K.to(self.tuner_device) # [4,4]
-        batch_intr = batch_intr.unsqueeze(0).unsqueeze(1) # [1, 1, 4, 4]
-        batch_intr = batch_intr.expand(1, bsize, 4, 4) # [1, bsize, 4, 4]
-
-        return batch_smplx, batch_c2w, batch_intr
-
-    def animation_infer_custom(self, gs_model_list, query_points, smplx_params, render_c2ws, render_intrs, render_bg_colors, render_hw):
-
-        # render target views
+        # Render target views
+        num_views = Ks.shape[0]
+        render_h, render_w = self.trn_render_hw
         render_res_list = []
-        num_views = render_c2ws.shape[1]
-        render_h, render_w = render_hw
-
         for view_idx in range(num_views):
-            smplx_single_view = self.renderer.get_single_view_smpl_data(smplx_params, view_idx)
-            render_res = self.renderer.forward_animate_gs_custom(
-                gs_model_list,
-                query_points,
+            smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
+            render_res = self.renderer.animate_and_render(
+                self.gs_model_list,
+                self.query_points,
                 smplx_single_view,
-                render_c2ws[:, view_idx : view_idx + 1],
-                render_intrs[:, view_idx : view_idx + 1],
+                c2ws[view_idx],
+                Ks[view_idx],
                 render_h,
                 render_w,
-                render_bg_colors[:, view_idx : view_idx + 1],
             )
             render_res_list.append(render_res)
 
-        out = defaultdict(list)
-        for res in render_res_list:
-            for k, v in res.items():
-                if isinstance(v[0], torch.Tensor):
-                    out[k].append(v)
-                else:
-                    out[k].append(v)
-        for k, v in out.items():
-            # print(f"out key:{k}")
-            if isinstance(v[0], torch.Tensor):
-                out[k] = torch.concat(v, dim=1)
-                if k in ["comp_rgb", "comp_mask", "comp_depth"]:
-                    out[k] = out[k][0].permute(
-                        0, 2, 3, 1
-                    )  # [1, Nv, 3, H, W] -> [Nv, 3, H, W] - > [Nv, H, W, 3]
-            else:
-                out[k] = v
-        return out
-
-    def _render_batch(self, frame_indices: torch.Tensor):
-
-        # Prepare rendering inputs
-        smplx_params, render_c2ws, render_intrs = self._slice_motion_using_gt(frame_indices)
-
-        # Override background to black
-        render_bg_colors = torch.zeros((1, self.cfg.batch_size, 3), device=self.tuner_device)
-
-        # Render
-        res = self.animation_infer_custom(
-            self.gt_gs_model_list,
-            self.gt_query_points,
-            smplx_params,
-            render_c2ws=render_c2ws,
-            render_intrs=render_intrs,
-            render_bg_colors=render_bg_colors,
-            render_hw=self.trn_render_hw,
-        )
-
-        # Parse outputs 
-        pred_rgb = res["comp_rgb"]  # [B, H, W, 3], 0-1
-        pred_mask = res["comp_mask"][..., :1]  # [B, H, W, 1]
-        pred_depth = res["comp_depth"][..., :1]  # [B, H, W, 1]
+        # Parse outputs
+        pred_rgb = torch.cat([res["comp_rgb"] for res in render_res_list], dim=0)  # [B, H, W, 3], 0-1
+        pred_mask = torch.cat([res["comp_mask"][..., :1] for res in render_res_list], dim=0)  # [B, H, W, 1]
+        pred_depth = torch.cat([res["comp_depth"][..., :1] for res in render_res_list], dim=0)  # [B, H, W, 1]
 
         return pred_rgb, pred_mask, pred_depth
 
@@ -653,7 +381,7 @@ class MultiHumanTrainer:
         """Return combined canonical regularization and its components."""
         asap_terms = []
         acap_terms = []
-        for gauss in self.gt_gs_model_list:
+        for gauss in self.gs_model_list:
             # Gaussian Shape Regularization (ASAP): encourage isotropic scales.
             # If scaling is stored in log-space, exp() keeps positivity; otherwise it’s a smooth surrogate.
             scales = gauss.scaling
@@ -713,12 +441,9 @@ class MultiHumanTrainer:
             self._init_wandb()
 
         # Prepare dataset and dataloader
-        dataset = FrameMaskDataset(
-            self.frames_dir, self.masks_dir, self.tuner_device, self.cfg.sample_every, self.depth_dir
-        )
-        self.trn_render_hw = dataset.trn_render_hw
+        self.trn_render_hw = self.trn_dataset.trn_render_hw
         loader = DataLoader(
-            dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            self.trn_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
         # Initialize optimizer
@@ -733,15 +458,22 @@ class MultiHumanTrainer:
         for epoch in range(self.cfg.epochs):
             running_loss = 0.0
             pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{self.cfg.epochs}", leave=False)
-            batch = 0
-            for frame_indices, frames, masks, frame_paths, depths in pbar:
+            batch_idx = 0
+            for batch in pbar:
+
+                # Parse batch data
+                frames = batch["image"] # [B, H, W, 3],
+                masks = batch["mask"] # [B, H, W, 1],
+                depths = batch["depth"] # [B, H, W, 1],
+                bsize = int(frames.shape[0])
+                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
                 # Reset gradients
                 optimizer.zero_grad(set_to_none=True)
 
                 # Forward pass
-                frame_indices = frame_indices.to(self.tuner_device)
-                pred_rgb, pred_mask, pred_depth = self._render_batch(frame_indices)
+                pred_rgb, pred_mask, pred_depth = self.forward(batch)
 
                 # Compute masked ground truth
                 mask3 = masks
@@ -806,7 +538,7 @@ class MultiHumanTrainer:
                     )
 
                 # space for debug stuff is here
-                if batch == 5 and (epoch + 1) % 2 == 0:
+                if batch_idx == 5 and (epoch + 1) % 2 == 0:
                     # - create a joined image from pred_masked and gt_masked for debugging
                     debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "rgb"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
@@ -814,7 +546,7 @@ class MultiHumanTrainer:
                     joined_image = torch.cat([pred_rgb, gt_masked, overlay], dim=3)  # Concatenate along width
                     for i in range(joined_image.shape[0]):
                         image = joined_image[i:i+1]
-                        global_idx = batch * self.cfg.batch_size + i
+                        global_idx = batch_idx * self.cfg.batch_size + i
                         debug_image_path = debug_save_dir / f"rgb_loss_input_{global_idx}.png"
                         save_image(image.permute(0, 3, 1, 2), str(debug_image_path))
 
@@ -822,11 +554,11 @@ class MultiHumanTrainer:
                     debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     for i in range(pred_depth.shape[0]):
-                        global_idx = self.cfg.sample_every * (batch * self.cfg.batch_size + i)
+                        global_idx = self.cfg.sample_every * (batch_idx * self.cfg.batch_size + i)
                         save_path = debug_save_dir / f"depth_comparison_frame_{global_idx:06d}.png"
                         save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
-                batch += 1
+                batch_idx += 1
 
             # End of epoch
             # - Report average loss
@@ -841,6 +573,100 @@ class MultiHumanTrainer:
         if self.wandb_run is not None:
             self.wandb_run.finish()
 
+    # ---------------- Difix -------------------
+    def _init_difix(self):
+        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id
+        self.camera_ids = [4, 16, 28, 40, 52, 64, 76, 88]
+        src_cam_idx = self.camera_ids.index(src_cam_id)
+        half_n = (len(self.camera_ids) - 1) // 2
+        other_half_n = len(self.camera_ids) - 1 - half_n
+
+        self.from_src_left_traversed_cams = deque((self.camera_ids[src_cam_idx-1::-1] + self.camera_ids[:src_cam_idx:-1])[:half_n])
+        self.from_src_right_traversed_cams = deque((self.camera_ids[src_cam_idx+1:] + self.camera_ids[:src_cam_idx])[:other_half_n])
+        print("Difix NVS camera traversal initialized:")
+        print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
+        print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
+
+
+    @torch.no_grad()
+    def difix_refine(self):
+
+        # Select next left/right cameras to process (if any left)
+        previous_cams = []
+        new_cams = []
+        # - Left (only if any left)
+        if len(self.from_src_left_traversed_cams) > 0: 
+            prev_left_cam_id = self.left_cam_id
+            self.left_cam_id = self.from_src_left_traversed_cams.popleft() 
+            new_cams.append(self.left_cam_id)
+            previous_cams.append(prev_left_cam_id)
+
+        # - Right (only if any left)
+        if len(self.from_src_right_traversed_cams) > 0:
+            prev_right_cam_id = self.right_cam_id
+            self.right_cam_id = self.from_src_right_traversed_cams.popleft()
+            new_cams.append(self.right_cam_id)
+            previous_cams.append(prev_right_cam_id)
+
+        # Prepare rendering inputs
+        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+
+
+        # Process each new camera:
+        # 1. render the new camera views (out: render_frames + alpha_masks)
+        # 2. load the previous refined frames (or source frames for the first cameras) (out: ref_frames)
+        for cam_id, prev_cam_id in zip(new_cams, previous_cams):
+            pass
+    
+    def difix_eval_refine(self, input_data, difix_pipe: DifixPipeline, save_dir: Path, ):
+
+        # Parse input data
+        renders, masked_gt, frame_indices = input_data  # renders: [B, H, W, 3], masked_gt: [B, H, W, 3], frame_indices: [B]
+
+        # - Run the refinement
+        before_refinement_renders = renders.clone()
+        refined_renders = []
+        ref_images = []
+        for i in tqdm(range(renders.shape[0]), desc="Difix refinement", total=renders.shape[0], leave=False):
+            # -- Img to refine = rendered image
+            img_to_refine = (renders[i].cpu().numpy() * 255).astype("uint8")
+            # -- Reference image = src view gt image + mask
+            sample_dict = self.trn_dataset[frame_indices[i].item()]
+            src_frame = sample_dict["image"]  # [H, W, 3], 0-1
+            src_mask = sample_dict["mask"]    # [H, W, 1], 0-1 
+            src_frame_np = (src_frame.cpu().numpy() * 255).astype("uint8")
+            src_mask_np = src_mask.cpu().numpy().astype(np.float32)  # [H, W, 1]
+            reference_image = (src_frame_np.astype(np.float32) * src_mask_np).clip(0, 255).astype("uint8")
+            # -- Run Difix
+            refined_image = difix_pipe(
+                self.cfg.difix.prompt,
+                image=Image.fromarray(img_to_refine),
+                ref_image=Image.fromarray(reference_image),
+                num_inference_steps=self.cfg.difix.num_inference_steps,
+                timesteps=self.cfg.difix.timesteps,
+                guidance_scale=self.cfg.difix.guidance_scale,
+            ).images[0]
+            # -- Collect results
+            refined_image = torch.from_numpy(np.array(refined_image)).float() / 255.
+            refined_renders.append(refined_image.to(self.tuner_device))
+            reference_image = torch.from_numpy(reference_image).float() / 255.
+            ref_images.append(reference_image.to(self.tuner_device))
+
+        # - Stack refined renders and reference images
+        renders = torch.stack(refined_renders, dim=0)
+        ref_images = torch.stack(ref_images, dim=0)
+
+        # - Save before vs after refinement images for debugging
+        difix_debug_dir = save_dir / "difix_debug"
+        difix_debug_dir.mkdir(parents=True, exist_ok=True)
+        joined = torch.cat([ref_images, before_refinement_renders, renders, masked_gt], dim=2)  # side-by-side along width
+        for i in range(joined.shape[0]):
+            save_path = difix_debug_dir / f"{frame_indices[i].item():06d}.png"
+            save_image(joined[i].permute(2, 0, 1), str(save_path))
+
+        return renders
+
     # ---------------- Evaluation -------------------
     @torch.no_grad()
     def eval_loop(self, epoch):
@@ -848,24 +674,14 @@ class MultiHumanTrainer:
         # Parse the evaluation setup
         target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
         root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-        camera_params_path: Path = root_gt_dir_path / "cameras" / "rgb_cameras.npz"
         root_save_dir: Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
         root_save_dir.mkdir(parents=True, exist_ok=True)
-        num_tracks, num_frames = self.cfg.num_persons, self.cfg.batch_size
-        render_bg_colors_template = torch.zeros(
-            (num_tracks, num_frames, 3), device=self.tuner_device, dtype=torch.float32
-        )  # black
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
             difix_pipe = DifixPipeline.from_pretrained(self.cfg.difix.model_id, trust_remote_code=True, requires_safety_checker=False)
             difix_pipe.to(self.tuner_device)
             difix_pipe.set_progress_bar_config(disable=True)
-
-            src_cam_id = self.cfg.nvs_eval.source_camera_id  
-            src_gt_frames_dir_path = root_gt_dir_path / "images" / f"{src_cam_id}"
-            src_gt_masks_dir_path = root_gt_dir_path / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
-            src_cam_dataset = FrameMaskDataset(src_gt_frames_dir_path, src_gt_masks_dir_path, self.tuner_device, sample_every=1)
         else:
             difix_pipe = None
 
@@ -874,173 +690,108 @@ class MultiHumanTrainer:
 
         for tgt_cam_id in target_camera_ids:
 
-            # Prepare paths
-            tgt_gt_frames_dir_path = root_gt_dir_path / "images" / f"{tgt_cam_id}"
-            tgt_gt_masks_dir_path = root_gt_dir_path / "seg" / "img_seg_mask" / f"{tgt_cam_id}" / "all"
 
-            # Load and prepare the gt camera parameters
-            # - c2w
-            tgt_intr, tgt_extr = load_camera_from_npz(camera_params_path, tgt_cam_id, device=self.tuner_device)
-            tgt_w2c = extr_to_w2c_4x4(tgt_extr, self.tuner_device)
-            tgt_c2w = torch.inverse(tgt_w2c)
-            tgt_intr4 = intr_to_4x4(tgt_intr, self.tuner_device)
-
-            # Prepare dataset and dataloader for loading frames and masks
-            dataset = FrameMaskDataset(tgt_gt_frames_dir_path, tgt_gt_masks_dir_path, self.tuner_device, sample_every=1)
-            loader = DataLoader(dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False)
+            val_dataset = Hi4dDataset(root_gt_dir_path, tgt_cam_id, device=self.tuner_device, depth_dir=None)
+            loader = DataLoader(
+                val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            )
 
             # Prepare paths where to save results
             save_dir = root_save_dir / f"{tgt_cam_id}"
             save_dir.mkdir(parents=True, exist_ok=True)
 
             # Render in batches novel views from target camera
-            with torch.no_grad():
-                for frame_indices, frames, masks, frame_paths in tqdm(loader, desc=f"NVS cam {tgt_cam_id}", leave=False):
+            for batch in tqdm(loader, desc=f"NVS cam {tgt_cam_id}", leave=False):
 
-                    # Get gt image size
-                    gt_h, gt_w = frames.shape[1], frames.shape[2]
-                    batch_b = frames.shape[0]
+                # Parse batch data
+                frames = batch["image"]             # [B, H, W, 3],
+                masks = batch["mask"]               # [B, H, W, 1],
+                bsize = int(frames.shape[0])
+                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+                gt_h, gt_w = frames.shape[1], frames.shape[2]
+                frame_indices = batch["frame_idx"]      # [B]
+                frame_paths = batch["frame_path"]      # List[B]
 
-                    # Prepare per-batch camera/intr/background tensors (num_frames can differ in last batch)
-                    render_c2ws = (
-                        tgt_c2w.unsqueeze(0).unsqueeze(0).expand(num_tracks, batch_b, 4, 4).clone()
-                    )
-                    render_intrs = tgt_intr4.unsqueeze(0).unsqueeze(0).expand(num_tracks, batch_b, 4, 4)
-                    render_bg_colors = render_bg_colors_template[:, :batch_b]
-                    
-                    # Load the gt SMPL-X parameters
-                    frame_indices = frame_indices.to(self.tuner_device)
-                    smplx_params, _, _ = self._slice_motion_using_gt(frame_indices)
+                # Forward pass to render novel views
+                renders, _, _ = self.forward(batch)
 
-                    # Render with the model
-                    res = self.animation_infer_custom(
-                        self.gt_gs_model_list,
-                        self.gt_query_points,
-                        smplx_params,
-                        render_c2ws=render_c2ws,
-                        render_intrs=render_intrs,
-                        render_bg_colors=render_bg_colors,
-                        render_hw=(gt_h, gt_w),
-                    )
+                # Apply masks to the gt 
+                masks3 = masks.repeat(1, 1, 1, 3)
+                masked_gt = frames * masks3
 
+                # debug - for difix goes here just in case
+                # [Optional] Apply Difix to refine the renders
+                if difix_pipe is not None:
+                    renders = self.difix_eval_refine((renders, masked_gt, frame_indices), difix_pipe, save_dir)
 
-                    # Save rendered images
-                    renders = res["comp_rgb"]  # [B, H, W, 3]
+                # Combine masked render and masked GT with overlay
+                render_vs_gt_dir = save_dir / "render_vs_gt"
+                render_vs_gt_dir.mkdir(parents=True, exist_ok=True)
+                columns = [renders, masked_gt]
+                joined = torch.cat(columns, dim=2)  # side-by-side along width
+                for i in range(joined.shape[0]):
+                    save_path = render_vs_gt_dir / Path(frame_paths[i]).name
+                    save_image(joined[i].permute(2, 0, 1), str(save_path))
 
-                    # Apply masks to the gt 
+                # Before evaluation, apply downsampling if needed
+                if self.cfg.nvs_eval.downscale_factor > 1:
+                    ds_factor = self.cfg.nvs_eval.downscale_factor
+                    renders = F.interpolate(
+                        renders.permute(0, 3, 1, 2),
+                        size=(gt_h // ds_factor, gt_w // ds_factor),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).permute(0, 2, 3, 1)
+                    frames = F.interpolate(
+                        frames.permute(0, 3, 1, 2),
+                        size=(gt_h // ds_factor, gt_w // ds_factor),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).permute(0, 2, 3, 1)
+                    masks = F.interpolate(
+                        masks.permute(0, 3, 1, 2),
+                        size=(gt_h // ds_factor, gt_w // ds_factor),
+                        mode="nearest",
+                    ).permute(0, 2, 3, 1)
                     masks3 = masks.repeat(1, 1, 1, 3)
-                    masked_gt = frames * masks3
-
-                    # debug - for difix goes here just in case
-                    # [Optional] Apply Difix to refine the renders
-                    if difix_pipe is not None:
-
-                        # - Run the refinement
-                        before_refinement_renders = renders.clone()
-                        refined_renders = []
-                        ref_images = []
-                        for i in tqdm(range(renders.shape[0]), desc="Difix refinement", total=renders.shape[0], leave=False):
-                            # -- Img to refine = rendered image
-                            img_to_refine = (renders[i].cpu().numpy() * 255).astype("uint8")
-                            # -- Reference image = src view gt image + mask
-                            _, src_frame, src_mask, _ = src_cam_dataset[frame_indices[i].item()]
-                            src_frame_np = (src_frame.cpu().numpy() * 255).astype("uint8")
-                            src_mask_np = src_mask.cpu().numpy().astype(np.float32)  # [H, W, 1]
-                            reference_image = (src_frame_np.astype(np.float32) * src_mask_np).clip(0, 255).astype("uint8")
-                            # -- Run Difix
-                            refined_image = difix_pipe(
-                                self.cfg.difix.prompt,
-                                image=Image.fromarray(img_to_refine),
-                                ref_image=Image.fromarray(reference_image),
-                                num_inference_steps=self.cfg.difix.num_inference_steps,
-                                timesteps=self.cfg.difix.timesteps,
-                                guidance_scale=self.cfg.difix.guidance_scale,
-                            ).images[0]
-                            # -- Collect results
-                            refined_image = torch.from_numpy(np.array(refined_image)).float() / 255.
-                            refined_renders.append(refined_image.to(self.tuner_device))
-                            reference_image = torch.from_numpy(reference_image).float() / 255.
-                            ref_images.append(reference_image.to(self.tuner_device))
-
-                        # - Stack refined renders and reference images
-                        renders = torch.stack(refined_renders, dim=0)
-                        ref_images = torch.stack(ref_images, dim=0)
-
-                        # - Save before vs after refinement images for debugging
-                        difix_debug_dir = save_dir / "difix_debug"
-                        difix_debug_dir.mkdir(parents=True, exist_ok=True)
-                        joined = torch.cat([ref_images, before_refinement_renders, renders, masked_gt], dim=2)  # side-by-side along width
-                        for i in range(joined.shape[0]):
-                            save_path = difix_debug_dir / Path(frame_paths[i]).name
-                            save_image(joined[i].permute(2, 0, 1), str(save_path))
-
-                    # Combine masked render and masked GT with overlay
-                    render_vs_gt_dir = save_dir / "render_vs_gt"
-                    render_vs_gt_dir.mkdir(parents=True, exist_ok=True)
-                    columns = [renders, masked_gt]
-                    joined = torch.cat(columns, dim=2)  # side-by-side along width
-                    for i in range(joined.shape[0]):
-                        save_path = render_vs_gt_dir / Path(frame_paths[i]).name
-                        save_image(joined[i].permute(2, 0, 1), str(save_path))
-
-                    # Before evaluation, apply downsampling if needed
-                    if self.cfg.nvs_eval.downscale_factor > 1:
-                        ds_factor = self.cfg.nvs_eval.downscale_factor
-                        renders = F.interpolate(
-                            renders.permute(0, 3, 1, 2),
-                            size=(gt_h // ds_factor, gt_w // ds_factor),
-                            mode="bilinear",
-                            align_corners=False,
-                        ).permute(0, 2, 3, 1)
-                        frames = F.interpolate(
-                            frames.permute(0, 3, 1, 2),
-                            size=(gt_h // ds_factor, gt_w // ds_factor),
-                            mode="bilinear",
-                            align_corners=False,
-                        ).permute(0, 2, 3, 1)
-                        masks = F.interpolate(
-                            masks.permute(0, 3, 1, 2),
-                            size=(gt_h // ds_factor, gt_w // ds_factor),
-                            mode="nearest",
-                        ).permute(0, 2, 3, 1)
-                        masks3 = masks.repeat(1, 1, 1, 3)
-                        frames = frames * masks3
-                        
-                        masks = torch.ones_like(masks)
-                        masks3 = masks.repeat(1, 1, 1, 3)
+                    frames = frames * masks3
                     
-                    # Save what goes into metrics computation for debugging
-                    metrics_debug_dir = save_dir / "metrics_debug_inputs"
-                    metrics_debug_dir.mkdir(parents=True, exist_ok=True)
-                    masked_renders = renders * masks3
-                    masked_gt = frames * masks3
-                    overlayed = 0.5 * masked_renders + 0.5 * masked_gt
-                    columns = [masked_renders, masked_gt, overlayed]
-                    joined = torch.cat(columns, dim=2)  # side-by-side along width
-                    for i in range(joined.shape[0]):
-                        save_path = metrics_debug_dir / Path(frame_paths[i]).name
-                        save_image(joined[i].permute(2, 0, 1), str(save_path))
-                     
-                    # Compute metrics
-                    psnr_vals = psnr(
-                        images=frames,
-                        masks=masks.squeeze(-1),
-                        renders=renders,
+                    masks = torch.ones_like(masks)
+                    masks3 = masks.repeat(1, 1, 1, 3)
+                
+                # Save what goes into metrics computation for debugging
+                metrics_debug_dir = save_dir / "metrics_debug_inputs"
+                metrics_debug_dir.mkdir(parents=True, exist_ok=True)
+                masked_renders = renders * masks3
+                masked_gt = frames * masks3
+                overlayed = 0.5 * masked_renders + 0.5 * masked_gt
+                columns = [masked_renders, masked_gt, overlayed]
+                joined = torch.cat(columns, dim=2)  # side-by-side along width
+                for i in range(joined.shape[0]):
+                    save_path = metrics_debug_dir / Path(frame_paths[i]).name
+                    save_image(joined[i].permute(2, 0, 1), str(save_path))
+                    
+                # Compute metrics
+                psnr_vals = psnr(
+                    images=frames,
+                    masks=masks.squeeze(-1),
+                    renders=renders,
+                )
+                ssim_vals = ssim(
+                    images=frames,
+                    masks=masks.squeeze(-1),
+                    renders=renders,
+                )
+                lpips_vals = lpips(
+                    images=frames,
+                    masks=masks.squeeze(-1),
+                    renders=renders,
+                )
+                for fid, psnr_val, ssim_val, lpips_val in zip(frame_indices, psnr_vals, ssim_vals, lpips_vals):
+                    metrics_all_cams_per_frame.append(
+                        (tgt_cam_id, fid.item(), psnr_val.item(), ssim_val.item(), lpips_val.item())
                     )
-                    ssim_vals = ssim(
-                        images=frames,
-                        masks=masks.squeeze(-1),
-                        renders=renders,
-                    )
-                    lpips_vals = lpips(
-                        images=frames,
-                        masks=masks.squeeze(-1),
-                        renders=renders,
-                    )
-                    for fid, psnr_val, ssim_val, lpips_val in zip(frame_indices, psnr_vals, ssim_vals, lpips_vals):
-                        metrics_all_cams_per_frame.append(
-                            (tgt_cam_id, fid.item(), psnr_val.item(), ssim_val.item(), lpips_val.item())
-                        )
             
             # Create a video from render vs gt images using call to ffmpeg
             render_vs_gt_dir = root_save_dir / f"{tgt_cam_id}" / "render_vs_gt"
@@ -1101,7 +852,6 @@ class MultiHumanTrainer:
         if difix_pipe is not None:
             del difix_pipe
             torch.cuda.empty_cache()
-        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
