@@ -629,6 +629,7 @@ class MultiHumanTrainer:
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),
                             "loss/acap": acap_loss.item(),
+                            "epoch": epoch + 1,
                         }
                     )
 
@@ -797,14 +798,14 @@ class MultiHumanTrainer:
         # TODO: Compute depth maps for the refined dataset and save them
 
         # Setup refined dataset for the new camera
-        refined_cam_dataset = SceneDataset(save_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=self.sample_every)
+        refined_cam_dataset = SceneDataset(save_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=1)
 
         return refined_cam_dataset, prev_cam_dataset
 
     @torch.no_grad()
     def difix_step(self, epoch):
 
-        to_log = {"difix/epoch": epoch}
+        to_log = {"epoch": epoch}
 
         # Select next left/right cameras to process (if any left)
         previous_cams = []
@@ -833,14 +834,14 @@ class MultiHumanTrainer:
 
         # If no new cameras to process, return
         if not left_changed and not right_changed:
-            print("Difix NVS: No new cameras to process, skipping Difix step.")
             to_log["difix/step_performed"] = 0
             to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
+            to_log["difix/trn_ds_size"] = len(self.trn_dataset)
             to_log["difix/num_nv_datasets"] = 0
+            to_log["difix/nv_ds_size"] = 0
             if self.wandb_run is not None:
                 wandb.log(to_log)
             return
-        to_log["difix/step_performed"] = 1
 
         # Prepare path where to save results
         save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
@@ -880,11 +881,13 @@ class MultiHumanTrainer:
         torch.cuda.empty_cache()
 
         # Create new train and nv datasets
+        to_log["difix/step_performed"] = 1
         # - train ds: current ds + all previous nv datasets
         if len(prev_nv_dataset_list) > 0:
             self.trn_datasets.extend(prev_nv_dataset_list)
             self.trn_dataset = ConcatDataset(self.trn_datasets)
         to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
+        to_log["difix/trn_ds_size"] = len(self.trn_dataset)
 
         # - nv dataset: only the latest new datasets
         if len(new_nv_dataset_list) > 0:
@@ -892,6 +895,9 @@ class MultiHumanTrainer:
         else:
             self.nv_dataset = None
         to_log["difix/num_nv_datasets"] = len(new_nv_dataset_list)
+        to_log["difix/nv_ds_size"] = len(self.nv_dataset) if self.nv_dataset is not None else 0
+        if self.wandb_run is not None:
+            wandb.log(to_log)
 
     @torch.no_grad()
     def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline):
