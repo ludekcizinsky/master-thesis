@@ -32,14 +32,16 @@ class SceneDataset(Dataset):
         self.root_dir = scene_root_dir
         self.src_cam_id = src_cam_id
         self.device = device
-        frames_dir = scene_root_dir / "images" / f"{src_cam_id}"
-        masks_dir = scene_root_dir / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
+        self.frames_dir = scene_root_dir / "images" / f"{src_cam_id}"
+        self.masks_dir = scene_root_dir / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
 
-        # Load frame paths
-        self._load_frame_paths(frames_dir, sample_every)
+        # Load frame paths (with optional subsampling)
+        # Important: we use frame path names to match masks, SMPLX, depth, etc.
+        # -> therefore also if we apply subsampling here, other modalities will be subsampled accordingly
+        self._load_frame_paths(self.frames_dir, sample_every)
 
         # Load mask paths
-        self._load_mask_paths(masks_dir)
+        self._load_mask_paths(self.masks_dir)
 
         # Determine training resolution from first image
         first_image = self._load_img(self.frame_paths[0])
@@ -210,6 +212,7 @@ class SceneDataset(Dataset):
     
     def __getitem__(self, idx: int):
         frame = self._load_img(self.frame_paths[idx])
+        frame_name = Path(self.frame_paths[idx]).stem
         mask = self._load_mask(self.mask_paths[idx])
         smplx_params = self._load_smplx(self.smplx_paths[idx])
         K = self.K
@@ -220,6 +223,7 @@ class SceneDataset(Dataset):
         to_return_values = {
             "frame_idx": torch.tensor(idx, device=self.device, dtype=torch.long),
             "frame_path": str(self.frame_paths[idx]),
+            "frame_name": frame_name,
             "image": frame,
             "mask": mask,
             "K": K,

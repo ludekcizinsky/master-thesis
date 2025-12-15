@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from tqdm import tqdm
 import pandas as pd
 from collections import defaultdict
@@ -18,7 +18,9 @@ from PIL import Image
 import kornia
 
 import torch
-from torch.utils.data import DataLoader
+import torch.multiprocessing as mp
+from torch.utils.data import DataLoader, ConcatDataset
+
 import torch.nn.functional as F
 
 from fused_ssim import fused_ssim
@@ -324,22 +326,39 @@ class MultiHumanTrainer:
         self.output_dir = Path(cfg.output_dir).expanduser()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.train_params = tuple(cfg.train_params)
+        self.sample_every = cfg.sample_every
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
 
+        # Initialize wandb 
+        self._init_wandb()
+
         # Prepare dataset
-        #self.frames_dir = self.output_dir / "frames"
-        #self.masks_dir = self.output_dir / "masks" / "union"
-        self.depth_dir = self.preprocess_dir / "depth_maps" / "raw"
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
-        self.trn_dataset = SceneDataset(root_gt_dir_path, src_cam_id, self.depth_dir, self.tuner_device)
+        self._init_train_dataset()
 
         # Preare model
         self._load_model()
 
         # Initialize difix
         self._init_difix()
+        self.difix_step(epoch=0)
+
+    # ---------------- Datasets ----------------------------
+    def _init_train_dataset(self):
+        self.depth_dir = None
+        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        self.trn_datasets = list() 
+        trn_ds = SceneDataset(
+            root_gt_dir_path, 
+            src_cam_id, 
+            self.depth_dir, 
+            self.tuner_device, 
+            sample_every=self.sample_every,
+        )
+        self.trn_datasets.append(trn_ds)
+        self.trn_dataset = trn_ds
+        self.trn_render_hw = self.trn_dataset.trn_render_hw
 
     # ---------------- Model  ------------------------------
     def _load_model(self):
@@ -432,6 +451,47 @@ class MultiHumanTrainer:
 
         return asap_loss, acap_loss
 
+    @staticmethod
+    def _infinite_loader(loader):
+        while True:
+            for batch in loader:
+                yield batch
+
+    def _build_loader(self, dataset: SceneDataset) -> DataLoader:
+        loader = DataLoader(
+            dataset, batch_size=self.cfg.batch_size, shuffle=True, num_workers=0, drop_last=False
+        )
+        return loader
+
+    @staticmethod
+    def _tensor_to_uint8(image: torch.Tensor) -> np.ndarray:
+        """Convert a [H,W,C] tensor in [0,1] to uint8 numpy."""
+        return (image.detach().cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+
+    @staticmethod
+    def _pad_image_to_multiple(image: np.ndarray, multiple: int) -> Tuple[np.ndarray, Tuple[int, int]]:
+        pad_h = (multiple - (image.shape[0] % multiple)) % multiple
+        pad_w = (multiple - (image.shape[1] % multiple)) % multiple
+        if pad_h == 0 and pad_w == 0:
+            return image, (0, 0)
+        padded = np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)), mode="edge")
+        return padded, (pad_h, pad_w)
+
+    def _prepare_image_for_difix(self, image: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
+        multiple = int(getattr(self.cfg.difix, "resolution_multiple", 8))
+        multiple = max(1, multiple)
+        metadata: Dict[str, Any] = {
+            "orig_hw": image.shape[:2],
+        }
+        processed, pad_hw = self._pad_image_to_multiple(image, multiple)
+        metadata["pad_hw"] = pad_hw
+        metadata["processed_hw"] = processed.shape[:2]
+        return processed, metadata
+
+    def _restore_image_from_difix(self, image: np.ndarray, metadata: Dict[str, Any]) -> np.ndarray:
+        orig_h, orig_w = metadata.get("orig_hw", image.shape[:2])
+        return image[:orig_h, :orig_w, :]
+
     # ---------------- Logging utilities ----------------
     def _init_wandb(self):
         if not self.cfg.wandb.enable or wandb is None:
@@ -460,21 +520,19 @@ class MultiHumanTrainer:
     # ---------------- Training loop ----------------
     def train_loop(self):
 
-        # Initialize wandb if enabled and not already initialized
-        if self.wandb_run is None:
-            self._init_wandb()
-
         # Prepare dataset and dataloader
-        self.trn_render_hw = self.trn_dataset.trn_render_hw
-        loader = DataLoader(
-            self.trn_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
-        )
+        trn_loader = self._build_loader(self.trn_dataset)
+        trn_iter = self._infinite_loader(trn_loader)
+        if self.nv_dataset is not None:
+            nvs_loader = self._build_loader(self.nv_dataset)
+            nvs_iter = self._infinite_loader(nvs_loader)
+        # If no nv dataset, use trn dataset for both
+        else:
+            nvs_iter = trn_iter
 
         # Initialize optimizer
         params = self._trainable_tensors()
         optimizer = torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
-
-        # self.difix_step()
 
         # Pre-optimization visualization (epoch 0).
         if self.cfg.eval_pretrain:
@@ -483,14 +541,25 @@ class MultiHumanTrainer:
         # Training loop
         for epoch in range(self.cfg.epochs):
             running_loss = 0.0
-            pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{self.cfg.epochs}", leave=False)
+            pbar = tqdm(
+                total=self.cfg.n_batches_per_epoch,
+                desc=f"Epoch {epoch + 1}/{self.cfg.epochs}",
+                leave=False,
+            )
+
             batch_idx = 0
-            for batch in pbar:
+            while batch_idx < self.cfg.n_batches_per_epoch:
+                
+                # Choose between trn and nv dataset 
+                if torch.rand(1).item() < self.cfg.difix.train_ratio:
+                    batch = next(trn_iter)
+                else:
+                    batch = next(nvs_iter)
 
                 # Parse batch data
                 frames = batch["image"] # [B, H, W, 3],
                 masks = batch["mask"] # [B, H, W, 1],
-                depths = batch["depth"] # [B, H, W, 1],
+                # depths = batch["depth"] # [B, H, W, 1],
                 bsize = int(frames.shape[0])
                 batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
@@ -506,7 +575,7 @@ class MultiHumanTrainer:
                 if mask3.shape[-1] == 1:
                     mask3 = mask3.repeat(1, 1, 1, 3)
                 gt_masked = frames * mask3
-                gt_depth_masked = depths * masks
+                # gt_depth_masked = depths * masks
 
                 # BBOX crop around the union person mask
                 if self.cfg.use_bbox_crop:
@@ -514,27 +583,27 @@ class MultiHumanTrainer:
                     loss_pred_rgb = bbox_crop(bboxes, pred_rgb)
                     loss_pred_mask = bbox_crop(bboxes, pred_mask)
                     loss_gt_masked = bbox_crop(bboxes, gt_masked)
-                    loss_pred_depth = bbox_crop(bboxes, pred_depth)
-                    loss_gt_depth_masked = bbox_crop(bboxes, gt_depth_masked)
+                    # loss_pred_depth = bbox_crop(bboxes, pred_depth)
+                    # loss_gt_depth_masked = bbox_crop(bboxes, gt_depth_masked)
                     loss_masks = bbox_crop(bboxes, masks)
                 else:
                     loss_pred_rgb = pred_rgb
                     loss_pred_mask = pred_mask
                     loss_gt_masked = gt_masked
-                    loss_pred_depth = pred_depth
-                    loss_gt_depth_masked = gt_depth_masked
+                    # loss_pred_depth = pred_depth
+                    # loss_gt_depth_masked = gt_depth_masked
                     loss_masks = masks
 
                 # Compute loss
                 rgb_loss = self.cfg.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
                 sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask, loss_masks)
-                depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
+                # depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
                 asap_loss, acap_loss = self._canonical_regularization()
                 reg_loss = asap_loss + acap_loss
 
-                loss = rgb_loss + sil_loss + ssim_loss + depth_loss + reg_loss
+                loss = rgb_loss + sil_loss + ssim_loss + reg_loss # + depth_loss 
                 
                 # Backpropagation
                 loss.backward()
@@ -544,7 +613,7 @@ class MultiHumanTrainer:
                 # Log the results
                 running_loss += loss.item()
                 pbar.set_postfix(
-                    loss=f"{loss.item():.4f}",
+                   loss=f"{loss.item():.4f}",
                     asap=f"{asap_loss.item():.4f}",
                     acap=f"{acap_loss.item():.4f}",
                 )
@@ -556,7 +625,7 @@ class MultiHumanTrainer:
                             "loss/rgb": rgb_loss.item(),
                             "loss/sil": sil_loss.item(),
                             "loss/ssim": ssim_loss.item(),
-                            "loss/depth": depth_loss.item(),
+                            # "loss/depth": depth_loss.item(),
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),
                             "loss/acap": acap_loss.item(),
@@ -564,7 +633,7 @@ class MultiHumanTrainer:
                     )
 
                 # space for debug stuff is here
-                if batch_idx == 5 and (epoch + 1) % 2 == 0:
+                if batch_idx in [5] and (epoch + 1) % 2 == 0:
                     # - create a joined image from pred_masked and gt_masked for debugging
                     debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "rgb"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
@@ -576,22 +645,20 @@ class MultiHumanTrainer:
                         debug_image_path = debug_save_dir / f"rgb_loss_input_{global_idx}.png"
                         save_image(image.permute(0, 3, 1, 2), str(debug_image_path))
 
-                    # - save depth comparison images
-                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
-                    debug_save_dir.mkdir(parents=True, exist_ok=True)
-                    for i in range(pred_depth.shape[0]):
-                        global_idx = self.cfg.sample_every * (batch_idx * self.cfg.batch_size + i)
-                        save_path = debug_save_dir / f"depth_comparison_frame_{global_idx:06d}.png"
-                        save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
-
                 batch_idx += 1
+                pbar.update(1)
 
             # End of epoch
+            # - Progress bar stuff
+            pbar.close()
             # - Report average loss
-            avg_loss = running_loss / max(1, len(loader))
+            avg_loss = running_loss / max(1, self.cfg.n_batches_per_epoch)
             if self.wandb_run is not None:
-                wandb.log({"loss/combined_epoch": avg_loss, "epoch": epoch + 1})
-
+                to_log = {"loss/combined_epoch": avg_loss, "epoch": epoch + 1}
+                wandb.log(to_log)
+            # - Run Difix step if neccesary
+            if (epoch + 1) % self.cfg.difix.step_every_epochs == 0:
+                self.difix_step(epoch + 1)
             # - Run eval loop if neccesary
             if getattr(self.cfg, "eval_every_epoch", 0) > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
                 self.eval_loop(epoch + 1)
@@ -615,25 +682,165 @@ class MultiHumanTrainer:
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
 
+
     @torch.no_grad()
-    def difix_step(self):
+    def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int, save_dir: Path) -> Tuple[SceneDataset, SceneDataset]:
+        """
+        Prepare new dataset for the given camera by rendering novel views and refining them using Difix.
+
+        Args:
+            difix_pipe: DifixPipeline instance for refinement.
+            cam_id: Target camera ID for which to create the new dataset.
+            prev_cam_id: Previous camera ID to use as reference for Difix.
+            save_dir: Directory to save the new dataset.    
+
+        Returns:
+            new_cam_dataset: SceneDataset for the new camera with refined frames.
+            prev_cam_dataset: SceneDataset for the previous camera used as reference.   
+        """
+
+        # 1. render the new camera views (out: render_frames + alpha_masks)
+        # 2. refine the rendered frames using Difix with reference to previous camera views
+        # 3. create new dataset from the refined frames + alpha masks + copy other data from source dataset
+
+
+        # Load GT dataset for the target camera (will use only smplx params + cameras) to render novel views
+        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+        gt_cam_dataset = SceneDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None, sample_every=self.sample_every)
+        loader = DataLoader(
+            gt_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+
+        # Load dataset for the previous camera (will use only images + masks as reference for Difix)
+        # - we just started, so previous cam dataset is the original GT dataset for both left/right
+        if self.left_cam_id == self.right_cam_id:
+            prev_cam_root_dir = root_gt_dir_path
+            sample_every = self.sample_every
+        # - otherwise, previous cam dataset is the refined dataset from last Difix step
+        else:
+            prev_cam_root_dir = save_dir
+            sample_every = 1  # use all frames from the refined dataset
+        prev_cam_dataset = SceneDataset(prev_cam_root_dir, prev_cam_id, device=self.tuner_device, depth_dir=None, sample_every=sample_every)
+
+        # Copy contents that stay the same from cam dataset to the save_dir
+        # - cameras
+        cameras_path = gt_cam_dataset.camera_params_path
+        save_dir_cam_path = save_dir / "cameras" / f"rgb_cameras.npz"
+        save_dir_cam_path.parent.mkdir(parents=True, exist_ok=True)
+        if not save_dir_cam_path.exists():
+            subprocess.run(["cp", str(cameras_path), str(save_dir_cam_path)])
+        # - smplx params (full folder)
+        smplx_params_dir = gt_cam_dataset.smplx_dir
+        save_dir_smplx_path = save_dir / "smplx"
+        if not save_dir_smplx_path.exists():
+            subprocess.run(["cp", "-r", str(smplx_params_dir), str(save_dir_smplx_path)])
+
+        # - masks (full folder)
+        masks_dir = gt_cam_dataset.masks_dir
+        save_dir_masks_path = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all"
+        save_dir_masks_path.parent.mkdir(parents=True, exist_ok=True)
+        if not save_dir_masks_path.exists():
+            subprocess.run(["cp", "-r", str(masks_dir), str(save_dir_masks_path)])
+
+        # Render in batches novel views from target camera
+        for batch in tqdm(loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
+
+            # - Update smplx params with neutral pose transform
+            frame_indices = batch["frame_idx"] # [B]
+            frame_names = batch["frame_name"] # [B]
+            bsize = int(batch["image"].shape[0])
+            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+
+            # - Forward pass to render novel views using GT smplx params and cameras
+            frames_save_dir = save_dir / "images" / f"{cam_id}"
+            example_save_path = frames_save_dir / f"{frame_names[0]}.jpg"
+            if example_save_path.exists() and not self.cfg.difix.overwrite_existing:
+                continue  # already processed this batch
+            pred_rgb, pred_alpha, _ = self.forward(batch)
+
+            # - Refine rendered images using Difix
+            # -- Load reference images from previous camera view
+            ref_images = []
+            for i in range(bsize):
+                sample_dict = prev_cam_dataset[frame_indices[i].item()]
+                ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
+                ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
+                ref_images.append(ref_frame.to(self.tuner_device))
+            ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
+            # -- Run difix refinement
+            refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
+
+            # Save results 
+            # - Refined rendered frames
+            frames_save_dir = save_dir / "images" / f"{cam_id}"
+            frames_save_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(refined_rgb.shape[0]):
+                save_path = frames_save_dir / f"{frame_names[i]}.jpg"
+                save_image(refined_rgb[i].permute(2, 0, 1), str(save_path))
+
+#            # - Alpha masks
+            #masks_save_dir = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all" 
+            #masks_save_dir.mkdir(parents=True, exist_ok=True)
+            #for i in range(pred_alpha.shape[0]):
+                #save_path = masks_save_dir / f"{frame_names[i]}.png"
+                #save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path))
+
+            # - Debug: save side-by-side comparison of reference, rendered, refined
+            difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{cam_id}"
+            difix_debug_dir.mkdir(parents=True, exist_ok=True)
+            joined = torch.cat([ref_images, pred_rgb, refined_rgb], dim=2)  # side-by-side along width
+            for i in range(joined.shape[0]):
+                save_path = difix_debug_dir / f"{frame_names[i]}.png"
+                save_image(joined[i].permute(2, 0, 1), str(save_path))
+
+        # TODO: Compute depth maps for the refined dataset and save them
+
+        # Setup refined dataset for the new camera
+        refined_cam_dataset = SceneDataset(save_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=self.sample_every)
+
+        return refined_cam_dataset, prev_cam_dataset
+
+    @torch.no_grad()
+    def difix_step(self, epoch):
+
+        to_log = {"difix/epoch": epoch}
 
         # Select next left/right cameras to process (if any left)
         previous_cams = []
         new_cams = []
         # - Left (only if any left)
+        left_changed = False
         if len(self.from_src_left_traversed_cams) > 0: 
             prev_left_cam_id = self.left_cam_id
-            self.left_cam_id = self.from_src_left_traversed_cams.popleft() 
-            new_cams.append(self.left_cam_id)
+            new_left_cam_id = self.from_src_left_traversed_cams.popleft() 
+            new_cams.append(new_left_cam_id)
             previous_cams.append(prev_left_cam_id)
+            left_changed = True
+        else:
+            new_left_cam_id = self.left_cam_id
 
         # - Right (only if any left)
+        right_changed = False
         if len(self.from_src_right_traversed_cams) > 0:
             prev_right_cam_id = self.right_cam_id
-            self.right_cam_id = self.from_src_right_traversed_cams.popleft()
-            new_cams.append(self.right_cam_id)
+            new_right_cam_id = self.from_src_right_traversed_cams.popleft()
+            new_cams.append(new_right_cam_id)
             previous_cams.append(prev_right_cam_id)
+            right_changed = True
+        else:
+            new_right_cam_id = self.right_cam_id
+
+        # If no new cameras to process, return
+        if not left_changed and not right_changed:
+            print("Difix NVS: No new cameras to process, skipping Difix step.")
+            to_log["difix/step_performed"] = 0
+            to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
+            to_log["difix/num_nv_datasets"] = 0
+            if self.wandb_run is not None:
+                wandb.log(to_log)
+            return
+        to_log["difix/step_performed"] = 1
 
         # Prepare path where to save results
         save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
@@ -648,80 +855,43 @@ class MultiHumanTrainer:
         difix_pipe.to(self.tuner_device)
         difix_pipe.set_progress_bar_config(disable=True)
 
-        # Process each new camera:
-        # 1. render the new camera views (out: render_frames + alpha_masks)
-        # 2. refine the rendered frames using Difix with reference to previous camera views
+        # Process each new camera
+        new_nv_dataset_list, prev_nv_dataset_list = [], []
         for cam_id, prev_cam_id in zip(new_cams, previous_cams):
-            root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-            cam_dataset = SceneDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None)
-            # TODO: i think here the root of prev cam dataset will have to be changed to the difix output dir
-            # -> i should keep track of this - ideally i have a flexible method that allows me to decide
-            # whether to use chaining like approach or always use the source cam as reference
-            prev_cam_dataset = SceneDataset(root_gt_dir_path, prev_cam_id, device=self.tuner_device, depth_dir=None)
-            loader = DataLoader(
-                cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            new_nv_cam_dataset, previous_cam_dataset = self._difix_prepare_new_view_ds(
+                difix_pipe,
+                cam_id,
+                prev_cam_id,
+                save_dir,
             )
+            new_nv_dataset_list.append(new_nv_cam_dataset)
+            prev_nv_dataset_list.append(previous_cam_dataset)
 
-            # Copy contents that stay the same from cam dataset to the save_dir
-            # - cameras
-            cameras_path = cam_dataset.camera_params_path
-            save_dir_cam_path = save_dir / "cameras" / f"rgb_cameras.npz"
-            save_dir_cam_path.parent.mkdir(parents=True, exist_ok=True)
-            if not save_dir_cam_path.exists():
-                subprocess.run(["cp", str(cameras_path), str(save_dir_cam_path)])
-            # - smplx params (full folder)
-            smplx_params_dir = cam_dataset.smplx_dir
-            save_dir_smplx_path = save_dir / "smplx"
-            if not save_dir_smplx_path.exists():
-                subprocess.run(["cp", "-r", str(smplx_params_dir), str(save_dir_smplx_path)])
+        # Update the left and right previous cam ids
+        self.left_cam_id = new_left_cam_id
+        if left_changed:
+            print(f"Difix updated NV left cam: {prev_left_cam_id} -> {self.left_cam_id}")
+        self.right_cam_id = new_right_cam_id
+        if right_changed:
+            print(f"Difix updated NV right cam: {prev_right_cam_id} -> {self.right_cam_id}")
 
-            # Render in batches novel views from target camera
-            for batch in tqdm(loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
+        # Delete difix pipe to free memory
+        del difix_pipe
+        torch.cuda.empty_cache()
 
-                # - Parse batch data
-                frames = batch["image"] # [B, H, W, 3]
-                bsize = int(frames.shape[0])
-                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
-                frame_indices = batch["frame_idx"] # [B]
+        # Create new train and nv datasets
+        # - train ds: current ds + all previous nv datasets
+        if len(prev_nv_dataset_list) > 0:
+            self.trn_datasets.extend(prev_nv_dataset_list)
+            self.trn_dataset = ConcatDataset(self.trn_datasets)
+        to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
 
-                # - Forward pass to render novel views
-                pred_rgb, pred_alpha, _ = self.forward(batch)
-
-                # - Refine rendered images using Difix
-                # -- Load reference images from previous camera view
-                ref_images = []
-                for i in range(frame_indices.shape[0]):
-                    sample_dict = prev_cam_dataset[frame_indices[i].item()]
-                    ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
-                    ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
-                    ref_images.append(ref_frame.to(self.tuner_device))
-                ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
-                # -- Run difix refinement
-                refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
-
-                # Save results 
-                # - Refined rendered frames
-                frames_save_dir = save_dir / "images" / f"{cam_id}"
-                frames_save_dir.mkdir(parents=True, exist_ok=True)
-                for i in range(refined_rgb.shape[0]):
-                    save_path = frames_save_dir / f"{frame_indices[i].item()+1:06d}.jpg"
-                    save_image(refined_rgb[i].permute(2, 0, 1), str(save_path))
-
-                # - Alpha masks
-                masks_save_dir = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all" 
-                masks_save_dir.mkdir(parents=True, exist_ok=True)
-                for i in range(pred_alpha.shape[0]):
-                    save_path = masks_save_dir / f"{frame_indices[i].item()+1:06d}.png"
-                    save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path))
-
-                # - Debug: save side-by-side comparison of reference, rendered, refined
-                difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{cam_id}"
-                difix_debug_dir.mkdir(parents=True, exist_ok=True)
-                joined = torch.cat([ref_images, pred_rgb, refined_rgb], dim=2)  # side-by-side along width
-                for i in range(joined.shape[0]):
-                    save_path = difix_debug_dir / f"{frame_indices[i].item()+1:06d}.png"
-                    save_image(joined[i].permute(2, 0, 1), str(save_path))
+        # - nv dataset: only the latest new datasets
+        if len(new_nv_dataset_list) > 0:
+            self.nv_dataset = ConcatDataset(new_nv_dataset_list)
+        else:
+            self.nv_dataset = None
+        to_log["difix/num_nv_datasets"] = len(new_nv_dataset_list)
 
     @torch.no_grad()
     def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline):
@@ -738,21 +908,32 @@ class MultiHumanTrainer:
         refined_renders = []
         for i in tqdm(range(renders.shape[0]), desc="Difix refinement", total=renders.shape[0], leave=False):
             # -- Img to refine
-            img_to_refine = (renders[i].cpu().numpy() * 255).astype("uint8")
+            img_to_refine = self._tensor_to_uint8(renders[i])
             # -- Reference image
-            reference_image = (reference_images[i].cpu().numpy() * 255).astype("uint8")
+            reference_image = self._tensor_to_uint8(reference_images[i])
+
+            img_prepared, transform_meta = self._prepare_image_for_difix(img_to_refine)
+            ref_prepared, _ = self._prepare_image_for_difix(reference_image)
+
             # -- Run Difix
             refined_image = difix_pipe(
                 self.cfg.difix.prompt,
-                image=Image.fromarray(img_to_refine),
-                ref_image=Image.fromarray(reference_image),
+                image=Image.fromarray(img_prepared),
+                ref_image=Image.fromarray(ref_prepared),
+                height=img_prepared.shape[0],
+                width=img_prepared.shape[1],
                 num_inference_steps=self.cfg.difix.num_inference_steps,
                 timesteps=self.cfg.difix.timesteps,
                 guidance_scale=self.cfg.difix.guidance_scale,
             ).images[0]
             # -- Collect results
-            refined_image = torch.from_numpy(np.array(refined_image)).float() / 255.
-            refined_renders.append(refined_image.to(self.tuner_device))
+            refined_np = np.array(refined_image)
+            refined_np = self._restore_image_from_difix(refined_np, transform_meta)
+            refined_tensor = torch.from_numpy(refined_np).float() / 255.0
+            assert (
+                refined_tensor.shape == renders[i].shape
+            ), "Refined image has different shape than the original render after restoration."
+            refined_renders.append(refined_tensor.to(self.tuner_device))
 
         # - Stack refined renders
         refined_renders = torch.stack(refined_renders, dim=0) # [B, H, W, 3]
@@ -807,6 +988,7 @@ class MultiHumanTrainer:
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
                 gt_h, gt_w = frames.shape[1], frames.shape[2]
                 frame_indices = batch["frame_idx"]      # [B]
+                frame_names = batch["frame_name"]      # [B]
                 frame_paths = batch["frame_path"]      # List[B]
 
                 # Forward pass to render novel views
@@ -822,7 +1004,7 @@ class MultiHumanTrainer:
                     # - Refine rendered images using Difix
                     # -- Load reference images from previous camera view
                     ref_images = []
-                    for i in range(frame_indices.shape[0]):
+                    for i in range(bsize):
                         sample_dict = src_cam_dataset[frame_indices[i].item()]
                         ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
                         ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
@@ -836,7 +1018,7 @@ class MultiHumanTrainer:
                     difix_debug_dir.mkdir(parents=True, exist_ok=True)
                     joined = torch.cat([ref_images, renders, refined_rgb, masked_gt], dim=2)  # side-by-side along width
                     for i in range(joined.shape[0]):
-                        save_path = difix_debug_dir / f"{frame_indices[i].item()+1:06d}.png"
+                        save_path = difix_debug_dir / f"{frame_names[i]}.png"
                         save_image(joined[i].permute(2, 0, 1), str(save_path))
 
                     # - Use refined renders for evaluation
@@ -905,9 +1087,10 @@ class MultiHumanTrainer:
                     masks=masks.squeeze(-1),
                     renders=renders,
                 )
-                for fid, psnr_val, ssim_val, lpips_val in zip(frame_indices, psnr_vals, ssim_vals, lpips_vals):
+                for fname, psnr_val, ssim_val, lpips_val in zip(frame_names, psnr_vals, ssim_vals, lpips_vals):
+                    fid = int(fname)
                     metrics_all_cams_per_frame.append(
-                        (tgt_cam_id, fid.item(), psnr_val.item(), ssim_val.item(), lpips_val.item())
+                        (tgt_cam_id, fid, psnr_val.item(), ssim_val.item(), lpips_val.item())
                     )
             
             # Create a video from render vs gt images using call to ffmpeg
@@ -980,4 +1163,9 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    # DataLoader workers need the spawn context to safely use CUDA tensors.
+    try:
+        mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
     main()
