@@ -341,7 +341,26 @@ class MultiHumanTrainer:
 
         # Initialize difix
         self._init_difix()
-        self.difix_step(epoch=0)
+        is_difix_done = False
+        n_its_difix = 0
+        while not is_difix_done:
+            is_difix_done = self.difix_step()
+            n_its_difix += 1
+            print(" Difix step ", n_its_difix, " done: ", is_difix_done)
+
+        difix_scene_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
+        images_dir_path = difix_scene_dir / "images"
+        difix_cam_ids = os.listdir(images_dir_path)
+        for cam_id in difix_cam_ids:
+            scene_ds = SceneDataset(
+                difix_scene_dir,
+                int(cam_id),
+                depth_dir=None,
+                device=self.tuner_device,
+                sample_every=1,
+            )
+            self.trn_datasets.append(scene_ds)
+        self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -523,12 +542,6 @@ class MultiHumanTrainer:
         # Prepare dataset and dataloader
         trn_loader = self._build_loader(self.trn_dataset)
         trn_iter = self._infinite_loader(trn_loader)
-        if self.nv_dataset is not None:
-            nvs_loader = self._build_loader(self.nv_dataset)
-            nvs_iter = self._infinite_loader(nvs_loader)
-        # If no nv dataset, use trn dataset for both
-        else:
-            nvs_iter = trn_iter
 
         # Initialize optimizer
         params = self._trainable_tensors()
@@ -540,8 +553,8 @@ class MultiHumanTrainer:
 
         # Training loop
         for epoch in range(self.cfg.epochs):
-            trn_ds_size, nv_ds_size = len(self.trn_dataset), len(self.nv_dataset) if self.nv_dataset is not None else 0
-            total_ds_size = trn_ds_size + nv_ds_size
+            trn_ds_size = len(self.trn_dataset)
+            total_ds_size = trn_ds_size 
             n_batches_per_current_epoch = total_ds_size // self.cfg.batch_size
             running_loss = 0.0
             pbar = tqdm(
@@ -554,13 +567,8 @@ class MultiHumanTrainer:
 
             while batch_idx < n_batches_per_current_epoch:
                 
-                # Choose between trn and nv dataset 
-                if torch.rand(1).item() < self.cfg.difix.train_ratio:
-                    batch = next(trn_iter)
-                    is_trn_batch = True
-                else:
-                    batch = next(nvs_iter)
-                    is_trn_batch = False
+                # Sample batch
+                batch = next(trn_iter)
 
                 # Parse batch data
                 frames = batch["image"] # [B, H, W, 3],
@@ -610,8 +618,6 @@ class MultiHumanTrainer:
                 reg_loss = asap_loss + acap_loss
 
                 loss = rgb_loss + sil_loss + ssim_loss + reg_loss # + depth_loss
-                if not is_trn_batch:
-                    loss = loss * self.cfg.difix.nv_loss_scale 
                 
                 # Backpropagation
                 loss.backward()
@@ -669,21 +675,9 @@ class MultiHumanTrainer:
                     "loss/n_batches_per_epoch": n_batches_per_current_epoch,
                     "loss/total_ds_size": total_ds_size,
                     "loss/trn_ds_size": trn_ds_size,
-                    "loss/nv_ds_size": nv_ds_size,
                 }
                 wandb.log(to_log)
-            # - Run Difix step if neccesary
-            if (epoch + 1) % self.cfg.difix.step_every_epochs == 0:
-                # -- Update trn and nvs datasets
-                self.difix_step(epoch + 1)
-                # -- Rebuild dataloaders
-                trn_loader = self._build_loader(self.trn_dataset)
-                trn_iter = self._infinite_loader(trn_loader)
-                if self.nv_dataset is not None:
-                    nvs_loader = self._build_loader(self.nv_dataset)
-                    nvs_iter = self._infinite_loader(nvs_loader)
-                else:
-                    nvs_iter = trn_iter
+
             # - Run eval loop if neccesary
             if getattr(self.cfg, "eval_every_epoch", 0) > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
                 self.eval_loop(epoch + 1)
@@ -708,7 +702,7 @@ class MultiHumanTrainer:
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
     @torch.no_grad()
-    def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int, save_dir: Path) -> Tuple[SceneDataset, SceneDataset]:
+    def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int, save_dir: Path):
         """
         Prepare new dataset for the given camera by rendering novel views and refining them using Difix.
 
@@ -717,10 +711,6 @@ class MultiHumanTrainer:
             cam_id: Target camera ID for which to create the new dataset.
             prev_cam_id: Previous camera ID to use as reference for Difix.
             save_dir: Directory to save the new dataset.    
-
-        Returns:
-            new_cam_dataset: SceneDataset for the new camera with refined frames.
-            prev_cam_dataset: SceneDataset for the previous camera used as reference.   
 
         Notes:
         1. render the new camera views (out: render_frames)
@@ -820,17 +810,10 @@ class MultiHumanTrainer:
 
         # TODO: Compute depth maps for the refined dataset and save them
 
-        # Setup refined dataset for the new camera
-        refined_cam_dataset = SceneDataset(save_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=1)
-
-        return refined_cam_dataset, prev_cam_dataset
 
     @torch.no_grad()
-    def difix_step(self, epoch):
+    def difix_step(self) -> bool:
 
-        to_log = {"epoch": epoch}
-
-        is_first_difix_step = self.left_cam_id == self.right_cam_id
         # Select next left/right cameras to process (if any left)
         previous_cams = []
         new_cams = []
@@ -858,14 +841,7 @@ class MultiHumanTrainer:
 
         # If no new cameras to process, return
         if not left_changed and not right_changed:
-            to_log["difix/step_performed"] = 0
-            to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
-            to_log["difix/trn_ds_size"] = len(self.trn_dataset)
-            to_log["difix/num_nv_datasets"] = 0
-            to_log["difix/nv_ds_size"] = 0
-            if self.wandb_run is not None:
-                wandb.log(to_log)
-            return
+            return True # returns true to signal that difix is done
 
         # Prepare path where to save results
         save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
@@ -881,16 +857,13 @@ class MultiHumanTrainer:
         difix_pipe.set_progress_bar_config(disable=True)
 
         # Process each new camera
-        new_nv_dataset_list, prev_nv_dataset_list = [], []
         for cam_id, prev_cam_id in zip(new_cams, previous_cams):
-            new_nv_cam_dataset, previous_cam_dataset = self._difix_prepare_new_view_ds(
+            self._difix_prepare_new_view_ds(
                 difix_pipe,
                 cam_id,
                 prev_cam_id,
                 save_dir,
             )
-            new_nv_dataset_list.append(new_nv_cam_dataset)
-            prev_nv_dataset_list.append(previous_cam_dataset)
 
         # Update the left and right previous cam ids
         self.left_cam_id = new_left_cam_id
@@ -904,24 +877,7 @@ class MultiHumanTrainer:
         del difix_pipe
         torch.cuda.empty_cache()
 
-        # Create new train and nv datasets
-        to_log["difix/step_performed"] = 1
-        # - train ds: current ds + all previous nv datasets
-        if len(prev_nv_dataset_list) > 0 and not is_first_difix_step:
-            self.trn_datasets.extend(prev_nv_dataset_list)
-            self.trn_dataset = ConcatDataset(self.trn_datasets)
-        to_log["difix/num_trn_datasets"] = len(self.trn_datasets)
-        to_log["difix/trn_ds_size"] = len(self.trn_dataset)
-
-        # - nv dataset: only the latest new datasets
-        if len(new_nv_dataset_list) > 0:
-            self.nv_dataset = ConcatDataset(new_nv_dataset_list)
-        else:
-            self.nv_dataset = None
-        to_log["difix/num_nv_datasets"] = len(new_nv_dataset_list)
-        to_log["difix/nv_ds_size"] = len(self.nv_dataset) if self.nv_dataset is not None else 0
-        if self.wandb_run is not None:
-            wandb.log(to_log)
+        return False
 
     @torch.no_grad()
     def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline):

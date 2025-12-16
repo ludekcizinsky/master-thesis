@@ -21,8 +21,6 @@ bbox_pad: 50
 
 difix:
   eval_enable: false
-  train_ratio: 0.8
-  step_every_epochs: 20
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
   num_inference_steps: 1
@@ -30,14 +28,14 @@ difix:
   guidance_scale: 0.0
   overwrite_existing: false
   resolution_multiple: 8
-  nv_loss_scale: 0.7
 
 wandb:
   enable: true
   project: "hybrid-lhm"
   entity: "ludekcizinsky"
   tags:
-    - v5
+    - v6
+    - eval
 
 loss_weights:
   rgb: 20.0
