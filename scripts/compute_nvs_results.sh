@@ -16,7 +16,7 @@ scene_names=(
 )
 
 
-python scripts/avg.py \
+python scripts/compute_nvs_results.py \
   --exp-name "$exp_name" \
   --epoch-str "$epoch_str" \
   --scene-names "${scene_names[@]}" \
