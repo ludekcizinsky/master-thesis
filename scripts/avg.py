@@ -1,20 +1,98 @@
-import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List
 
-# - zero shot lhm
-# ssim = np.array([0.9136, 0.9154, 0.9352, 0.9303])
-# psnr = np.array([18.4245, 18.8578, 21.9146, 20.3368])
-# lpips = np.array([0.0906, 0.0888, 0.0773, 0.0734])
+import pandas as pd
+import tyro
 
-# - zero shot lhm + difix refine during inference
-# ssim = np.array([0.7637, 0.7352, 0.7890, 0.7445])
-# psnr = np.array([17.7862, 18.2688, 21.3553, 19.8489])
-# lpips = np.array([0.0812, 0.0843, 0.0703, 0.0728])
+@dataclass
+class Args:
+    exp_name: str
+    epoch_str: str
+    scene_names: List[str]
+    results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
+    output_dir: Path = Path("/home/cizinsky/master-thesis/results")
 
-# - zaro shot lhm + difix refine during training
-ssim = np.array([0.9363, 0.9386, 0.9507, 0.9511])
-psnr = np.array([20.9551, 21.5577, 24.0491, 22.6640])
-lpips = np.array([0.0813, 0.0788, 0.0700, 0.0634])
+def _parse_metrics(results_path: Path) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    with results_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            metrics[key] = float(value)
+    return metrics
 
-print(f"Average SSIM: {ssim.mean():.3f}")
-print(f"Average PSNR: {psnr.mean():.1f}")
-print(f"Average LPIPS: {lpips.mean():.4f}")
+
+def _format_table(df: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for scene, row in df.iterrows():
+        record: Dict[str, str] = {"scene": str(scene)}
+        for col in df.columns:
+            value = row[col]
+            if scene == "avg":
+                if col == "SSIM":
+                    record[col] = f"{value:.3f}"
+                elif col == "PSNR":
+                    record[col] = f"{value:.1f}"
+                else:
+                    record[col] = f"{value:.4f}"
+            else:
+                record[col] = f"{value:.4f}"
+        records.append(record)
+    return pd.DataFrame(records).set_index("scene")
+
+
+def _to_markdown_table(df: pd.DataFrame) -> str:
+    headers = ["scene", *df.columns]
+    lines: List[str] = []
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for scene, row in df.iterrows():
+        values: Iterable[str] = [str(scene), *[str(row[col]) for col in df.columns]]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
+def main(args: Args) -> None:
+    rows = []
+    for scene in args.scene_names:
+        results_path = (
+            args.results_root
+            / scene
+            / "evaluation"
+            / args.exp_name
+            / f"epoch_{args.epoch_str}"
+            / "novel_view_results.txt"
+        )
+        metrics = _parse_metrics(results_path)
+        rows.append(
+            {
+                "scene": scene,
+                "SSIM": metrics["ssim"],
+                "PSNR": metrics["psnr"],
+                "LPIPS": metrics["lpips"],
+            }
+        )
+
+    columns = ["SSIM", "PSNR", "LPIPS"]
+    df = pd.DataFrame(rows).set_index("scene")[columns]
+    df.loc["avg"] = df.mean(numeric_only=True)
+    formatted_df = _format_table(df)
+
+    out_dir = args.output_dir / args.exp_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "nvs.csv"
+    formatted_df.to_csv(csv_path)
+    md_path = out_dir / "nvs.md"
+    md_path.write_text(_to_markdown_table(formatted_df), encoding="utf-8")
+    print(f"Wrote {csv_path}")
+    print(f"Wrote {md_path}")
+
+if __name__ == "__main__":
+    args = tyro.cli(Args)
+    main(args)
