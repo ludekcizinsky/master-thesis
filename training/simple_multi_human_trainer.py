@@ -779,7 +779,7 @@ class MultiHumanTrainer:
             for i in range(bsize):
                 sample_dict = prev_cam_dataset[frame_indices[i].item()]
                 ref_img, ref_mask = sample_dict["image"], sample_dict["mask"]  # [H, W, 3], [H, W, 1], 0-1
-                ref_frame = ref_img * ref_mask # [H, W, 3], 0-1
+                ref_frame = ref_img # * ref_mask # [H, W, 3], 0-1
                 ref_images.append(ref_frame.to(self.tuner_device))
             ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
             # -- Run difix refinement
