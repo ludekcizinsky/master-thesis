@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=difix_v8_baseline
+#SBATCH --job-name=difix_v9_baseline
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           
 #SBATCH --mem=32G                   
@@ -16,7 +16,7 @@ conda activate thesis
 module load gcc ffmpeg
 
 # Shared across scenes
-exp_name="difix_v8_baseline"
+exp_name="difix_v9_baseline"
 num_persons=2
 
 # --- LHM finetune

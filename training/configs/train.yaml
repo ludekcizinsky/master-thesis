@@ -21,7 +21,7 @@ bbox_pad: 50
 
 difix:
   eval_enable: true
-  trn_enable: false
+  trn_enable: true
   is_prev_cam_always_source: false
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
