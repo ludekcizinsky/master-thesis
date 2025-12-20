@@ -726,8 +726,14 @@ class MultiHumanTrainer:
         )
 
         # Load dataset for the previous camera (will use only images + masks as reference for Difix)
+        is_prev_cam_always_source = self.cfg.difix.is_prev_cam_always_source
+        # - if previous cam is always source cam, use that
+        if is_prev_cam_always_source:
+            prev_cam_root_dir = root_gt_dir_path
+            sample_every = self.sample_every
+            prev_cam_id = self.cfg.nvs_eval.source_camera_id
         # - we just started, so previous cam dataset is the original GT dataset for both left/right
-        if self.left_cam_id == self.right_cam_id:
+        elif self.left_cam_id == self.right_cam_id:
             prev_cam_root_dir = root_gt_dir_path
             sample_every = self.sample_every
         # - otherwise, previous cam dataset is the refined dataset from last Difix step
