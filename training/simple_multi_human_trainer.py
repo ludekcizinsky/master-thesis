@@ -1134,6 +1134,19 @@ class MultiHumanTrainer:
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
+        # - log the source training view metrics to wandb
+        if self.cfg.wandb.enable:
+            df_source = df[df["camera_id"] == self.cfg.nvs_eval.source_camera_id]
+            if not df_source.empty:
+                source_avg = {
+                    "psnr": df_source["psnr"].mean(),
+                    "ssim": df_source["ssim"].mean(),
+                    "lpips": df_source["lpips"].mean(),
+                }
+                to_log = {f"eval_nv/trn_cam/{metric_name}": v for metric_name, v in source_avg.items()}
+                to_log["epoch"] = epoch
+                wandb.log(to_log)
+
         # Delete difix pipe to free memory
         if difix_pipe is not None:
             del difix_pipe
