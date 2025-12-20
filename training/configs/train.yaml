@@ -25,9 +25,10 @@ difix:
   is_prev_cam_always_source: false
   model_id: "nvidia/difix_ref"
   prompt: "remove rendering artifacts from the novel view render; keep the subject, pose, and camera consistent with the reference view; preserve facial identity and refine facial details (eyes, nose, mouth, skin texture)"
+  negative_prompt: "no face distortion, no identity change, no extra limbs, no pose change, no over-smoothing, no heavy stylization"
   num_inference_steps: 1
   timesteps: [199]
-  guidance_scale: 3.0
+  guidance_scale: 0.0
   overwrite_existing: false
   resolution_multiple: 8
 

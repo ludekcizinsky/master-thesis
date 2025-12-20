@@ -920,6 +920,7 @@ class MultiHumanTrainer:
                 num_inference_steps=self.cfg.difix.num_inference_steps,
                 timesteps=self.cfg.difix.timesteps,
                 guidance_scale=self.cfg.difix.guidance_scale,
+                negative_prompt=self.cfg.difix.negative_prompt,
             ).images[0]
             # -- Collect results
             refined_np = np.array(refined_image)
