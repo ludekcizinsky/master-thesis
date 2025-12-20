@@ -21,6 +21,7 @@ bbox_pad: 50
 
 difix:
   eval_enable: false
+  trn_enable: false
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
   num_inference_steps: 1
@@ -34,7 +35,7 @@ wandb:
   project: "hybrid-lhm"
   entity: "ludekcizinsky"
   tags:
-    - v6
+    - v7
     - eval
 
 loss_weights:

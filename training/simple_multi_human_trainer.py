@@ -783,7 +783,8 @@ class MultiHumanTrainer:
                 ref_images.append(ref_frame.to(self.tuner_device))
             ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
             # -- Run difix refinement
-            refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
+            is_enabled = self.cfg.difix.trn_enable
+            refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe, is_enabled) # [B, H, W, 3]
 
             # Save results 
             # - Refined rendered frames
@@ -880,7 +881,7 @@ class MultiHumanTrainer:
         return False
 
     @torch.no_grad()
-    def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline):
+    def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline, enabled: bool = True) -> torch.Tensor:
         """Refine rendered images using Difix with reference images.
         Args:
             renders: [B, H, W, 3] rendered images to refine
@@ -889,6 +890,8 @@ class MultiHumanTrainer:
         Returns:
             refined_renders: [B, H, W, 3] refined rendered images
         """
+        if not enabled:
+            return renders
 
         # - Run the refinement
         refined_renders = []
