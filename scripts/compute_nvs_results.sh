@@ -5,7 +5,7 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 module load gcc ffmpeg
 conda activate thesis
 
-exp_name="difix_v4_baseline"
+exp_name="difix_v7_baseline"
 epoch_str="0150"
 
 scene_names=(
