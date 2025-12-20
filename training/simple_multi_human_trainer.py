@@ -887,7 +887,7 @@ class MultiHumanTrainer:
         return False
 
     @torch.no_grad()
-    def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline, enabled: bool = True) -> torch.Tensor:
+    def difix_refine(self, renders: torch.Tensor, reference_images: torch.Tensor, difix_pipe: DifixPipeline, enabled: bool = True, is_eval=False) -> torch.Tensor:
         """Refine rendered images using Difix with reference images.
         Args:
             renders: [B, H, W, 3] rendered images to refine
@@ -911,17 +911,31 @@ class MultiHumanTrainer:
             ref_prepared, _ = self._prepare_image_for_difix(reference_image)
 
             # -- Run Difix
-            refined_image = difix_pipe(
-                self.cfg.difix.prompt,
-                image=Image.fromarray(img_prepared),
-                ref_image=Image.fromarray(ref_prepared),
-                height=img_prepared.shape[0],
-                width=img_prepared.shape[1],
-                num_inference_steps=self.cfg.difix.num_inference_steps,
-                timesteps=self.cfg.difix.timesteps,
-                guidance_scale=self.cfg.difix.guidance_scale,
-                negative_prompt=self.cfg.difix.negative_prompt,
-            ).images[0]
+            if not is_eval:
+                refined_image = difix_pipe(
+                    self.cfg.difix.prompt,
+                    image=Image.fromarray(img_prepared),
+                    ref_image=Image.fromarray(ref_prepared),
+                    height=img_prepared.shape[0],
+                    width=img_prepared.shape[1],
+                    num_inference_steps=self.cfg.difix.num_inference_steps,
+                    timesteps=self.cfg.difix.timesteps,
+                    guidance_scale=self.cfg.difix.guidance_scale,
+                    negative_prompt=self.cfg.difix.negative_prompt,
+                ).images[0]
+            # (the only difference in eval is that we do not provide ref image)
+            else:
+                refined_image = difix_pipe(
+                    self.cfg.difix.prompt,
+                    image=Image.fromarray(img_prepared),
+                    height=img_prepared.shape[0],
+                    width=img_prepared.shape[1],
+                    num_inference_steps=self.cfg.difix.num_inference_steps,
+                    timesteps=self.cfg.difix.timesteps,
+                    guidance_scale=self.cfg.difix.guidance_scale,
+                    negative_prompt=self.cfg.difix.negative_prompt,
+                ).images[0]
+
             # -- Collect results
             refined_np = np.array(refined_image)
             refined_np = self._restore_image_from_difix(refined_np, transform_meta)
@@ -953,7 +967,7 @@ class MultiHumanTrainer:
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
-            difix_pipe = DifixPipeline.from_pretrained(self.cfg.difix.model_id, trust_remote_code=True, requires_safety_checker=False)
+            difix_pipe = DifixPipeline.from_pretrained("nvidia/difix", trust_remote_code=True, requires_safety_checker=False)
             difix_pipe.to(self.tuner_device)
             difix_pipe.set_progress_bar_config(disable=True)
         else:
@@ -1007,7 +1021,7 @@ class MultiHumanTrainer:
                         ref_images.append(ref_frame.to(self.tuner_device))
                     ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
                     # -- Run difix refinement
-                    refined_rgb = self.difix_refine(renders, ref_images, difix_pipe) # [B, H, W, 3]
+                    refined_rgb = self.difix_refine(renders, ref_images, difix_pipe, is_eval=True) # [B, H, W, 3]
 
                     # - Debug: save side-by-side comparison of reference, rendered, refined
                     difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{tgt_cam_id}"
