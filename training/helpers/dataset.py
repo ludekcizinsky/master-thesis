@@ -1,4 +1,4 @@
-
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 import os
@@ -18,6 +18,21 @@ def intr_to_4x4(intr: torch.Tensor, device) -> torch.Tensor:
     intr4[:3, :3] = intr.to(device)
     return intr4
 
+def root_dir_to_image_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "images" / f"{cam_id}"
+
+def root_dir_to_mask_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all"
+
+def root_dir_to_smplx_dir(root_dir: Path) -> Path:
+    return root_dir / "smplx"
+
+def root_dir_to_cameras_path(root_dir: Path) -> Path:
+    return root_dir / "cameras" / "rgb_cameras.npz"
+
+def root_dir_to_depth_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "depths" / f"{cam_id}"
+
 
 class SceneDataset(Dataset):
     
@@ -32,8 +47,8 @@ class SceneDataset(Dataset):
         self.root_dir = scene_root_dir
         self.src_cam_id = src_cam_id
         self.device = device
-        self.frames_dir = scene_root_dir / "images" / f"{src_cam_id}"
-        self.masks_dir = scene_root_dir / "seg" / "img_seg_mask" / f"{src_cam_id}" / "all"
+        self.frames_dir = root_dir_to_image_dir(scene_root_dir, src_cam_id)
+        self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
 
         # Load frame paths (with optional subsampling)
         # Important: we use frame path names to match masks, SMPLX, depth, etc.
@@ -53,11 +68,11 @@ class SceneDataset(Dataset):
             self._load_depth_paths()
 
         # Load camera parameters
-        self.camera_params_path = self.root_dir / "cameras" / "rgb_cameras.npz"
+        self.camera_params_path = root_dir_to_cameras_path(scene_root_dir)
         self._load_cameras()
 
         # Load SMPLX parameters
-        self.smplx_dir: Path = self.root_dir / "smplx"
+        self.smplx_dir: Path = root_dir_to_smplx_dir(scene_root_dir)
         self._load_smplx_paths()
 
     # --------- Path loaders
@@ -237,3 +252,58 @@ class SceneDataset(Dataset):
             to_return_values["depth"] = depth
 
         return to_return_values
+
+
+def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, cam_scene_dir: Path, frames_scene_dir: Path, 
+                                masks_scene_dir: Path, smplx_params_scene_dir: Path, depths_scene_dir: Optional[Path]):
+    """
+    Copy data from the specified scene directories to the tgt scene directory. If the given
+    source directory is None, skip copying that data type. If the source directory does not exist,
+    fill it with empty (dummy) data.
+    """
+    
+    tgt_scene_dir.mkdir(parents=True, exist_ok=True)
+
+    # Camera parameters
+    src_cameras_path = root_dir_to_cameras_path(cam_scene_dir)
+    tgt_cameras_path = root_dir_to_cameras_path(tgt_scene_dir)
+    tgt_cameras_path.parent.mkdir(parents=True, exist_ok=True)
+    if src_cameras_path.exists():
+        subprocess.run(["cp", str(src_cameras_path), str(tgt_cameras_path)])
+
+    # Frames
+    src_frames_dir = root_dir_to_image_dir(frames_scene_dir, camera_id)
+    tgt_frames_dir = root_dir_to_image_dir(tgt_scene_dir, camera_id)
+    tgt_frames_dir.parent.mkdir(parents=True, exist_ok=True)
+    if src_frames_dir.exists():
+        subprocess.run(["cp", "-r", str(src_frames_dir), str(tgt_frames_dir)])
+    else:
+        raise NotImplementedError(f"Frame directory not found: {src_frames_dir}")
+
+    # Masks
+    src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
+    tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
+    tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
+    if src_masks_dir.exists():
+        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir)])
+    else:
+        raise NotImplementedError(f"Mask directory not found: {src_masks_dir}")
+
+    # SMPLX parameters
+    src_smplx_dir = root_dir_to_smplx_dir(smplx_params_scene_dir)
+    tgt_smplx_dir = root_dir_to_smplx_dir(tgt_scene_dir)
+    tgt_smplx_dir.parent.mkdir(parents=True, exist_ok=True)
+    if src_smplx_dir.exists():
+        subprocess.run(["cp", "-r", str(src_smplx_dir), str(tgt_smplx_dir)])
+    else:
+        raise ValueError(f"SMPLX parameters directory not found: {src_smplx_dir}")
+
+    # Depths
+    if depths_scene_dir is not None:
+        src_depths_dir = root_dir_to_depth_dir(depths_scene_dir, camera_id)
+        tgt_depths_dir = root_dir_to_depth_dir(tgt_scene_dir, camera_id)
+        tgt_depths_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_depths_dir.exists():
+            subprocess.run(["cp", "-r", str(src_depths_dir), str(tgt_depths_dir)])
+        else:
+            raise NotImplementedError(f"Depth directory not found: {src_depths_dir}")

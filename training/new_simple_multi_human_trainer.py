@@ -37,7 +37,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.dataset import SceneDataset
+from training.helpers.dataset import SceneDataset, fetch_data_if_available
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -322,8 +322,12 @@ class MultiHumanTrainer:
         super().__init__()
         self.cfg = cfg
         self.tuner_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.preprocess_dir = Path(cfg.preprocessing_dir).expanduser()
-        self.output_dir = Path(cfg.output_dir).expanduser()
+        self.preprocess_dir = Path(cfg.preprocessing_dir)
+        self.output_dir = Path(cfg.output_dir)
+        self.trn_data_dir = Path(cfg.input_data_dir) / "train" / f"{cfg.scene_name}" / f"{self.cfg.exp_name}"
+        self.trn_data_dir.mkdir(parents=True, exist_ok=True)
+        self.test_data_dir = Path(cfg.input_data_dir) / "test" / f"{cfg.scene_name}" / f"{self.cfg.exp_name}"
+        self.test_data_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.train_params = tuple(cfg.train_params)
         self.sample_every = cfg.sample_every
@@ -335,6 +339,7 @@ class MultiHumanTrainer:
 
         # Prepare dataset
         self._init_train_dataset()
+        quit()
 
         # Preare model
         self._load_model()
@@ -364,20 +369,34 @@ class MultiHumanTrainer:
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
-        self.depth_dir = None
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
+
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+
+        # Fetch training dataset from the specified directories 
+        # to the training data dir if not already present
+        fetch_data_if_available(
+            self.trn_data_dir,
+            src_cam_id,
+            Path(self.cfg.cameras_scene_dir),
+            Path(self.cfg.frames_scene_dir),
+            Path(self.cfg.masks_scene_dir),
+            Path(self.cfg.smplx_params_scene_dir),
+            Path(self.cfg.depths_scene_dir) if self.cfg.depths_scene_dir is not None else None,
+        )
+
+        # Create training dataset
         self.trn_datasets = list() 
         trn_ds = SceneDataset(
-            root_gt_dir_path, 
+            self.trn_data_dir, 
             src_cam_id, 
-            self.depth_dir, 
-            self.tuner_device, 
+            depth_dir=None, 
+            device=self.tuner_device, 
             sample_every=self.sample_every,
         )
         self.trn_datasets.append(trn_ds)
         self.trn_dataset = trn_ds
         self.trn_render_hw = self.trn_dataset.trn_render_hw
+        print(f"Training dataset initialised at {self.trn_data_dir} with {len(self.trn_dataset)} images.")
 
     # ---------------- Model  ------------------------------
     def _load_model(self):

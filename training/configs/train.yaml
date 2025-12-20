@@ -1,8 +1,10 @@
 scene_name: ???
 num_persons: ???
 exp_name: ???
+root_gt_dir_path: ???
 preprocessing_dir: /scratch/izar/cizinsky/thesis/preprocessing/${scene_name}
 output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
+input_data_dir: /scratch/izar/cizinsky/thesis/input_data
 epochs: 150
 batch_size: 5
 lr: 1e-4
@@ -18,6 +20,13 @@ train_params:
   - shs
 use_bbox_crop: true
 bbox_pad: 50
+
+cameras_scene_dir: ${root_gt_dir_path}
+frames_scene_dir: ${root_gt_dir_path}
+masks_scene_dir: ${root_gt_dir_path}
+smplx_params_scene_dir: ${root_gt_dir_path}
+depths_scene_dir: null  # ${root_gt_dir_path}  # set to null if no depths are used
+
 
 difix:
   eval_enable: false
@@ -57,7 +66,6 @@ nvs_eval:
   source_camera_id: 4
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2
-  root_gt_dir_path: ???
 
 torch_home: /scratch/izar/cizinsky/.cache
 hf_home: /scratch/izar/cizinsky/.cache
