@@ -858,7 +858,8 @@ class MultiHumanTrainer:
         difix_pipe = DifixPipeline.from_pretrained(
             self.cfg.difix.model_id, 
             trust_remote_code=True, 
-            requires_safety_checker=False
+            requires_safety_checker=False,
+            num_views=2,
         )
         difix_pipe.to(self.tuner_device)
         difix_pipe.set_progress_bar_config(disable=True)
@@ -967,7 +968,12 @@ class MultiHumanTrainer:
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
-            difix_pipe = DifixPipeline.from_pretrained("nvidia/difix", trust_remote_code=True, requires_safety_checker=False)
+            difix_pipe = DifixPipeline.from_pretrained(
+                "nvidia/difix",
+                trust_remote_code=True,
+                requires_safety_checker=False,
+                num_views=1,
+            )
             difix_pipe.to(self.tuner_device)
             difix_pipe.set_progress_bar_config(disable=True)
         else:
