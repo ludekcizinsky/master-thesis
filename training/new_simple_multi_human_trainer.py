@@ -37,7 +37,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.dataset import SceneDataset, fetch_data_if_available
+from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -162,7 +162,8 @@ def lpips(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor) -> t
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
-
+def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "difix_debug_comparisons" / f"{cam_id}"
 
 def save_image(tensor: torch.Tensor, filename: str):
     """
@@ -339,7 +340,6 @@ class MultiHumanTrainer:
 
         # Prepare dataset
         self._init_train_dataset()
-        quit()
 
         # Preare model
         self._load_model()
@@ -353,12 +353,10 @@ class MultiHumanTrainer:
             n_its_difix += 1
             print(" Difix step ", n_its_difix, " done: ", is_difix_done)
 
-        difix_scene_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
-        images_dir_path = difix_scene_dir / "images"
-        difix_cam_ids = os.listdir(images_dir_path)
-        for cam_id in difix_cam_ids:
+
+        for cam_id in self.difix_cam_ids_all:
             scene_ds = SceneDataset(
-                difix_scene_dir,
+                self.trn_data_dir,
                 int(cam_id),
                 depth_dir=None,
                 device=self.tuner_device,
@@ -377,9 +375,9 @@ class MultiHumanTrainer:
         fetch_data_if_available(
             self.trn_data_dir,
             src_cam_id,
-            Path(self.cfg.cameras_scene_dir),
             Path(self.cfg.frames_scene_dir),
             Path(self.cfg.masks_scene_dir),
+            Path(self.cfg.cameras_scene_dir),
             Path(self.cfg.smplx_params_scene_dir),
             Path(self.cfg.depths_scene_dir) if self.cfg.depths_scene_dir is not None else None,
         )
@@ -393,6 +391,7 @@ class MultiHumanTrainer:
             device=self.tuner_device, 
             sample_every=self.sample_every,
         )
+        self.curr_trn_frame_paths = trn_ds.frame_paths
         self.trn_datasets.append(trn_ds)
         self.trn_dataset = trn_ds
         self.trn_render_hw = self.trn_dataset.trn_render_hw
@@ -716,12 +715,13 @@ class MultiHumanTrainer:
 
         self.from_src_left_traversed_cams = deque((self.camera_ids[src_cam_idx-1::-1] + self.camera_ids[:src_cam_idx:-1])[:half_n])
         self.from_src_right_traversed_cams = deque((self.camera_ids[src_cam_idx+1:] + self.camera_ids[:src_cam_idx])[:other_half_n])
+        self.difix_cam_ids_all = list(self.from_src_left_traversed_cams) + list(self.from_src_right_traversed_cams)
         print("Difix NVS camera traversal initialized:")
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
     @torch.no_grad()
-    def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int, save_dir: Path):
+    def _difix_prepare_new_view_ds(self, difix_pipe: DifixPipeline, cam_id: int, prev_cam_id: int):
         """
         Prepare new dataset for the given camera by rendering novel views and refining them using Difix.
 
@@ -729,7 +729,6 @@ class MultiHumanTrainer:
             difix_pipe: DifixPipeline instance for refinement.
             cam_id: Target camera ID for which to create the new dataset.
             prev_cam_id: Previous camera ID to use as reference for Difix.
-            save_dir: Directory to save the new dataset.    
 
         Notes:
         1. render the new camera views (out: render_frames)
@@ -737,52 +736,46 @@ class MultiHumanTrainer:
         3. create new dataset from the refined frames copy other data from gt dataset
         """
 
-        # Load GT dataset for the target camera (will use only smplx params + cameras) to render novel views
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
-        gt_cam_dataset = SceneDataset(root_gt_dir_path, cam_id, device=self.tuner_device, depth_dir=None, sample_every=self.sample_every)
-        loader = DataLoader(
-            gt_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
-        )
-
         # Load dataset for the previous camera (will use only images + masks as reference for Difix)
         is_prev_cam_always_source = self.cfg.difix.is_prev_cam_always_source
         # - if previous cam is always source cam, use that
         if is_prev_cam_always_source:
-            prev_cam_root_dir = root_gt_dir_path
             sample_every = self.sample_every
             prev_cam_id = self.cfg.nvs_eval.source_camera_id
         # - we just started, so previous cam dataset is the original GT dataset for both left/right
         elif self.left_cam_id == self.right_cam_id:
-            prev_cam_root_dir = root_gt_dir_path
             sample_every = self.sample_every
         # - otherwise, previous cam dataset is the refined dataset from last Difix step
         else:
-            prev_cam_root_dir = save_dir
-            sample_every = 1  # use all frames from the refined dataset
-        prev_cam_dataset = SceneDataset(prev_cam_root_dir, prev_cam_id, device=self.tuner_device, depth_dir=None, sample_every=sample_every)
+            sample_every = 1  # use all frames from the refined dataset (they have been already subsampled)
+        # - finally, load the previous cam dataset
+        prev_cam_dataset = SceneDataset(self.trn_data_dir, prev_cam_id, device=self.tuner_device, depth_dir=None, sample_every=sample_every)
 
-        # Copy contents that stay the same from cam dataset to the save_dir
-        # - cameras
-        cameras_path = gt_cam_dataset.camera_params_path
-        save_dir_cam_path = save_dir / "cameras" / f"rgb_cameras.npz"
-        save_dir_cam_path.parent.mkdir(parents=True, exist_ok=True)
-        if not save_dir_cam_path.exists():
-            subprocess.run(["cp", str(cameras_path), str(save_dir_cam_path)])
-        # - smplx params (full folder)
-        smplx_params_dir = gt_cam_dataset.smplx_dir
-        save_dir_smplx_path = save_dir / "smplx"
-        if not save_dir_smplx_path.exists():
-            subprocess.run(["cp", "-r", str(smplx_params_dir), str(save_dir_smplx_path)])
 
-        # - masks (full folder)
-        masks_dir = gt_cam_dataset.masks_dir
-        save_dir_masks_path = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all"
-        save_dir_masks_path.parent.mkdir(parents=True, exist_ok=True)
-        if not save_dir_masks_path.exists():
-            subprocess.run(["cp", "-r", str(masks_dir), str(save_dir_masks_path)])
+        # Load new camera dataset (with dummy images and masks which I will replace with refined later)
+        # - generate initial contents of the new cam dataset
+        # (if dummy dirs are used, images/masks will be overwritten later)
+        refined_frames_save_dir = root_dir_to_image_dir(self.trn_data_dir, cam_id)
+        if os.path.exists(refined_frames_save_dir):
+            return # already done
+        masks_scene_dir = Path(self.cfg.masks_scene_dir) if not self.cfg.use_estimated_masks else Path("/dummy/masks/dir")
+        fetch_data_if_available(
+            self.trn_data_dir,
+            cam_id,
+            Path("/dummy/frames/dir"), 
+            masks_scene_dir,   
+            frame_paths=self.curr_trn_frame_paths,
+        )
+
+        # - finally, load the new cam dataset
+        new_cam_sample_every = 1 # because curr trn frame paths are already subsampled
+        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=new_cam_sample_every)
+        new_cam_loader = DataLoader(
+            new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
 
         # Render in batches novel views from target camera
-        for batch in tqdm(loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
+        for batch in tqdm(new_cam_loader, desc=f"Difix Refinement for cam {cam_id}", leave=False):
 
             # - Update smplx params with neutral pose transform
             frame_indices = batch["frame_idx"] # [B]
@@ -792,11 +785,7 @@ class MultiHumanTrainer:
             batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
             # - Forward pass to render novel views using GT smplx params and cameras
-            frames_save_dir = save_dir / "images" / f"{cam_id}"
-            example_save_path = frames_save_dir / f"{frame_names[0]}.jpg"
-            if example_save_path.exists() and not self.cfg.difix.overwrite_existing:
-                continue  # already processed this batch
-            pred_rgb, pred_alpha, _ = self.forward(batch)
+            pred_rgb, _, _ = self.forward(batch)
 
             # - Refine rendered images using Difix
             # -- Load reference images from previous camera view
@@ -810,24 +799,23 @@ class MultiHumanTrainer:
             # -- Run difix refinement
             is_enabled = self.cfg.difix.trn_enable
             refined_rgb = self.difix_refine(pred_rgb, ref_images, difix_pipe, is_enabled) # [B, H, W, 3]
-
-            # Save results 
-            # - Refined rendered frames
-            frames_save_dir = save_dir / "images" / f"{cam_id}"
-            frames_save_dir.mkdir(parents=True, exist_ok=True)
+            # -- Save refined frames
             for i in range(refined_rgb.shape[0]):
-                save_path = frames_save_dir / f"{frame_names[i]}.jpg"
+                save_path = refined_frames_save_dir / f"{frame_names[i]}.jpg"
                 save_image(refined_rgb[i].permute(2, 0, 1), str(save_path))
 
-#            # - Alpha masks
-            #masks_save_dir = save_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all" 
-            #masks_save_dir.mkdir(parents=True, exist_ok=True)
-            #for i in range(pred_alpha.shape[0]):
-                #save_path = masks_save_dir / f"{frame_names[i]}.png"
-                #save_binary_mask(pred_alpha[i].permute(2, 0, 1), str(save_path))
+            # - Compute masks from refined rgb (no alpha)
+            if self.cfg.use_estimated_masks:
+                refined_u8 = (refined_rgb * 255.0).clamp(0, 255).to(torch.uint8)
+                binary_masks = (refined_u8 > 0).any(dim=-1, keepdim=True).float()  # [B, H, W, 1]
+                masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
+                # -- Save binary masks
+                for i in range(binary_masks.shape[0]):
+                    save_path = masks_save_dir / f"{frame_names[i]}.png"
+                    save_binary_mask(binary_masks[i].permute(2, 0, 1), str(save_path))
 
             # - Debug: save side-by-side comparison of reference, rendered, refined
-            difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{cam_id}"
+            difix_debug_dir = root_dir_to_difix_debug_dir(self.trn_data_dir, cam_id)
             difix_debug_dir.mkdir(parents=True, exist_ok=True)
             joined = torch.cat([ref_images, pred_rgb, refined_rgb], dim=2)  # side-by-side along width
             for i in range(joined.shape[0]):
@@ -835,7 +823,6 @@ class MultiHumanTrainer:
                 save_image(joined[i].permute(2, 0, 1), str(save_path))
 
         # TODO: Compute depth maps for the refined dataset and save them
-
 
     @torch.no_grad()
     def difix_step(self) -> bool:
@@ -869,10 +856,6 @@ class MultiHumanTrainer:
         if not left_changed and not right_changed:
             return True # returns true to signal that difix is done
 
-        # Prepare path where to save results
-        save_dir: Path = self.output_dir / "difix_refinement" / self.cfg.exp_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-
         # Initialize Difix pipeline
         difix_pipe = DifixPipeline.from_pretrained(
             self.cfg.difix.model_id, 
@@ -889,7 +872,6 @@ class MultiHumanTrainer:
                 difix_pipe,
                 cam_id,
                 prev_cam_id,
-                save_dir,
             )
 
         # Update the left and right previous cam ids

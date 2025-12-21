@@ -254,8 +254,8 @@ class SceneDataset(Dataset):
         return to_return_values
 
 
-def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, cam_scene_dir: Path, frames_scene_dir: Path, 
-                                masks_scene_dir: Path, smplx_params_scene_dir: Path, depths_scene_dir: Optional[Path]):
+def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_dir: Path, masks_scene_dir: Path, cam_scene_dir: Optional[Path] = None,  
+                                smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, resolution_hw: Optional[Tuple[int, int]] = (1280, 940), frame_paths: Optional[list] = None):
     """
     Copy data from the specified scene directories to the tgt scene directory. If the given
     source directory is None, skip copying that data type. If the source directory does not exist,
@@ -264,39 +264,55 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, cam_scene_dir: 
     
     tgt_scene_dir.mkdir(parents=True, exist_ok=True)
 
-    # Camera parameters
-    src_cameras_path = root_dir_to_cameras_path(cam_scene_dir)
-    tgt_cameras_path = root_dir_to_cameras_path(tgt_scene_dir)
-    tgt_cameras_path.parent.mkdir(parents=True, exist_ok=True)
-    if src_cameras_path.exists():
-        subprocess.run(["cp", str(src_cameras_path), str(tgt_cameras_path)])
-
     # Frames
     src_frames_dir = root_dir_to_image_dir(frames_scene_dir, camera_id)
     tgt_frames_dir = root_dir_to_image_dir(tgt_scene_dir, camera_id)
     tgt_frames_dir.parent.mkdir(parents=True, exist_ok=True)
     if src_frames_dir.exists():
-        subprocess.run(["cp", "-r", str(src_frames_dir), str(tgt_frames_dir)])
+        subprocess.run(["cp", "-r", str(src_frames_dir), str(tgt_frames_dir.parent)])
     else:
-        raise NotImplementedError(f"Frame directory not found: {src_frames_dir}")
+        assert frame_paths is not None, "Source frames directory does not exist; frame_paths must be provided to create dummy frames."
+        frame_ext = ".jpg"
+        frame_names = [Path(fp).stem for fp in frame_paths]
+        for frame_name in frame_names:
+            dummy_frame = Image.new("RGB", (resolution_hw[1], resolution_hw[0]), color=(0, 0, 0))
+            dummy_frame_path = tgt_frames_dir / f"{frame_name}{frame_ext}"
+            dummy_frame_path.parent.mkdir(parents=True, exist_ok=True)
+            dummy_frame.save(dummy_frame_path)
 
     # Masks
     src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
     tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
     tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
     if src_masks_dir.exists():
-        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir)])
+        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir.parent)])
     else:
-        raise NotImplementedError(f"Mask directory not found: {src_masks_dir}")
+        assert frame_paths is not None, "Source masks directory does not exist; frame_paths must be provided to create dummy masks."
+        mask_ext = ".png"
+        frame_names = [Path(fp).stem for fp in frame_paths]
+        for frame_name in frame_names:
+            dummy_mask = Image.new("L", (resolution_hw[1], resolution_hw[0]), color=0)  # Black mask
+            dummy_mask_path = tgt_masks_dir / f"{frame_name}{mask_ext}"
+            dummy_mask_path.parent.mkdir(parents=True, exist_ok=True)
+            dummy_mask.save(dummy_mask_path)
+
+    # Camera parameters
+    if cam_scene_dir is not None:
+        src_cameras_path = root_dir_to_cameras_path(cam_scene_dir)
+        tgt_cameras_path = root_dir_to_cameras_path(tgt_scene_dir)
+        tgt_cameras_path.parent.mkdir(parents=True, exist_ok=True)
+        if src_cameras_path.exists():
+            subprocess.run(["cp", str(src_cameras_path), str(tgt_cameras_path)])
 
     # SMPLX parameters
-    src_smplx_dir = root_dir_to_smplx_dir(smplx_params_scene_dir)
-    tgt_smplx_dir = root_dir_to_smplx_dir(tgt_scene_dir)
-    tgt_smplx_dir.parent.mkdir(parents=True, exist_ok=True)
-    if src_smplx_dir.exists():
-        subprocess.run(["cp", "-r", str(src_smplx_dir), str(tgt_smplx_dir)])
-    else:
-        raise ValueError(f"SMPLX parameters directory not found: {src_smplx_dir}")
+    if smplx_params_scene_dir is not None:
+        src_smplx_dir = root_dir_to_smplx_dir(smplx_params_scene_dir)
+        tgt_smplx_dir = root_dir_to_smplx_dir(tgt_scene_dir)
+        tgt_smplx_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_smplx_dir.exists():
+            subprocess.run(["cp", "-r", str(src_smplx_dir), str(tgt_smplx_dir.parent)])
+        else:
+            raise ValueError(f"SMPLX parameters directory not found: {src_smplx_dir}")
 
     # Depths
     if depths_scene_dir is not None:

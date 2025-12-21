@@ -24,6 +24,7 @@ bbox_pad: 50
 cameras_scene_dir: ${root_gt_dir_path}
 frames_scene_dir: ${root_gt_dir_path}
 masks_scene_dir: ${root_gt_dir_path}
+use_estimated_masks: false
 smplx_params_scene_dir: ${root_gt_dir_path}
 depths_scene_dir: null  # ${root_gt_dir_path}  # set to null if no depths are used
 
