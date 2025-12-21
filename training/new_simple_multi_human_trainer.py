@@ -338,8 +338,9 @@ class MultiHumanTrainer:
         # Initialize wandb 
         self._init_wandb()
 
-        # Prepare dataset
+        # Prepare datasets for training and testing
         self._init_train_dataset()
+        self._init_test_scene_dir()
 
         # Preare model
         self._load_model()
@@ -396,6 +397,31 @@ class MultiHumanTrainer:
         self.trn_dataset = trn_ds
         self.trn_render_hw = self.trn_dataset.trn_render_hw
         print(f"Training dataset initialised at {self.trn_data_dir} with {len(self.trn_dataset)} images.")
+
+    def _init_test_scene_dir(self):
+
+        # Parse settings
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
+        all_cam_ids = [src_cam_id] + tgt_cam_ids
+        frames_dir = Path(self.cfg.test_frames_scene_dir)
+        masks_dir = Path(self.cfg.test_masks_scene_dir)
+        cameras_dir = Path(self.cfg.test_cameras_scene_dir)
+        smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir)
+        depths_dir = Path(self.cfg.test_depths_scene_dir) if self.cfg.test_depths_scene_dir is not None else None
+
+
+        # Fetch testing dataset from the specified directories 
+        for cam_id in all_cam_ids:
+            fetch_data_if_available(
+                self.test_data_dir,
+                cam_id,
+                frames_dir,
+                masks_dir,
+                cameras_dir,
+                smplx_params_dir,
+                depths_dir,
+            )
 
     # ---------------- Model  ------------------------------
     def _load_model(self):
@@ -959,13 +985,12 @@ class MultiHumanTrainer:
 
         # Parse the evaluation setup
         target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
-        root_gt_dir_path: Path = Path(self.cfg.nvs_eval.root_gt_dir_path)
         root_save_dir: Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
         root_save_dir.mkdir(parents=True, exist_ok=True)
 
         # Init source camera dataset for Difix reference images
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
-        src_cam_dataset = SceneDataset(root_gt_dir_path, src_cam_id, device=self.tuner_device, depth_dir=None)
+        src_cam_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, depth_dir=None)
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
@@ -985,7 +1010,7 @@ class MultiHumanTrainer:
 
         for tgt_cam_id in target_camera_ids:
             # Prepare dataset and dataloader for target camera
-            val_dataset = SceneDataset(root_gt_dir_path, tgt_cam_id, device=self.tuner_device, depth_dir=None)
+            val_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, device=self.tuner_device, depth_dir=None)
             loader = DataLoader(
                 val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
