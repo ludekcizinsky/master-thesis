@@ -832,8 +832,9 @@ class MultiHumanTrainer:
 
             # - Compute masks from refined rgb (no alpha)
             if self.cfg.use_estimated_masks:
-                refined_u8 = (refined_rgb * 255.0).clamp(0, 255).to(torch.uint8)
-                binary_masks = (refined_u8 > 0).any(dim=-1, keepdim=True).float()  # [B, H, W, 1]
+                # refined_rgb is assumed in [0, 1]
+                eps = 10.0 / 255.0   
+                binary_masks = (refined_rgb > eps).any(dim=-1, keepdim=True).float()
                 masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
                 # -- Save binary masks
                 for i in range(binary_masks.shape[0]):

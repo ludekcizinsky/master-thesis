@@ -11,7 +11,7 @@ cd /home/cizinsky/master-thesis
 
 seq_name="hi4d_pair17_dance"
 num_persons=2
-exp_name="refactor_dev"
+exp_name="masks_dev"
 source_cam_id=28
 target_cam_ids="[4,28,52]"
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
