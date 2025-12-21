@@ -15,27 +15,21 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 conda activate thesis
 module load gcc ffmpeg
 
-# Shared across scenes
-exp_name="difix_v8_baseline"
-num_persons=2
+# Shared across scenes (can be overridden via sbatch --export)
+exp_name="${EXP_NAME:-difix_v8_baseline}"
+num_persons="${NUM_PERSONS:-2}"
+seq_name="${SEQ_NAME:-}"
+source_cam_id="${SOURCE_CAM_ID:-}"
+root_gt_dir_path="${ROOT_GT_DIR_PATH:-}"
 
-# --- LHM finetune
-seq_name="hi4d_pair15_fight"
-source_cam_id=4
-root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id 
+if [[ -z "$seq_name" || -z "$source_cam_id" || -z "$root_gt_dir_path" ]]; then
+  echo "Missing required vars. Provide SEQ_NAME, SOURCE_CAM_ID, ROOT_GT_DIR_PATH via sbatch --export."
+  exit 1
+fi
 
-#seq_name="hi4d_pair16_jump"
-#source_cam_id=4
-#root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-#python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id
-
-#seq_name="hi4d_pair17_dance"
-#source_cam_id=28
-#root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
-#python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id 
-
-#seq_name="hi4d_pair19_piggyback"
-#source_cam_id=4
-#root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
-#python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons nvs_eval.root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id
+python training/new_simple_multi_human_trainer.py \
+  scene_name="$seq_name" \
+  exp_name="$exp_name" \
+  num_persons="$num_persons" \
+  root_gt_dir_path="$root_gt_dir_path" \
+  nvs_eval.source_camera_id="$source_cam_id"
