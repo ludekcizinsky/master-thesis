@@ -27,7 +27,7 @@ if [[ -z "$seq_name" || -z "$source_cam_id" || -z "$root_gt_dir_path" ]]; then
   exit 1
 fi
 
-python training/new_simple_multi_human_trainer.py \
+python training/simple_multi_human_trainer.py \
   scene_name="$seq_name" \
   exp_name="$exp_name" \
   num_persons="$num_persons" \
