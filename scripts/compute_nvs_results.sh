@@ -5,8 +5,8 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 module load gcc ffmpeg
 conda activate thesis
 
-exp_name="difix_v8_baseline"
-epoch_str="0025"
+exp_name="refactor_difix_v2"
+epoch_str="0150"
 
 scene_names=(
   "hi4d_pair15_fight"
