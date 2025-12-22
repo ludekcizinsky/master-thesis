@@ -23,7 +23,7 @@ bbox_pad: 50
 
 # train
 cameras_scene_dir: ${root_gt_dir_path}
-frames_scene_dir: ${root_gt_dir_path}
+frames_scene_dir: ${preprocessing_dir}
 masks_scene_dir: ${preprocessing_dir}
 use_estimated_masks: true
 smplx_params_scene_dir: ${preprocessing_dir}

@@ -795,14 +795,18 @@ class MultiHumanTrainer:
         if is_prev_cam_always_source:
             sample_every = self.sample_every
             prev_cam_id = self.cfg.nvs_eval.source_camera_id
+            skip_frames = load_skip_frames(self.trn_data_dir)
         # - we just started, so previous cam dataset is the original GT dataset for both left/right
         elif self.left_cam_id == self.right_cam_id:
             sample_every = self.sample_every
+            skip_frames = load_skip_frames(self.trn_data_dir)
         # - otherwise, previous cam dataset is the refined dataset from last Difix step
         else:
             sample_every = 1  # use all frames from the refined dataset (they have been already subsampled)
+            skip_frames = []  # no skip frames for refined datasetk
         # - finally, load the previous cam dataset
-        prev_cam_dataset = SceneDataset(self.trn_data_dir, prev_cam_id, device=self.tuner_device, depth_dir=None, sample_every=sample_every)
+        prev_cam_dataset = SceneDataset(self.trn_data_dir, prev_cam_id, device=self.tuner_device, 
+                                            depth_dir=None, sample_every=sample_every, skip_frames=skip_frames)
 
 
         # Load new camera dataset (with dummy images and masks which I will replace with refined later)
