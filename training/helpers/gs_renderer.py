@@ -224,8 +224,6 @@ class GS3DRenderer(nn.Module):
         pct_pos = (cam_pts[:, 2] > 0).float().mean().item() * 100.0
         x_min, x_max = cam_pts[:, 0].min().item(), cam_pts[:, 0].max().item()
         y_min, y_max = cam_pts[:, 1].min().item(), cam_pts[:, 1].max().item()
-        print(f"[debug] positive depth: {pct_pos:.2f}%")
-        print(f"[debug] x range: [{x_min:.4f}, {x_max:.4f}], y range: [{y_min:.4f}, {y_max:.4f}]")
 
         # Perform rasterization
         renders, alphas, _ = rasterization(

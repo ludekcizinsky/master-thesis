@@ -39,7 +39,7 @@ def select_frame_params(params: dict, frame_idx: int) -> dict:
     out = {}
     for key, value in params.items():
         if key == "expr" and value.dim() == 3:
-            out[key] = value[:, frame_idx]
+            out[key] = value[:, 0]
         else:
             out[key] = value
     return out

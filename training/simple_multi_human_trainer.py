@@ -388,7 +388,6 @@ class MultiHumanTrainer:
             )
             self.trn_datasets.append(scene_ds)
         self.trn_dataset = ConcatDataset(self.trn_datasets)
-        quit()
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):

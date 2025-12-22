@@ -38,7 +38,7 @@ test_depths_scene_dir: null  # ${root_gt_dir_path}  # set to null if no depths a
 
 difix:
   eval_enable: false
-  trn_enable: false
+  trn_enable: true
   is_prev_cam_always_source: false
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
@@ -54,7 +54,7 @@ wandb:
   project: "hybrid-lhm"
   entity: "ludekcizinsky"
   tags:
-    - using_est_mask
+    - using_est_smplx
     - using_v2_bas_difix
     - eval
 
