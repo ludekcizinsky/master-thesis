@@ -41,9 +41,9 @@ class SceneDataset(Dataset):
     def __init__(self, 
                 scene_root_dir: Path,
                 src_cam_id: int,
-                depth_dir: Optional[Path],
-                device: torch.device, 
-                sample_every: int = 1,
+                depth_dir: Optional[Path] = None,
+                device: Optional[torch.device] = "cuda", 
+                sample_every: Optional[int] = 1,
                 skip_frames: Optional[list] = []):
         
         # Initialize attributes

@@ -720,7 +720,7 @@ class MultiHumanTrainer:
                     )
 
                 # space for debug stuff is here
-                if batch_idx in [5] and (epoch + 1) % 2 == 0:
+                if batch_idx in [0] and (epoch + 1) % 2 == 0:
                     # - create a joined image from pred_masked and gt_masked for debugging
                     debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "rgb"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
