@@ -33,6 +33,8 @@ def root_dir_to_cameras_path(root_dir: Path) -> Path:
 def root_dir_to_depth_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "depths" / f"{cam_id}"
 
+def root_dir_to_skip_frames_path(root_dir: Path) -> Path:
+    return root_dir / "skip_frames.csv"
 
 class SceneDataset(Dataset):
     
@@ -41,7 +43,8 @@ class SceneDataset(Dataset):
                 src_cam_id: int,
                 depth_dir: Optional[Path],
                 device: torch.device, 
-                sample_every: int = 1):
+                sample_every: int = 1,
+                skip_frames: Optional[list] = []):
         
         # Initialize attributes
         self.root_dir = scene_root_dir
@@ -53,7 +56,7 @@ class SceneDataset(Dataset):
         # Load frame paths (with optional subsampling)
         # Important: we use frame path names to match masks, SMPLX, depth, etc.
         # -> therefore also if we apply subsampling here, other modalities will be subsampled accordingly
-        self._load_frame_paths(self.frames_dir, sample_every)
+        self._load_frame_paths(self.frames_dir, sample_every, skip_frames)
 
         # Load mask paths
         self._load_mask_paths(self.masks_dir)
@@ -76,13 +79,31 @@ class SceneDataset(Dataset):
         self._load_smplx_paths()
 
     # --------- Path loaders
-    def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1):
+    def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1, skip_frames: Optional[list] = []):
+
+        # Collect all frame paths
         frame_candidates = []
         for ext in ("*.png", "*.jpg", "*.jpeg"):
             frame_candidates.extend(frames_dir.glob(ext))
         self.frame_paths = sorted(set(frame_candidates))
+
+        # Apply skip frames
+        if len(skip_frames) > 0:
+            before_filter_count = len(self.frame_paths)
+            filtered_frame_paths = []
+            for p in self.frame_paths:
+                frame_idx = int(p.stem)
+                if frame_idx not in skip_frames:
+                    filtered_frame_paths.append(p)
+            self.frame_paths = filtered_frame_paths
+            after_filter_count = len(self.frame_paths)
+            print(f"-- Skipped {before_filter_count - after_filter_count} frames based on skip_frames list.")
+
+        # Apply subsampling
         if sample_every > 1:
             self.frame_paths = self.frame_paths[::sample_every]
+
+        # Check that we have frames
         if not self.frame_paths:
             raise RuntimeError(f"No frames found in {frames_dir}")
 
@@ -323,3 +344,9 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_depths_dir), str(tgt_depths_dir)])
         else:
             raise NotImplementedError(f"Depth directory not found: {src_depths_dir}")
+
+    # Skip frames
+    src_skip_frames_path = root_dir_to_skip_frames_path(frames_scene_dir)
+    tgt_skip_frames_path = root_dir_to_skip_frames_path(tgt_scene_dir)
+    if src_skip_frames_path.exists():
+        subprocess.run(["cp", str(src_skip_frames_path), str(tgt_skip_frames_path)])

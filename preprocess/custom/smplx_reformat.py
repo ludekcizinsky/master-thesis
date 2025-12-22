@@ -123,6 +123,11 @@ def main() -> None:
                 if key == "root_pose":
                     # Convert root_pose from camera to world coords
                     merged_pose_data[key] = cam_to_world_root_pose(merged_pose_data[key], R_c2w)
+
+            # Human3r specific fix: add expression key if missing
+            if "expression" not in merged_pose_data:
+                num_persons = merged_pose_data["trans"].shape[0]
+                merged_pose_data["expression"] = np.zeros((num_persons, 100), dtype=np.float32)
         # If skipping, create empty arrays for each key -> do not save any data for this frame
         else:
             tgt_folder_skip_frame_numbers.append(current_frame_number)

@@ -37,7 +37,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir
+from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir, root_dir_to_skip_frames_path
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
@@ -315,6 +315,29 @@ def bbox_crop(bboxes: List[Tuple[int, int, int, int]], to_crop: torch.Tensor) ->
     return torch.stack(cropped, dim=0)
 
 
+def load_skip_frames(scene_dir: Path) -> List[int]:
+    """
+    Load skip frames from skip_frames.csv in the scene directory.
+
+    Note: the frame indicies are actual frame indexes and the frames dir may
+    not always start with frame 0. Therefore, the returnd indices correspond to
+    the actual frame indices to skip. e.g. if we have frames 10, 11, 12, 13 and skip_frames.csv contains "11,13",
+    we will skip frames 11 and 13.
+
+    Args:
+        scene_dir: Path to the scene directory.
+    Returns:
+        List of frame indices to skip.
+    """
+
+    skip_frames_file = root_dir_to_skip_frames_path(scene_dir)
+    if not skip_frames_file.exists():
+        return []
+    with open(skip_frames_file, "r") as f:
+        line = f.readline().strip()
+        skip_frames = [int(idx_str) for idx_str in line.split(",") if idx_str.isdigit()]
+    return skip_frames
+
 # ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
@@ -365,6 +388,7 @@ class MultiHumanTrainer:
             )
             self.trn_datasets.append(scene_ds)
         self.trn_dataset = ConcatDataset(self.trn_datasets)
+        quit()
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -383,6 +407,9 @@ class MultiHumanTrainer:
             Path(self.cfg.depths_scene_dir) if self.cfg.depths_scene_dir is not None else None,
         )
 
+        # Load skip frames if needed
+        skip_frames = load_skip_frames(self.trn_data_dir)
+
         # Create training dataset
         self.trn_datasets = list() 
         trn_ds = SceneDataset(
@@ -391,6 +418,7 @@ class MultiHumanTrainer:
             depth_dir=None, 
             device=self.tuner_device, 
             sample_every=self.sample_every,
+            skip_frames=skip_frames,
         )
         self.curr_trn_frame_paths = trn_ds.frame_paths
         self.trn_datasets.append(trn_ds)
@@ -989,9 +1017,13 @@ class MultiHumanTrainer:
         root_save_dir: Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
         root_save_dir.mkdir(parents=True, exist_ok=True)
 
+        # Load skip frames
+        skip_frames = load_skip_frames(self.test_data_dir)
+
         # Init source camera dataset for Difix reference images
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
-        src_cam_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, depth_dir=None)
+        src_cam_dataset = SceneDataset(self.test_data_dir, src_cam_id, 
+                                       device=self.tuner_device, depth_dir=None, skip_frames=skip_frames)
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
@@ -1011,7 +1043,8 @@ class MultiHumanTrainer:
 
         for tgt_cam_id in target_camera_ids:
             # Prepare dataset and dataloader for target camera
-            val_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, device=self.tuner_device, depth_dir=None)
+            val_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
+                                       device=self.tuner_device, depth_dir=None, skip_frames=skip_frames)
             loader = DataLoader(
                 val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
