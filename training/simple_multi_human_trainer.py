@@ -1189,7 +1189,7 @@ class MultiHumanTrainer:
                 # Compute metrics
                 segm_metrics = segmentation_mask_metrics(
                     gt_masks=gt_masks.squeeze(-1),
-                    est_masks=est_masks.squeeze(-1),
+                    pred_masks=est_masks.squeeze(-1),
                 )
                 segm_iou, segm_recall, segm_f1 = segm_metrics["segm_iou"], segm_metrics["segm_recall"], segm_metrics["segm_f1"]
                 for fname, iou, recall, f1 in zip(fnames, segm_iou, segm_recall, segm_f1):
@@ -1199,14 +1199,16 @@ class MultiHumanTrainer:
                     )
 
         # Save metrics to CSV
+        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir.mkdir(parents=True, exist_ok=True)
         # - save per-frame metrics
         df = pd.DataFrame(metrics_per_frame, columns=["camera_id", "frame_id", "iou", "recall", "f1"])
-        csv_path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_metrics_per_frame.csv"
+        csv_path = save_dir / "segmentation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics per camera
         df_avg_cam = df.groupby("camera_id").agg({"iou": "mean", "recall": "mean", "f1": "mean"}).reset_index()
-        csv_path_avg_cam = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_metrics_avg_per_camera.csv"
+        csv_path_avg_cam = save_dir / "segmentation_metrics_avg_per_camera.csv"
         df_avg_cam.to_csv(csv_path_avg_cam, index=False)
 
         # - log to wandb the per cam metrics
@@ -1223,7 +1225,7 @@ class MultiHumanTrainer:
             "recall": df_excluding_source["recall"].mean(),
             "f1": df_excluding_source["f1"].mean(),
         }
-        overall_avg_path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_overall_results.txt"
+        overall_avg_path = save_dir / "segmentation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
