@@ -2,10 +2,9 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 from tqdm import tqdm
 import pandas as pd
-from collections import defaultdict
 from omegaconf import DictConfig
 
 # Silence noisy deprecation notices from upstream libs to keep logs readable.
@@ -15,7 +14,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import hydra
 import numpy as np
 from PIL import Image
-import kornia
 
 import torch
 import torch.multiprocessing as mp
@@ -24,7 +22,6 @@ from torch.utils.data import DataLoader, ConcatDataset
 import torch.nn.functional as F
 
 from fused_ssim import fused_ssim
-import pyiqa
 import wandb
 
 from collections import deque
@@ -39,123 +36,9 @@ sys.path.insert(
 from training.helpers.gs_renderer import GS3DRenderer
 from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir, root_dir_to_skip_frames_path
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
+from training.helpers.eval_metrics import ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
-
-# ---------------------------------------------------------------------------
-# Evaluation metrics
-# ---------------------------------------------------------------------------
-
-# Cached LPIPS metric instance; built lazily on first use.
-_LPIPS_METRIC: Optional[torch.nn.Module] = None
-
-
-def _get_lpips_net(device: torch.device) -> torch.nn.Module:
-    global _LPIPS_METRIC
-    if _LPIPS_METRIC is None:
-        # Spatial LPIPS gives a per-pixel distance map (pyiqa handles input normalisation to [-1,1])
-        _LPIPS_METRIC = pyiqa.create_metric(
-            "lpips", device=device, net="vgg", spatial=True, as_loss=False
-        ).eval()
-    return _LPIPS_METRIC.to(device)
-
-
-def _ensure_nchw(t: torch.Tensor) -> torch.Tensor:
-    """Convert tensors from NHWC (renderer output) to NCHW for library calls."""
-    return t.permute(0, 3, 1, 2).contiguous()
-
-
-def _mask_sums(mask: torch.Tensor) -> torch.Tensor:
-    """Sum mask activations per sample (expects shape [B,1,H,W])."""
-    return mask.sum(dim=(2, 3))
-
-
-def ssim(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor) -> torch.Tensor:
-    """Masked SSIM per sample.
-    
-    Args:
-        images: [B,H,W,C] ground truth images in [0,1] 
-        masks: [B,H,W] binary masks in [0,1]
-        renders: [B,H,W,C] rendered images in [0,1]
-    Returns: 
-        ssim_vals: [B] masked SSIM values 
-    """
-    target = _ensure_nchw(images.float())
-    preds = _ensure_nchw(renders.float())
-    mask = masks.unsqueeze(1).float()
-
-    # Kornia returns per-channel SSIM; average across channels before masking
-    ssim_map = kornia.metrics.ssim(preds, target, window_size=11, max_val=1.0)
-    ssim_map = ssim_map.mean(1, keepdim=True)
-
-    # Reduce over the masked region for each batch element
-    numerator = (ssim_map * mask).sum(dim=(2, 3))
-    mask_sum = _mask_sums(mask)
-    safe_mask_sum = mask_sum.clamp_min(1e-6)
-    result = numerator / safe_mask_sum
-    result = torch.where(mask_sum < 1e-5, torch.zeros_like(result), result)
-    return result.squeeze(1)
-
-
-def psnr(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor, max_val: float = 1.0) -> torch.Tensor:
-    """Masked PSNR per sample.
-
-    Args:
-        images: [B,H,W,C] ground truth images in [0,1] 
-        masks: [B,H,W] binary masks in [0,1]
-        renders: [B,H,W,C] rendered images in [0,1]
-
-    Returns:
-        psnr_vals: [B] masked PSNR values 
-    """
-    target = images.float()
-    preds = renders.float()
-    mask = masks.unsqueeze(-1).float()
-
-    diff2 = (preds - target) ** 2
-    masked_diff2 = diff2 * mask
-    # Compute masked MSE then convert to PSNR
-    numerator = masked_diff2.sum(dim=(1, 2, 3))
-    denom = mask.sum(dim=(1, 2, 3))
-    safe_denom = denom.clamp_min(1e-6)
-    mse = numerator / safe_denom
-    mse = mse.clamp_min(1e-12)
-    psnr_vals = 10.0 * torch.log10((max_val ** 2) / mse)
-    psnr_vals = torch.where(denom < 1e-5, torch.zeros_like(psnr_vals), psnr_vals)
-    return psnr_vals
-
-
-def lpips(images: torch.Tensor, masks: torch.Tensor, renders: torch.Tensor) -> torch.Tensor:
-    """Masked spatial LPIPS per sample using pyiqa.
-
-
-    Args:
-        images: [B,H,W,C] ground truth images in [0,1] 
-        masks: [B,H,W] binary masks in [0,1]
-        renders: [B,H,W,C] rendered images in [0,1]
-    Returns:
-        lpips_vals: [B] masked LPIPS values 
-    """
-    target = _ensure_nchw(images.float()).clamp(0.0, 1.0)
-    preds = _ensure_nchw(renders.float()).clamp(0.0, 1.0)
-    mask = masks.unsqueeze(1).float()
-
-    net = _get_lpips_net(preds.device)
-    with torch.no_grad():
-        dmap = net(preds, target)
-
-    # Match mask resolution to the LPIPS map and average within the mask
-    if dmap.shape[-2:] != mask.shape[-2:]:
-        mask_resized = F.interpolate(mask, size=dmap.shape[-2:], mode="nearest")
-    else:
-        mask_resized = mask
-
-    numerator = (dmap * mask_resized).sum(dim=(1, 2, 3))
-    denom = mask_resized.sum(dim=(1, 2, 3))
-    safe_denom = denom.clamp_min(1e-6)
-    lpips_vals = numerator / safe_denom
-    lpips_vals = torch.where(denom < 1e-5, torch.zeros_like(lpips_vals), lpips_vals)
-    return lpips_vals
 
 
 
@@ -1013,7 +896,7 @@ class MultiHumanTrainer:
 
     # ---------------- Evaluation -------------------
     @torch.no_grad()
-    def eval_loop(self, epoch):
+    def eval_loop_nvs(self, epoch):
 
         # Parse the evaluation setup
         target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
@@ -1245,6 +1128,15 @@ class MultiHumanTrainer:
             del difix_pipe
             torch.cuda.empty_cache()
 
+    @torch.no_grad()
+    def eval_loop_segmentation(self, epoch):
+        pass
+
+    @torch.no_grad()
+    def eval_loop(self, epoch):
+        self.eval_loop_nvs(epoch)
+        self.eval_loop_segmentation(epoch)
+
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
@@ -1255,9 +1147,4 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    # DataLoader workers need the spawn context to safely use CUDA tensors.
-    try:
-        mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
     main()
