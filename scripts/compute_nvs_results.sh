@@ -5,7 +5,7 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 module load gcc ffmpeg
 conda activate thesis
 
-exp_name="est_mask_difix_v2"
+exp_name="est_smplx_difix_v2"
 epoch_str="0150"
 
 scene_names=(
