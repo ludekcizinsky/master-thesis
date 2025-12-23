@@ -253,6 +253,7 @@ class SceneDataset(Dataset):
         smplx_params = self._load_smplx(self.smplx_paths[idx])
         K = self.K
         c2w = self.c2w
+        cam_id = self.src_cam_id
 
         # Prepare return values
         # - Mandatory
@@ -265,6 +266,7 @@ class SceneDataset(Dataset):
             "K": K,
             "c2w": c2w,
             "smplx_params": smplx_params,
+            "cam_id": cam_id,
         }
 
         # - (Optional) load depth map

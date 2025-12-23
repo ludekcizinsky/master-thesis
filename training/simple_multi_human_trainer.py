@@ -532,6 +532,11 @@ class MultiHumanTrainer:
                 batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
+                # create a mask for samples in the batch that come from src camera
+                src_cam_id = self.cfg.nvs_eval.source_camera_id
+                cam_id_tensor = batch["cam_id"]  # [B]
+                is_src_cam = (cam_id_tensor == src_cam_id)  # [B]
+
                 # Reset gradients
                 optimizer.zero_grad(set_to_none=True)
 
@@ -564,7 +569,13 @@ class MultiHumanTrainer:
 
                 # Compute loss
                 rgb_loss = self.cfg.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
-                sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask, loss_masks)
+                # - only compute silhouetter loss on source view images
+                if is_src_cam.any():
+                    loss_pred_mask_src = loss_pred_mask[is_src_cam]
+                    loss_masks_src = loss_masks[is_src_cam]
+                    sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
+                else:
+                    sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask, loss_masks)
                 # depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
@@ -1129,9 +1140,113 @@ class MultiHumanTrainer:
             torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def eval_loop_segmentation(self, epoch):
-        pass
+    def eval_loop_segmentation(self, epoch): 
 
+        tgt_cam_ids = self.cfg.nvs_eval.target_camera_ids
+        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        metrics_per_frame = []
+        for tgt_cam_id in tgt_cam_ids:
+
+            # Determine sampling and skip frames based on whether target cam is training cam 
+            if tgt_cam_id == src_cam_id:
+                sample_every = self.sample_every
+                skip_frames = load_skip_frames(self.trn_data_dir)
+            else:
+                sample_every = 1
+                skip_frames = []  # no skip frames for test dataset
+
+            # Prepare gt dataset for given camera
+            est_dataset = SceneDataset(self.trn_data_dir, tgt_cam_id, 
+                                       device=self.tuner_device,sample_every=sample_every, skip_frames=skip_frames)
+
+            # Prepare gt dataset for given camera
+            gt_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
+                                       device=self.tuner_device, sample_every=sample_every, skip_frames=skip_frames)
+
+
+            # Prepare dataloader
+            loader = DataLoader(
+                est_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            )
+
+
+            # Evaluate in batches
+            for batch in tqdm(loader, desc=f"Segmentation Eval cam {tgt_cam_id}", leave=False):
+
+                # Parse estimated masks
+                est_masks = batch["mask"]               # [B, H, W, 1]
+                est_frame_indices = batch["frame_idx"]      # [B]
+                fnames = batch["frame_name"]      # [B]
+
+                # Parse gt masks
+                gt_masks = []
+                for i in range(est_masks.shape[0]):
+                    sample_dict = gt_dataset[est_frame_indices[i].item()]
+                    gt_mask = sample_dict["mask"]  # [H, W, 1], 0-1
+                    gt_masks.append(gt_mask.to(self.tuner_device))
+                gt_masks = torch.stack(gt_masks, dim=0)  # [B, H, W, 1]
+
+                # Compute metrics
+                segm_metrics = segmentation_mask_metrics(
+                    gt_masks=gt_masks.squeeze(-1),
+                    est_masks=est_masks.squeeze(-1),
+                )
+                segm_iou, segm_recall, segm_f1 = segm_metrics["segm_iou"], segm_metrics["segm_recall"], segm_metrics["segm_f1"]
+                for fname, iou, recall, f1 in zip(fnames, segm_iou, segm_recall, segm_f1):
+                    fid = int(fname)
+                    metrics_per_frame.append(
+                        (tgt_cam_id, fid, iou.item(), recall.item(), f1.item())
+                    )
+
+        # Save metrics to CSV
+        # - save per-frame metrics
+        df = pd.DataFrame(metrics_per_frame, columns=["camera_id", "frame_id", "iou", "recall", "f1"])
+        csv_path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_metrics_per_frame.csv"
+        df.to_csv(csv_path, index=False)
+
+        # - save average metrics per camera
+        df_avg_cam = df.groupby("camera_id").agg({"iou": "mean", "recall": "mean", "f1": "mean"}).reset_index()
+        csv_path_avg_cam = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_metrics_avg_per_camera.csv"
+        df_avg_cam.to_csv(csv_path_avg_cam, index=False)
+
+        # - log to wandb the per cam metrics
+        if self.cfg.wandb.enable:
+            for _, row in df_avg_cam.iterrows():
+                to_log = {f"eval_segm/cam_{int(row['camera_id'])}/{metric_name}": row[metric_name] for metric_name in ["iou", "recall", "f1"]}
+                to_log["epoch"] = epoch
+                wandb.log(to_log)
+
+        # - save average across all cameras except from source camera
+        df_excluding_source = df[df["camera_id"] != self.cfg.nvs_eval.source_camera_id]
+        overall_avg = {
+            "iou": df_excluding_source["iou"].mean(),
+            "recall": df_excluding_source["recall"].mean(),
+            "f1": df_excluding_source["f1"].mean(),
+        }
+        overall_avg_path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}" / "segmentation_overall_results.txt"
+        with open(overall_avg_path, "w") as f:
+            for k, v in overall_avg.items():
+                f.write(f"{k}: {v:.4f}\n")
+        
+        # - log the overall average metrics to wandb
+        if self.cfg.wandb.enable:
+            to_log = {f"eval_segm/all_cam/{metric_name}": v for metric_name, v in overall_avg.items()}
+            to_log["epoch"] = epoch
+            wandb.log(to_log)
+
+        # - log the source training view metrics to wandb
+        if self.cfg.wandb.enable:
+            df_source = df[df["camera_id"] == self.cfg.nvs_eval.source_camera_id]
+            if not df_source.empty:
+                source_avg = {
+                    "iou": df_source["iou"].mean(),
+                    "recall": df_source["recall"].mean(),
+                    "f1": df_source["f1"].mean(),
+                }
+                to_log = {f"eval_segm/trn_cam/{metric_name}": v for metric_name, v in source_avg.items()}
+                to_log["epoch"] = epoch
+                wandb.log(to_log)
+ 
     @torch.no_grad()
     def eval_loop(self, epoch):
         self.eval_loop_nvs(epoch)
