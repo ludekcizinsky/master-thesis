@@ -569,13 +569,15 @@ class MultiHumanTrainer:
 
                 # Compute loss
                 rgb_loss = self.cfg.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
-                # - only compute silhouetter loss on source view images
+                # - only compute silhouette loss on the source camera.
+                #   (Novel-view masks may be bootstrapped and noisy; using them for silhouette supervision
+                #   can inject strong, conflicting gradients.)
                 if is_src_cam.any():
                     loss_pred_mask_src = loss_pred_mask[is_src_cam]
                     loss_masks_src = loss_masks[is_src_cam]
                     sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
                 else:
-                    sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask, loss_masks)
+                    sil_loss = torch.zeros((), device=loss_pred_mask.device, dtype=loss_pred_mask.dtype)
                 # depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
