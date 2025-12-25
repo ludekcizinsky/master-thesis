@@ -1008,9 +1008,14 @@ class MultiHumanTrainer:
 
             # - Compute masks for the refined dataset.
             if self.cfg.use_estimated_masks:
-
-                # -- Use SMPL-X projection to estimate novel-view masks (multi-view consistent).
-                binary_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)  # [B, H, W, 1]
+                
+                # -- Estimate binary masks
+                mask_estimation_method = self.cfg.mask_estimator_kind
+                if mask_estimation_method == "rgb_render_based":
+                    eps = 10.0 / 255.0
+                    binary_masks = (refined_rgb > eps).any(dim=-1, keepdim=True).float() # [B, H, W, 1]
+                elif mask_estimation_method == "smplx_mesh_based":
+                    binary_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)  # [B, H, W, 1]
 
                 # -- Save binary masks
                 masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
@@ -1031,13 +1036,6 @@ class MultiHumanTrainer:
                     )
                     save_path = debug_masks_overlay_dir / f"{frame_names[i]}.png"
                     save_image(overlay.permute(2, 0, 1), str(save_path))
-
-                # Previous baseline (kept for reference): threshold refined RGB.
-                # eps = 10.0 / 255.0
-                # binary_masks = (refined_rgb > eps).any(dim=-1, keepdim=True).float()
-                # for i in range(binary_masks.shape[0]):
-                #     save_path = masks_save_dir / f"{frame_names[i]}.png"
-                #     save_binary_mask(binary_masks[i].permute(2, 0, 1), str(save_path))
 
             # - Debug: save side-by-side comparison of reference, rendered, refined
             difix_debug_dir = root_dir_to_difix_debug_dir(self.trn_data_dir, cam_id)
