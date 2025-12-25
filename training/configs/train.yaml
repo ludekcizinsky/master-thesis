@@ -54,7 +54,6 @@ wandb:
   project: "hybrid-lhm"
   entity: "ludekcizinsky"
   tags:
-    - using_est_smplx
     - using_v2_bas_difix
     - eval
 
