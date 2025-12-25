@@ -26,6 +26,10 @@ import wandb
 
 from collections import deque
 
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+import pyrender
+import trimesh
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(
     0,
@@ -41,12 +45,160 @@ from training.helpers.eval_metrics import ssim, psnr, lpips, _ensure_nchw, segme
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
 
 
+# ---------------------------------------------------------------------------
+# Mask estimation functions
+# ---------------------------------------------------------------------------
+def estimate_masks_from_smplx_batch(batch: Dict[str, Any], smplx_model) -> torch.Tensor:
+    """
+    Estimate binary foreground masks by rasterizing posed SMPL-X meshes into each camera view.
+
+    Expected `batch` format (as produced by `training.helpers.dataset.SceneDataset` + PyTorch collation):
+      - `batch["image"]`: `torch.Tensor` of shape `[B, H, W, 3]` in `[0, 1]` (used only for H/W and device).
+      - `batch["K"]`: `torch.Tensor` of shape `[B, 4, 4]` (camera intrinsics; fx/fy/cx/cy read from it).
+      - `batch["c2w"]`: `torch.Tensor` of shape `[B, 4, 4]` (camera-to-world transform).
+      - `batch["smplx_params"]`: `dict[str, torch.Tensor]` where each tensor has shape `[B, P, ...]` and
+        contains the keys:
+          - `"betas"`: `[B, P, D]`
+          - `"root_pose"`: `[B, P, 3]`
+          - `"body_pose"`: `[B, P, 21, 3]`
+          - `"jaw_pose"`, `"leye_pose"`, `"reye_pose"`: `[B, P, 3]`
+          - `"lhand_pose"`, `"rhand_pose"`: `[B, P, 15, 3]`
+          - `"trans"`: `[B, P, 3]`
+
+    Returns:
+      - `masks`: `torch.Tensor` of shape `[B, H, W, 1]` on the same device as `batch["image"]`,
+        with values in `{0.0, 1.0}`.
+    """
+
+    # Parse batch data
+    images: torch.Tensor = batch["image"]
+    Ks: torch.Tensor = batch["K"]
+    c2ws: torch.Tensor = batch["c2w"]
+    smplx_params: Dict[str, torch.Tensor] = batch["smplx_params"]
+
+    device = images.device
+    bsize, H, W = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+
+    # SMPL-X mesh topology.
+    smplx_layer = getattr(smplx_model, "smplx_layer", None).to(device)
+    faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int64)
+
+    # Convert CV camera convention to OpenGL for pyrender.
+    cv_to_gl = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        device=device,
+        dtype=c2ws.dtype,
+    )
+
+    renderer = pyrender.OffscreenRenderer(viewport_width=W, viewport_height=H)
+    out_masks: List[torch.Tensor] = []
+
+    # Expression is not needed for silhouette quality; keep it zero.
+    expr_dim = int(getattr(getattr(smplx_model, "smpl_x", None), "expr_param_dim", 0))
+
+    for bi in range(bsize):
+        K = Ks[bi].detach().cpu()
+        fx, fy, cx, cy = (
+            float(K[0, 0]),
+            float(K[1, 1]),
+            float(K[0, 2]),
+            float(K[1, 2]),
+        )
+        camera = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, zfar=1e4)
+
+        scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=(0.5, 0.5, 0.5))
+
+        # Add all persons as meshes to the scene (pyrender will handle occlusions via depth).
+        num_people = int(smplx_params["betas"][bi].shape[0])
+        for pid in range(num_people):
+            betas = smplx_params["betas"][bi, pid : pid + 1]
+            root_pose = smplx_params["root_pose"][bi, pid : pid + 1]
+            body_pose = smplx_params["body_pose"][bi, pid : pid + 1]
+            jaw_pose = smplx_params["jaw_pose"][bi, pid : pid + 1]
+            leye_pose = smplx_params["leye_pose"][bi, pid : pid + 1]
+            reye_pose = smplx_params["reye_pose"][bi, pid : pid + 1]
+            lhand_pose = smplx_params["lhand_pose"][bi, pid : pid + 1]
+            rhand_pose = smplx_params["rhand_pose"][bi, pid : pid + 1]
+            trans = smplx_params["trans"][bi, pid : pid + 1]
+
+            if expr_dim > 0:
+                expression = torch.zeros((1, expr_dim), device=device, dtype=betas.dtype)
+            else:
+                expression = None
+
+            out = smplx_layer(
+                global_orient=root_pose,
+                body_pose=body_pose,
+                jaw_pose=jaw_pose,
+                leye_pose=leye_pose,
+                reye_pose=reye_pose,
+                left_hand_pose=lhand_pose,
+                right_hand_pose=rhand_pose,
+                betas=betas,
+                transl=trans,
+                expression=expression,
+            )
+            verts = out.vertices[0].detach().cpu().numpy()
+            mesh_tm = trimesh.Trimesh(verts, faces, process=False)
+            scene.add(pyrender.Mesh.from_trimesh(mesh_tm, smooth=False))
+
+        # Camera pose for pyrender.
+        c2w = c2ws[bi]
+        w2c_cv = torch.inverse(c2w)
+        w2c_gl = torch.matmul(cv_to_gl, w2c_cv)
+        c2w_gl = torch.inverse(w2c_gl)
+        pose = c2w_gl.clone()
+        pose[3, :] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device, dtype=pose.dtype)
+        scene.add(camera, pose=pose.detach().cpu().numpy())
+
+        # Finally, render. Depending on pyrender version, DEPTH_ONLY may return either
+        # the depth array directly or a (color, depth) tuple.
+        depth_out = renderer.render(scene, flags=pyrender.RenderFlags.DEPTH_ONLY)
+        depth = depth_out[1] if isinstance(depth_out, tuple) else depth_out
+        mask_np = (depth > 0).astype(np.float32)  # [H, W]
+        out_masks.append(torch.from_numpy(mask_np).to(device=device, dtype=images.dtype).unsqueeze(-1))
+
+    renderer.delete()
+    return torch.stack(out_masks, dim=0)
+
+def overlay_mask_on_image(
+    image: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    color_rgb: Tuple[float, float, float] = (1.0, 0.0, 0.0),
+    alpha: float = 0.5,
+) -> torch.Tensor:
+    """
+    Alpha-blend a (binary) mask over an RGB image for visualization.
+
+    Args:
+        image: `[H, W, 3]` float tensor in `[0, 1]`.
+        mask: `[H, W, 1]` float tensor in `{0, 1}` (or `[0, 1]` for soft masks).
+        color_rgb: Foreground tint color.
+        alpha: Tint opacity on foreground pixels.
+
+    Returns:
+        `[H, W, 3]` float tensor in `[0, 1]`.
+    """
+    mask01 = mask.clamp(0.0, 1.0)
+    color = torch.tensor(color_rgb, device=image.device, dtype=image.dtype).view(1, 1, 3)
+    alpha_t = torch.as_tensor(alpha, device=image.device, dtype=image.dtype)
+    return image * (1.0 - alpha_t * mask01) + color * (alpha_t * mask01)
+
 
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "difix_debug_comparisons" / f"{cam_id}"
+
+def root_dir_to_est_masks_debug_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "est_masks_debug" / f"{cam_id}"
 
 def save_image(tensor: torch.Tensor, filename: str):
     """
@@ -757,16 +909,38 @@ class MultiHumanTrainer:
                 save_path = refined_frames_save_dir / f"{frame_names[i]}.jpg"
                 save_image(refined_rgb[i].permute(2, 0, 1), str(save_path))
 
-            # - Compute masks from refined rgb (no alpha)
+            # - Compute masks for the refined dataset.
             if self.cfg.use_estimated_masks:
-                # refined_rgb is assumed in [0, 1]
-                eps = 10.0 / 255.0   
-                binary_masks = (refined_rgb > eps).any(dim=-1, keepdim=True).float()
-                masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
+
+                # -- Use SMPL-X projection to estimate novel-view masks (multi-view consistent).
+                binary_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)  # [B, H, W, 1]
+
                 # -- Save binary masks
+                masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
+                masks_save_dir.mkdir(parents=True, exist_ok=True)
                 for i in range(binary_masks.shape[0]):
                     save_path = masks_save_dir / f"{frame_names[i]}.png"
                     save_binary_mask(binary_masks[i].permute(2, 0, 1), str(save_path))
+
+                # -- Overlay the estimated masks on refined images and save for debugging
+                debug_masks_overlay_dir = root_dir_to_est_masks_debug_dir(self.trn_data_dir, cam_id)
+                debug_masks_overlay_dir.mkdir(parents=True, exist_ok=True)
+                for i in range(binary_masks.shape[0]):
+                    overlay = overlay_mask_on_image(
+                        refined_rgb[i],
+                        binary_masks[i],
+                        color_rgb=(1.0, 0.0, 0.0),
+                        alpha=0.5,
+                    )
+                    save_path = debug_masks_overlay_dir / f"{frame_names[i]}.png"
+                    save_image(overlay.permute(2, 0, 1), str(save_path))
+
+                # Previous baseline (kept for reference): threshold refined RGB.
+                # eps = 10.0 / 255.0
+                # binary_masks = (refined_rgb > eps).any(dim=-1, keepdim=True).float()
+                # for i in range(binary_masks.shape[0]):
+                #     save_path = masks_save_dir / f"{frame_names[i]}.png"
+                #     save_binary_mask(binary_masks[i].permute(2, 0, 1), str(save_path))
 
             # - Debug: save side-by-side comparison of reference, rendered, refined
             difix_debug_dir = root_dir_to_difix_debug_dir(self.trn_data_dir, cam_id)
