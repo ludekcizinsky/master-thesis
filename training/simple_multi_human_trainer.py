@@ -12,6 +12,7 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 import hydra
+import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
@@ -189,6 +190,102 @@ def overlay_mask_on_image(
     color = torch.tensor(color_rgb, device=image.device, dtype=image.dtype).view(1, 1, 3)
     alpha_t = torch.as_tensor(alpha, device=image.device, dtype=image.dtype)
     return image * (1.0 - alpha_t * mask01) + color * (alpha_t * mask01)
+
+
+def get_masked_images(images: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+    """
+    Apply binary masks to images.
+
+    Args:
+        images: `[B, H, W, 3]` float tensor in `[0, 1]`.
+        masks: `[B, H, W, 1]` float tensor in `{0, 1}`.
+
+    Returns:
+        `[B, H, W, 3]` float tensor in `[0, 1]`.
+    """
+    return images * masks
+
+
+def get_gt_est_masks_overlay(gt_masks: torch.Tensor, est_masks: torch.Tensor) -> torch.Tensor:
+    """
+    Create an overlay image visualizing ground-truth and estimated masks.
+
+    Args:
+        gt_masks: `[B, H, W, 1]` float tensor in `{0, 1}`.
+        est_masks: `[B, H, W, 1]` float tensor in `{0, 1}`.
+    Returns:
+        `[B, H, W, 3]` float tensor in `[0, 1]` where:
+          - GT-only pixels are green,
+          - Est-only pixels are red,
+          - Overlapping pixels are yellow,
+          - Background pixels are black.
+    """
+
+    bsize, H, W = gt_masks.shape[0], gt_masks.shape[1], gt_masks.shape[2]
+    overlays: List[torch.Tensor] = []
+    for bi in range(bsize):
+        gt_mask = gt_masks[bi, :, :, 0] > 0.5
+        est_mask = est_masks[bi, :, :, 0] > 0.5
+        gt_only = gt_mask & (~est_mask)
+        est_only = (~gt_mask) & est_mask
+        overlap = gt_mask & est_mask
+        overlay = torch.zeros((H, W, 3), device=gt_masks.device, dtype=gt_masks.dtype)
+        # GT-only: green
+        overlay[:, :, 1][gt_only] = 1.0
+        # Est-only: red
+        overlay[:, :, 0][est_only] = 1.0
+        # Overlap: yellow
+        overlay[:, :, 0][overlap] = 1.0
+        overlay[:, :, 1][overlap] = 1.0
+        overlays.append(overlay)
+    return torch.stack(overlays, dim=0)
+
+
+def save_segmentation_debug_figures(
+    gt_masked_frames: torch.Tensor,
+    est_masked_frames: torch.Tensor,
+    mask_overlays: torch.Tensor,
+    frame_names: List[str],
+    iou: torch.Tensor,
+    recall: torch.Tensor,
+    f1: torch.Tensor,
+    save_dir: Path,
+):
+    """
+    Save per-sample debug figures showing masked images and mask overlay.
+
+    Args:
+        gt_masked_frames: `[B, H, W, 3]` masked with GT masks.
+        est_masked_frames: `[B, H, W, 3]` masked with estimated masks.
+        mask_overlays: `[B, H, W, 3]` overlay of estimated (red) on GT (green).
+        frame_names: list of length `B`, used for filenames.
+        iou/recall/f1: `[B]` tensors with per-frame metrics.
+        save_dir: directory to save PNGs into.
+    """
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    titles = [
+        "Masked Frames using GT Mask",
+        "Masked Frames using Est. Mask",
+        "Estimated Mask (red) overlayed\non Ground Truth Mask (green)",
+    ]
+
+    for idx in range(gt_masked_frames.shape[0]):
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+        imgs = [
+            gt_masked_frames[idx].detach().cpu().numpy(),
+            est_masked_frames[idx].detach().cpu().numpy(),
+            mask_overlays[idx].detach().cpu().numpy(),
+        ]
+        for ax, img, title in zip(axes, imgs, titles):
+            ax.imshow(img)
+            ax.set_title(title)
+            ax.axis("off")
+
+        fig.suptitle(f"IoU: {float(iou[idx]):.3f} | Recall: {float(recall[idx]):.3f} | F1: {float(f1[idx]):.3f}")
+        out_path = save_dir / f"{frame_names[idx]}.png"
+        fig.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,27 +1415,38 @@ class MultiHumanTrainer:
     @torch.no_grad()
     def eval_loop_segmentation(self, epoch): 
 
+        # Init save directory        
+        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
         tgt_cam_ids = self.cfg.nvs_eval.target_camera_ids
         src_cam_id = self.cfg.nvs_eval.source_camera_id
         metrics_per_frame = []
         for tgt_cam_id in tgt_cam_ids:
 
-            # Determine sampling and skip frames based on whether target cam is training cam 
+            # Init save directory for this cam
+            cam_save_dir : Path = save_dir / f"{tgt_cam_id}"
+            cam_save_dir.mkdir(parents=True, exist_ok=True)
+
+            # From cam save dir, init segm_metrics_debug dir
+            segm_metrics_debug_dir = cam_save_dir / "segm_metrics_debug_inputs"
+            segm_metrics_debug_dir.mkdir(parents=True, exist_ok=True)
+
+            # Prepare gt datasets for given camera
+            skip_frames = load_skip_frames(self.trn_data_dir)
+            # - For the estimated dataset, use same sample_every and skip frames if evaluating on source camera
             if tgt_cam_id == src_cam_id:
-                sample_every = self.sample_every
-                skip_frames = load_skip_frames(self.trn_data_dir)
+                est_sample_every = self.sample_every
+                est_skip_frames = skip_frames
             else:
-                sample_every = 1
-                skip_frames = []  # no skip frames for test dataset
+                est_sample_every = 1
+                est_skip_frames = []  # no skip frames for test dataset
 
-            # Prepare gt dataset for given camera
             est_dataset = SceneDataset(self.trn_data_dir, tgt_cam_id, 
-                                       device=self.tuner_device,sample_every=sample_every, skip_frames=skip_frames)
-
-            # Prepare gt dataset for given camera
+                                       device=self.tuner_device,sample_every=est_sample_every, skip_frames=est_skip_frames)
+            # - For the gt dataset, always use the test dataset with original sample_every and skip frames
             gt_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
-                                       device=self.tuner_device, sample_every=sample_every, skip_frames=skip_frames)
-
+                                       device=self.tuner_device, sample_every=self.sample_every, skip_frames=skip_frames)
 
             # Prepare dataloader
             loader = DataLoader(
@@ -1353,14 +1461,18 @@ class MultiHumanTrainer:
                 est_masks = batch["mask"]               # [B, H, W, 1]
                 est_frame_indices = batch["frame_idx"]      # [B]
                 fnames = batch["frame_name"]      # [B]
+                frames = batch["image"]             # [B, H, W, 3]
 
                 # Parse gt masks
                 gt_masks = []
+                gt_frame_names = []
                 for i in range(est_masks.shape[0]):
                     sample_dict = gt_dataset[est_frame_indices[i].item()]
                     gt_mask = sample_dict["mask"]  # [H, W, 1], 0-1
+                    gt_frame_names.append(sample_dict["frame_name"])
                     gt_masks.append(gt_mask.to(self.tuner_device))
                 gt_masks = torch.stack(gt_masks, dim=0)  # [B, H, W, 1]
+                assert list(gt_frame_names) == list(fnames), "Estimated and GT frame names do not match!"
 
                 # Compute metrics
                 segm_metrics = segmentation_mask_metrics(
@@ -1374,9 +1486,23 @@ class MultiHumanTrainer:
                         (tgt_cam_id, fid, iou.item(), recall.item(), f1.item())
                     )
 
+                # Save debug inputs for this batch
+                gt_masked_frames = get_masked_images(frames, gt_masks)
+                est_masked_frames = get_masked_images(frames, est_masks)
+                gt_est_masks_overlay = get_gt_est_masks_overlay(gt_masks, est_masks) 
+                save_segmentation_debug_figures(
+                    gt_masked_frames,
+                    est_masked_frames,
+                    gt_est_masks_overlay,
+                    frame_names=fnames,
+                    iou=segm_iou,
+                    recall=segm_recall,
+                    f1=segm_f1,
+                    save_dir=segm_metrics_debug_dir,
+                )
+                
+
         # Save metrics to CSV
-        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
-        save_dir.mkdir(parents=True, exist_ok=True)
         # - save per-frame metrics
         df = pd.DataFrame(metrics_per_frame, columns=["camera_id", "frame_id", "iou", "recall", "f1"])
         csv_path = save_dir / "segmentation_metrics_per_frame.csv"
