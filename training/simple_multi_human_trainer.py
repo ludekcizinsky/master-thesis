@@ -790,7 +790,7 @@ class MultiHumanTrainer:
                 optimizer.zero_grad(set_to_none=True)
 
                 # Forward pass
-                pred_rgb, pred_mask, pred_depth = self.forward(batch)
+                pred_rgb, pred_mask, _ = self.forward(batch)
 
                 # Compute masked ground truth
                 mask3 = masks
@@ -798,6 +798,17 @@ class MultiHumanTrainer:
                     mask3 = mask3.repeat(1, 1, 1, 3)
                 gt_masked = frames * mask3
                 # gt_depth_masked = depths * masks
+
+                # Apply mask also to render if it novel view and this mechanism is enabled
+                if self.cfg.apply_mask_to_render_for_nvs:
+                    # For src view, use all-ones mask to not affect the render
+                    effective_masks = masks.clone().to(pred_rgb.dtype)
+                    effective_masks[is_src_cam] = 1.0
+                    effective_mask3 = effective_masks
+                    if effective_mask3.shape[-1] == 1:
+                        effective_mask3 = effective_mask3.repeat(1, 1, 1, 3)
+                    pred_rgb = pred_rgb * effective_mask3
+                    pred_mask = pred_mask * effective_masks
 
                 # BBOX crop around the union person mask
                 if self.cfg.use_bbox_crop:
