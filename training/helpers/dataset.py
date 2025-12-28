@@ -41,7 +41,7 @@ class SceneDataset(Dataset):
     def __init__(self, 
                 scene_root_dir: Path,
                 src_cam_id: int,
-                depth_dir: Optional[Path] = None,
+                use_depth: Optional[bool] = False,
                 device: Optional[torch.device] = "cuda", 
                 sample_every: Optional[int] = 1,
                 skip_frames: Optional[list] = []):
@@ -66,8 +66,8 @@ class SceneDataset(Dataset):
         self.trn_render_hw = (first_image.shape[0], first_image.shape[1])  # (H, W)
 
         # Load depth paths (if provided)
-        if depth_dir is not None:
-            self.depth_dir = depth_dir
+        if use_depth:
+            self.depth_dir = root_dir_to_depth_dir(scene_root_dir, src_cam_id)
             self._load_depth_paths()
 
         # Load camera parameters

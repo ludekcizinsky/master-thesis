@@ -517,13 +517,12 @@ class MultiHumanTrainer:
             scene_ds = SceneDataset(
                 self.trn_data_dir,
                 int(cam_id),
-                depth_dir=None,
+                use_depth=self.cfg.use_depth,
                 device=self.tuner_device,
                 sample_every=1,
             )
             self.trn_datasets.append(scene_ds)
         self.trn_dataset = ConcatDataset(self.trn_datasets)
-        quit()
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -539,7 +538,7 @@ class MultiHumanTrainer:
             Path(self.cfg.masks_scene_dir),
             Path(self.cfg.cameras_scene_dir),
             Path(self.cfg.smplx_params_scene_dir),
-            Path(self.cfg.depths_scene_dir) if self.cfg.depths_scene_dir is not None else None,
+            Path(self.cfg.depths_scene_dir) if self.cfg.use_depth else None,
         )
 
         # Load skip frames if needed
@@ -550,7 +549,7 @@ class MultiHumanTrainer:
         trn_ds = SceneDataset(
             self.trn_data_dir, 
             src_cam_id, 
-            depth_dir=None, 
+            use_depth=self.cfg.use_depth, 
             device=self.tuner_device, 
             sample_every=self.sample_every,
             skip_frames=skip_frames,
@@ -749,9 +748,10 @@ class MultiHumanTrainer:
                 batch = next(trn_iter)
 
                 # Parse batch data
+                fnames = batch["frame_name"] # list of length B
                 frames = batch["image"] # [B, H, W, 3],
                 masks = batch["mask"] # [B, H, W, 1],
-                # depths = batch["depth"] # [B, H, W, 1],
+                depths = batch.get("depth", None) # [B, H, W, 1],
                 bsize = int(frames.shape[0])
                 batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
@@ -765,14 +765,15 @@ class MultiHumanTrainer:
                 optimizer.zero_grad(set_to_none=True)
 
                 # Forward pass
-                pred_rgb, pred_mask, _ = self.forward(batch)
+                pred_rgb, pred_mask, pred_depth = self.forward(batch)
 
                 # Compute masked ground truth
                 mask3 = masks
                 if mask3.shape[-1] == 1:
                     mask3 = mask3.repeat(1, 1, 1, 3)
                 gt_masked = frames * mask3
-                # gt_depth_masked = depths * masks
+                if depths is not None:
+                    gt_depth_masked = depths * masks
 
                 # Apply mask also to render if it novel view and this mechanism is enabled
                 if self.cfg.apply_mask_to_render_for_nvs:
@@ -784,6 +785,8 @@ class MultiHumanTrainer:
                         effective_mask3 = effective_mask3.repeat(1, 1, 1, 3)
                     pred_rgb = pred_rgb * effective_mask3
                     pred_mask = pred_mask * effective_masks
+                    if pred_depth is not None:
+                        pred_depth = pred_depth * effective_masks
 
                 # BBOX crop around the union person mask
                 if self.cfg.use_bbox_crop:
@@ -791,15 +794,17 @@ class MultiHumanTrainer:
                     loss_pred_rgb = bbox_crop(bboxes, pred_rgb)
                     loss_pred_mask = bbox_crop(bboxes, pred_mask)
                     loss_gt_masked = bbox_crop(bboxes, gt_masked)
-                    # loss_pred_depth = bbox_crop(bboxes, pred_depth)
-                    # loss_gt_depth_masked = bbox_crop(bboxes, gt_depth_masked)
+                    if depths is not None:
+                        loss_pred_depth = bbox_crop(bboxes, pred_depth)
+                        loss_gt_depth_masked = bbox_crop(bboxes, gt_depth_masked)
                     loss_masks = bbox_crop(bboxes, masks)
                 else:
                     loss_pred_rgb = pred_rgb
                     loss_pred_mask = pred_mask
                     loss_gt_masked = gt_masked
-                    # loss_pred_depth = pred_depth
-                    # loss_gt_depth_masked = gt_depth_masked
+                    if depths is not None:
+                        loss_pred_depth = pred_depth
+                        loss_gt_depth_masked = gt_depth_masked
                     loss_masks = masks
 
                 # Compute loss
@@ -813,13 +818,16 @@ class MultiHumanTrainer:
                     sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
                 else:
                     sil_loss = torch.zeros((), device=loss_pred_mask.device, dtype=loss_pred_mask.dtype)
-                # depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
+                if depths is not None:
+                    depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
+                else:
+                    depth_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
                 asap_loss, acap_loss = self._canonical_regularization()
                 reg_loss = asap_loss + acap_loss
 
-                loss = rgb_loss + sil_loss + ssim_loss + reg_loss # + depth_loss
+                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss
                 
                 # Backpropagation
                 loss.backward()
@@ -832,6 +840,7 @@ class MultiHumanTrainer:
                    loss=f"{loss.item():.4f}",
                     asap=f"{asap_loss.item():.4f}",
                     acap=f"{acap_loss.item():.4f}",
+                    depth=f"{depth_loss.item():.4f}",
                 )
 
                 if self.wandb_run is not None:
@@ -841,7 +850,7 @@ class MultiHumanTrainer:
                             "loss/rgb": rgb_loss.item(),
                             "loss/sil": sil_loss.item(),
                             "loss/ssim": ssim_loss.item(),
-                            # "loss/depth": depth_loss.item(),
+                            "loss/depth": depth_loss.item(),
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),
                             "loss/acap": acap_loss.item(),
@@ -858,9 +867,17 @@ class MultiHumanTrainer:
                     joined_image = torch.cat([pred_rgb, gt_masked, overlay], dim=3)  # Concatenate along width
                     for i in range(joined_image.shape[0]):
                         image = joined_image[i:i+1]
-                        global_idx = batch_idx * self.cfg.batch_size + i
-                        debug_image_path = debug_save_dir / f"rgb_loss_input_{global_idx}.png"
+                        frame_name = fnames[i]
+                        debug_image_path = debug_save_dir / f"rgb_loss_input_{frame_name}.png"
                         save_image(image.permute(0, 3, 1, 2), str(debug_image_path))
+
+                    # - save depth comparison images
+                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
+                    debug_save_dir.mkdir(parents=True, exist_ok=True)
+                    for i in range(pred_depth.shape[0]):
+                        frame_name = fnames[i] 
+                        save_path = debug_save_dir / f"depth_comparison_frame_{frame_name}.png"
+                        save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
                 batch_idx += 1
                 pbar.update(1)
@@ -900,7 +917,7 @@ class MultiHumanTrainer:
         self.from_src_left_traversed_cams = deque((self.camera_ids[src_cam_idx-1::-1] + self.camera_ids[:src_cam_idx:-1])[:half_n])
         self.from_src_right_traversed_cams = deque((self.camera_ids[src_cam_idx+1:] + self.camera_ids[:src_cam_idx])[:other_half_n])
         self.difix_cam_ids_all = list(self.from_src_left_traversed_cams) + list(self.from_src_right_traversed_cams)
-        print("Difix NVS camera traversal initialized:")
+        print("NV camera traversal initialized:")
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
@@ -937,7 +954,7 @@ class MultiHumanTrainer:
             skip_frames = []  # no skip frames for refined datasetk
         # - finally, load the previous cam dataset
         prev_cam_dataset = SceneDataset(self.trn_data_dir, prev_cam_id, device=self.tuner_device, 
-                                            depth_dir=None, sample_every=sample_every, skip_frames=skip_frames)
+                                        sample_every=sample_every, skip_frames=skip_frames)
 
 
         # Load new camera dataset (with dummy images and masks which I will replace with refined later)
@@ -957,7 +974,7 @@ class MultiHumanTrainer:
 
         # - finally, load the new cam dataset
         new_cam_sample_every = 1 # because curr trn frame paths are already subsampled
-        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=new_cam_sample_every)
+        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
         new_cam_loader = DataLoader(
             new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
@@ -1019,7 +1036,7 @@ class MultiHumanTrainer:
 
         # Load dataset
         new_cam_sample_every = 1 # because nv frames are already subsampled / filtered
-        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, depth_dir=None, sample_every=new_cam_sample_every)
+        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
         new_cam_loader = DataLoader(
             new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
@@ -1154,7 +1171,7 @@ class MultiHumanTrainer:
         # Init source camera dataset for Difix reference images
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
         src_cam_dataset = SceneDataset(self.test_data_dir, src_cam_id, 
-                                       device=self.tuner_device, depth_dir=None, skip_frames=skip_frames)
+                                       device=self.tuner_device, skip_frames=skip_frames)
 
         # Init Difix if enabled for the evaluation
         if self.cfg.difix.eval_enable:
@@ -1175,7 +1192,7 @@ class MultiHumanTrainer:
         for tgt_cam_id in target_camera_ids:
             # Prepare dataset and dataloader for target camera
             val_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
-                                       device=self.tuner_device, depth_dir=None, skip_frames=skip_frames)
+                                       device=self.tuner_device, skip_frames=skip_frames)
             loader = DataLoader(
                 val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
