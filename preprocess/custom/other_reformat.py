@@ -16,8 +16,11 @@ def root_dir_to_target_format_image_dir(root_dir: Path, cam_id: int) -> Path:
 def root_dir_to_source_format_image_dir(root_dir: Path) -> Path:
     return root_dir / "frames"
 
-def root_dir_to_depth_dir(root_dir: Path, cam_id: int) -> Path:
+def root_dir_to_target_format_depth_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "depths" / f"{cam_id}"
+
+def root_dir_to_source_format_depth_dir(root_dir: Path) -> Path:
+    return root_dir / "depth_maps" / "raw"
 
 
 @dataclass
@@ -59,6 +62,21 @@ def main() -> None:
         new_name = f"{current_frame_number:0{cfg.fname_num_digits}d}.png"
         current_frame_number += 1
         dest = masks_dir / new_name
+        shutil.copy2(item, dest)
+
+    # Depths
+    curr_depths_dir = root_dir_to_source_format_depth_dir(scene_root_dir)
+    depths_dir = root_dir_to_target_format_depth_dir(scene_root_dir, cam_id=cfg.src_cam_id)
+    depths_dir.mkdir(parents=True, exist_ok=True)
+    # - copy and rename
+    sorted_depth_files = sorted(curr_depths_dir.iterdir())
+    # -- make sure to only include .npy files
+    sorted_depth_files = [f for f in sorted_depth_files if f.suffix == ".npy"]
+    current_frame_number = cfg.first_frame_number
+    for item in sorted_depth_files:
+        new_name = f"{current_frame_number:0{cfg.fname_num_digits}d}.npy"
+        current_frame_number += 1
+        dest = depths_dir / new_name
         shutil.copy2(item, dest)
 
 

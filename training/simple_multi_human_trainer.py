@@ -293,7 +293,7 @@ def save_segmentation_debug_figures(
 # Utility functions
 # ---------------------------------------------------------------------------
 def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
-    return root_dir / "difix_debug_comparisons" / f"{cam_id}"
+    return root_dir / "est_images_debug" / f"{cam_id}"
 
 def root_dir_to_est_masks_debug_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "est_masks_debug" / f"{cam_id}"
@@ -523,6 +523,7 @@ class MultiHumanTrainer:
             )
             self.trn_datasets.append(scene_ds)
         self.trn_dataset = ConcatDataset(self.trn_datasets)
+        quit()
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -999,8 +1000,18 @@ class MultiHumanTrainer:
                 save_image(joined[i].permute(2, 0, 1), str(save_path))
 
     @torch.no_grad()
-    def prepare_nv_depth_maps(self):
-        pass
+    def prepare_nv_depth_maps(self, cam_id: int):
+
+        print(f"Preparing NV depth maps for cam {cam_id}")
+        # Call external script to prepare depth maps for the new camera
+        script_path = Path(__file__).resolve().parents[1] / "submodules" / "da3" / "nv_inference.py"
+        cmd = [
+            "conda", "run", "-n", "da3",
+            "python", str(script_path),
+            "--scene-dir", str(self.trn_data_dir),
+            "--camera-id", str(cam_id),
+        ]
+        subprocess.run(cmd, check=True)
 
 
     @torch.no_grad()
@@ -1109,6 +1120,9 @@ class MultiHumanTrainer:
             torch.cuda.empty_cache()
 
         # - New depth maps for the new cameras
+        for cam_id in new_cams:
+            self.prepare_nv_depth_maps(cam_id)
+
         # - New mask maps for the new cameras (if needed)
         if self.cfg.use_estimated_masks:
             for cam_id in new_cams:
