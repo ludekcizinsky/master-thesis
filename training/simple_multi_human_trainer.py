@@ -39,7 +39,7 @@ sys.path.insert(
     ),
 )
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir, root_dir_to_skip_frames_path
+from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir, root_dir_to_skip_frames_path, root_dir_to_depth_dir
 from training.helpers.debug import overlay_smplx_mesh_pyrender, save_depth_comparison
 from training.helpers.eval_metrics import ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics
 from training.helpers.difix import difix_refine
@@ -749,6 +749,7 @@ class MultiHumanTrainer:
 
                 # Parse batch data
                 fnames = batch["frame_name"] # list of length B
+                cam_ids = batch["cam_id"] # [B]
                 frames = batch["image"] # [B, H, W, 3],
                 masks = batch["mask"] # [B, H, W, 1],
                 depths = batch.get("depth", None) # [B, H, W, 1],
@@ -868,7 +869,8 @@ class MultiHumanTrainer:
                     for i in range(joined_image.shape[0]):
                         image = joined_image[i:i+1]
                         frame_name = fnames[i]
-                        debug_image_path = debug_save_dir / f"rgb_loss_input_{frame_name}.png"
+                        cam_id = cam_ids[i].item()
+                        debug_image_path = debug_save_dir / f"rgb_loss_input_cam{cam_id}_{frame_name}.png"
                         save_image(image.permute(0, 3, 1, 2), str(debug_image_path))
 
                     # - save depth comparison images
@@ -876,7 +878,8 @@ class MultiHumanTrainer:
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     for i in range(pred_depth.shape[0]):
                         frame_name = fnames[i] 
-                        save_path = debug_save_dir / f"depth_comparison_frame_{frame_name}.png"
+                        cam_id = cam_ids[i].item()
+                        save_path = debug_save_dir / f"depth_comparison_cam{cam_id}_frame_{frame_name}.png"
                         save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
                 batch_idx += 1
@@ -980,7 +983,7 @@ class MultiHumanTrainer:
         )
 
         # Render in batches novel views from target camera
-        for batch in tqdm(new_cam_loader, desc=f"Preparing NV RGB frames for cam {cam_id}", leave=False):
+        for batch in tqdm(new_cam_loader, desc=f"Preparing NV RGB frames for cam {cam_id}"):
 
             # - Update smplx params with neutral pose transform
             frame_indices = batch["frame_idx"] # [B]
@@ -1017,10 +1020,15 @@ class MultiHumanTrainer:
                 save_image(joined[i].permute(2, 0, 1), str(save_path))
 
     @torch.no_grad()
-    def prepare_nv_depth_maps(self, cam_id: int):
+    def prepare_nv_depth_maps(self, cam_id: int, allow_overwrite: bool = False):
+        
+        # Check whether depth maps for this camera already exist
+        depths_save_dir = root_dir_to_depth_dir(self.trn_data_dir, cam_id)
+        if depths_save_dir.exists() and not allow_overwrite:
+            return # already done
 
-        print(f"Preparing NV depth maps for cam {cam_id}")
         # Call external script to prepare depth maps for the new camera
+        print(f"Preparing NV depth maps for cam {cam_id}")
         script_path = Path(__file__).resolve().parents[1] / "submodules" / "da3" / "nv_inference.py"
         cmd = [
             "conda", "run", "-n", "da3",
@@ -1043,7 +1051,7 @@ class MultiHumanTrainer:
 
 
         # Compute masks for the nv dataset
-        for batch in tqdm(new_cam_loader, desc=f"Estimating masks for cam {cam_id}", leave=False):
+        for batch in tqdm(new_cam_loader, desc=f"Estimating masks for cam {cam_id}"):
             # - Parse batch data
             frame_names = batch["frame_name"] # [B]
             rgb_frames = batch["image"] # [B, H, W, 3], 0-1
