@@ -24,7 +24,8 @@ import torch.nn.functional as F
 
 from fused_ssim import fused_ssim
 import wandb
-
+import matplotlib.colors as mcolors
+from matplotlib import colormaps
 from collections import deque
 
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
@@ -45,6 +46,65 @@ from training.helpers.eval_metrics import ssim, psnr, lpips, _ensure_nchw, segme
 from training.helpers.difix import difix_refine
 
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
+
+
+# ---------------------------------------------------------------------------
+# Depth estimation utils
+# ---------------------------------------------------------------------------
+
+def create_and_save_debug_vis(pred_depth_np: np.array, save_path: str):
+
+    def mask_background(depth: np.ndarray) -> np.ma.MaskedArray:
+        # Assume background pixels have zero (or negative) depth.
+        return np.ma.masked_less_equal(depth, 0.0)
+
+    masked_pred = mask_background(pred_depth_np)
+
+    vmin, vmax = 1.5, 4.0
+    clipped_pred = np.ma.clip(masked_pred, vmin, vmax)
+
+    base_cmap = colormaps["turbo"]
+    cmap = base_cmap.copy()
+    cmap.set_bad(color="black")  # keep masked background black
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    save_path = Path(save_path)
+
+    fig = plt.figure(figsize=(12, 5), constrained_layout=True)
+    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.05])
+    ax_pred = fig.add_subplot(gs[0, 0])
+    ax_hist = fig.add_subplot(gs[0, 1])
+    cax = fig.add_subplot(gs[0, 2])
+
+    im0 = ax_pred.imshow(clipped_pred, cmap=cmap, norm=norm)
+    ax_pred.set_title("Predicted Depth")
+    ax_pred.axis("off")
+
+    cbar = fig.colorbar(im0, cax=cax)
+    cbar.set_label("Depth [m]")
+    tick_values = np.linspace(vmin, vmax, num=6)
+    cbar.set_ticks(tick_values)
+    cbar.set_ticklabels([f"{tick:.2f}" for tick in tick_values])
+
+    valid_pred = masked_pred.compressed()
+    if valid_pred.size > 0:
+        mins = [vmin, float(valid_pred.min())]
+        maxs = [vmax, float(valid_pred.max())]
+        combined_min = min(mins)
+        combined_max = max(maxs)
+        if np.isclose(combined_min, combined_max):
+            combined_max = combined_min + 1e-6
+
+        hist_bins = np.linspace(combined_min, combined_max, num=60)
+        ax_hist.hist(valid_pred, bins=hist_bins, alpha=0.6, label="Pred", color="#1f77b4")
+        ax_hist.legend()
+
+    ax_hist.set_xlabel("Depth [m]")
+    ax_hist.set_ylabel("Count")
+    ax_hist.set_title("Depth Distribution (unclipped)")
+
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +358,9 @@ def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
 def root_dir_to_est_masks_debug_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "est_masks_debug" / f"{cam_id}"
 
+def root_dir_to_depths_debug_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "est_depths_debug" / f"{cam_id}"
+
 def save_image(tensor: torch.Tensor, filename: str):
     """
     Accepts HWC, CHW, or BCHW; if batch > 1, saves the first item.
@@ -510,7 +573,7 @@ class MultiHumanTrainer:
         while not is_nv_gen_done:
             is_nv_gen_done = self.novel_view_generation_step()
             n_its_nv_gen += 1
-            print(" Novel view generation step ", n_its_nv_gen, " done: ", is_nv_gen_done)
+            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
 
         # Prepare training dataset from all the new cameras
         for cam_id in self.difix_cam_ids_all:
@@ -1027,16 +1090,60 @@ class MultiHumanTrainer:
         if depths_save_dir.exists() and not allow_overwrite:
             return # already done
 
-        # Call external script to prepare depth maps for the new camera
-        print(f"Preparing NV depth maps for cam {cam_id}")
-        script_path = Path(__file__).resolve().parents[1] / "submodules" / "da3" / "nv_inference.py"
-        cmd = [
-            "conda", "run", "-n", "da3",
-            "python", str(script_path),
-            "--scene-dir", str(self.trn_data_dir),
-            "--camera-id", str(cam_id),
-        ]
-        subprocess.run(cmd, check=True)
+        # Commented out for now because DA3 is not good at predicting depth for masked images
+        # Use pretrained model from DA3 to infer depth maps
+        #print(f"Preparing NV depth maps for cam {cam_id}")
+        #script_path = Path(__file__).resolve().parents[1] / "submodules" / "da3" / "nv_inference.py"
+        #cmd = [
+            #"conda", "run", "-n", "da3",
+            #"python", str(script_path),
+            #"--scene-dir", str(self.trn_data_dir),
+            #"--camera-id", str(cam_id),
+        #]
+        #subprocess.run(cmd, check=True)
+
+        # Get the dataset for the new camera
+        new_cam_sample_every = 1 # because the frames are already subsampled / filtered
+        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
+        new_cam_loader = DataLoader(
+            new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+
+        # Prepare directory to save depth maps
+        depths_dir = root_dir_to_depth_dir(self.trn_data_dir, cam_id)
+        depths_dir.mkdir(parents=True, exist_ok=True)
+        depths_debug_dir = root_dir_to_depths_debug_dir(self.trn_data_dir, cam_id)
+        depths_debug_dir.mkdir(parents=True, exist_ok=True)
+
+        # Render in batches novel views from target camera
+        for batch in tqdm(new_cam_loader, desc=f"Preparing Depth Maps for cam {cam_id}"):
+
+            # - Update smplx params with neutral pose transform
+            frame_indices = batch["frame_idx"] # [B]
+            frame_names = batch["frame_name"] # [B]
+            bsize = int(batch["image"].shape[0])
+            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+
+            # - Forward pass to render novel views using GT smplx params and cameras
+            _, _, pred_depth = self.forward(batch) # [B, H, W, 1]
+
+
+            # Save the raw depth map as a per frame numpy file 
+            for i in range(pred_depth.shape[0]):
+                dp = pred_depth[i].squeeze(-1).cpu().numpy()  # (H, W)
+                frame_name = frame_names[i]
+                np.save(depths_dir / (frame_name + ".npy"), dp.astype(np.float32))
+
+                # Debug visualization
+                # - Upsample depth to original image resolution
+                orig_hw = self.trn_render_hw  # (H,W)
+                dp_resized = np.array(Image.fromarray(dp).resize(orig_hw[::-1], resample=Image.BILINEAR))
+
+                create_and_save_debug_vis(
+                    pred_depth_np=dp_resized,
+                    save_path=str(depths_debug_dir / (frame_name + ".png")),
+                )
 
 
     @torch.no_grad()

@@ -64,7 +64,7 @@ loss_weights:
   rgb: 20.0
   sil: 4.0
   ssim: 0.4
-  depth: 1.0
+  depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
 
 regularization:
   asap_w: 200.0
