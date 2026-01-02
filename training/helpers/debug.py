@@ -5,6 +5,8 @@ import numpy as np
 import torch
 import pyrender
 import trimesh
+import matplotlib.colors as mcolors
+from matplotlib import colormaps
 
 def smplx_base_vertices(
     smplx_model,
@@ -237,3 +239,58 @@ def save_depth_comparison(pred_depth: torch.Tensor, gt_depth: torch.Tensor, save
         hist_fig.tight_layout()
         hist_fig.savefig(hist_path)
         plt.close(hist_fig)
+
+
+def create_and_save_depth_debug_vis(pred_depth_np: np.array, save_path: str):
+
+    def mask_background(depth: np.ndarray) -> np.ma.MaskedArray:
+        # Assume background pixels have zero (or negative) depth.
+        return np.ma.masked_less_equal(depth, 0.0)
+
+    masked_pred = mask_background(pred_depth_np)
+
+    vmin, vmax = 1.5, 4.0
+    clipped_pred = np.ma.clip(masked_pred, vmin, vmax)
+
+    base_cmap = colormaps["turbo"]
+    cmap = base_cmap.copy()
+    cmap.set_bad(color="black")  # keep masked background black
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    save_path = Path(save_path)
+
+    fig = plt.figure(figsize=(12, 5), constrained_layout=True)
+    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.05])
+    ax_pred = fig.add_subplot(gs[0, 0])
+    ax_hist = fig.add_subplot(gs[0, 1])
+    cax = fig.add_subplot(gs[0, 2])
+
+    im0 = ax_pred.imshow(clipped_pred, cmap=cmap, norm=norm)
+    ax_pred.set_title("Predicted Depth")
+    ax_pred.axis("off")
+
+    cbar = fig.colorbar(im0, cax=cax)
+    cbar.set_label("Depth [m]")
+    tick_values = np.linspace(vmin, vmax, num=6)
+    cbar.set_ticks(tick_values)
+    cbar.set_ticklabels([f"{tick:.2f}" for tick in tick_values])
+
+    valid_pred = masked_pred.compressed()
+    if valid_pred.size > 0:
+        mins = [vmin, float(valid_pred.min())]
+        maxs = [vmax, float(valid_pred.max())]
+        combined_min = min(mins)
+        combined_max = max(maxs)
+        if np.isclose(combined_min, combined_max):
+            combined_max = combined_min + 1e-6
+
+        hist_bins = np.linspace(combined_min, combined_max, num=60)
+        ax_hist.hist(valid_pred, bins=hist_bins, alpha=0.6, label="Pred", color="#1f77b4")
+        ax_hist.legend()
+
+    ax_hist.set_xlabel("Depth [m]")
+    ax_hist.set_ylabel("Count")
+    ax_hist.set_title("Depth Distribution (unclipped)")
+
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
