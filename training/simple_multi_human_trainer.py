@@ -228,6 +228,38 @@ def estimate_masks_from_smplx_batch(batch: Dict[str, Any], smplx_model) -> torch
     renderer.delete()
     return torch.stack(out_masks, dim=0)
 
+def _binary_dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
+    """Binary dilation on `[B, H, W, 1]` masks using max-pooling."""
+    if radius <= 0:
+        return mask
+    mask_nchw = mask.permute(0, 3, 1, 2)
+    kernel = 2 * radius + 1
+    dilated = F.max_pool2d(mask_nchw, kernel_size=kernel, stride=1, padding=radius)
+    return dilated.permute(0, 2, 3, 1)
+
+def estimate_masks_from_rgb_and_smplx_batch(
+    batch: Dict[str, Any],
+    smplx_model,
+    rgb_eps: float = 10.0 / 255.0,
+    dilate_px: int = 10,
+) -> torch.Tensor:
+    """
+    Estimate masks by combining high-recall RGB masks with a high-precision SMPL-X seed.
+
+    Expected `batch` keys:
+      - `batch["image"]`: `[B, H, W, 3]` float in `[0, 1]` (rendered RGB).
+      - `batch["K"]`, `batch["c2w"]`, `batch["smplx_params"]`: for SMPL-X projection.
+
+    Returns:
+      - `masks`: `[B, H, W, 1]` float tensor in `{0, 1}`.
+    """
+    rgb_frames = batch["image"]
+    rgb_masks = (rgb_frames > rgb_eps).any(dim=-1, keepdim=True).float()
+    seed_masks = estimate_masks_from_smplx_batch(batch, smplx_model)
+    band = _binary_dilate(seed_masks, dilate_px)
+    combined = (seed_masks > 0.5) | ((rgb_masks > 0.5) & (band > 0.5))
+    return combined.float()
+
 def estimate_masks_from_src_reprojection_batch(
     batch: Dict[str, Any],
     src_masks_by_name: Dict[str, torch.Tensor],
@@ -348,7 +380,7 @@ def estimate_masks_from_src_reprojection_batch(
 
         out_masks.append(mask_hw)
 
-    return torch.stack(out_masks, dim=0)
+        return torch.stack(out_masks, dim=0)
 
 def overlay_mask_on_image(
     image: torch.Tensor,
@@ -1321,6 +1353,11 @@ class MultiHumanTrainer:
                 binary_masks = (rgb_frames > eps).any(dim=-1, keepdim=True).float() # [B, H, W, 1]
             elif mask_estimation_method == "smplx_mesh_based":
                 binary_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)  # [B, H, W, 1]
+            elif mask_estimation_method == "rgb_smplx_band":
+                binary_masks = estimate_masks_from_rgb_and_smplx_batch(
+                    batch,
+                    self.renderer.smplx_model
+                )
             elif mask_estimation_method == "src_reprojection":
                 seed_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)
                 assert src_masks_by_name is not None and src_K is not None and src_c2w is not None

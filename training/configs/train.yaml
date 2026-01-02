@@ -27,7 +27,7 @@ cameras_scene_dir: ${root_gt_dir_path}
 frames_scene_dir: ${preprocessing_dir}
 masks_scene_dir: ${preprocessing_dir}
 use_estimated_masks: true
-mask_estimator_kind: "src_reprojection" # "rgb_render_based", "smplx_mesh_based", "src_reprojection"
+mask_estimator_kind: "rgb_smplx_band" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
 smplx_params_scene_dir: ${root_gt_dir_path}
 depths_scene_dir: ${preprocessing_dir}  
 use_depth: true
