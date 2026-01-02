@@ -1,0 +1,6 @@
+scene,SSIM,PSNR,LPIPS
+hi4d_pair15_fight,0.9136,18.8216,0.0994
+hi4d_pair16_jump,0.9129,19.2460,0.0999
+hi4d_pair17_dance,0.9280,21.4939,0.0901
+hi4d_pair19_piggyback,0.9240,20.4637,0.0850
+avg,0.920,20.0,0.0936

@@ -228,6 +228,128 @@ def estimate_masks_from_smplx_batch(batch: Dict[str, Any], smplx_model) -> torch
     renderer.delete()
     return torch.stack(out_masks, dim=0)
 
+def estimate_masks_from_src_reprojection_batch(
+    batch: Dict[str, Any],
+    src_masks_by_name: Dict[str, torch.Tensor],
+    src_K: torch.Tensor,
+    src_c2w: torch.Tensor,
+    seed_masks: Optional[torch.Tensor] = None,
+    depth_min: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Estimate novel-view masks by backprojecting target pixels to 3D using target depth,
+    reprojecting into the source camera, and querying the source mask for the same frame.
+
+    Expected `batch` keys (as produced by `SceneDataset` + PyTorch collation):
+      - `batch["depth"]`: `[B, H, W, 1]` float depth (meters), target camera.
+      - `batch["K"]`: `[B, 4, 4]` intrinsics, target camera.
+      - `batch["c2w"]`: `[B, 4, 4]` camera-to-world, target camera.
+      - `batch["frame_name"]`: list of length `B` with frame name stems.
+
+    Args:
+        src_masks_by_name: dict mapping `frame_name` -> source mask `[H, W, 1]`.
+        src_K: `[4, 4]` intrinsics for the source camera.
+        src_c2w: `[4, 4]` camera-to-world for the source camera.
+        seed_masks: optional `[B, H, W, 1]` high-confidence masks (e.g., SMPL-X).
+        depth_min: minimum valid depth threshold.
+
+    Returns:
+        `[B, H, W, 1]` float tensor in `{0,1}`.
+    """
+
+    if "depth" not in batch:
+        raise KeyError("batch['depth'] is required for src-reprojection mask estimation.")
+
+    depth = batch["depth"]  # [B, H, W, 1]
+    Ks = batch["K"]
+    c2ws = batch["c2w"]
+    frame_names = batch["frame_name"]
+
+    device = depth.device
+    bsize, H, W = int(depth.shape[0]), int(depth.shape[1]), int(depth.shape[2])
+
+    # Cache source camera projection parameters.
+    src_K = src_K.to(device=device, dtype=depth.dtype)
+    src_c2w = src_c2w.to(device=device, dtype=depth.dtype)
+    w2c_src = torch.inverse(src_c2w)
+    fx_src, fy_src, cx_src, cy_src = (
+        float(src_K[0, 0]),
+        float(src_K[1, 1]),
+        float(src_K[0, 2]),
+        float(src_K[1, 2]),
+    )
+
+    # Build a target-view pixel grid (H,W) once; reuse per batch item.
+    xs = torch.arange(W, device=device, dtype=depth.dtype)
+    ys = torch.arange(H, device=device, dtype=depth.dtype)
+    grid_x, grid_y = torch.meshgrid(xs, ys, indexing="xy")  # [H, W]
+
+    out_masks: List[torch.Tensor] = []
+    for bi in range(bsize):
+        depth_hw = depth[bi, :, :, 0]
+        valid_depth = depth_hw > depth_min
+
+        # Target camera intrinsics for this sample.
+        K = Ks[bi]
+        fx, fy, cx, cy = (
+            float(K[0, 0]),
+            float(K[1, 1]),
+            float(K[0, 2]),
+            float(K[1, 2]),
+        )
+
+        # Backproject target pixels to target camera space using depth.
+        x_cam = (grid_x - cx) / fx * depth_hw
+        y_cam = (grid_y - cy) / fy * depth_hw
+        z_cam = depth_hw
+
+        # Convert to world coordinates and then into source camera coordinates.
+        ones = torch.ones_like(z_cam)
+        pts_cam = torch.stack([x_cam, y_cam, z_cam, ones], dim=-1).reshape(-1, 4)  # [N, 4]
+        world = (c2ws[bi] @ pts_cam.t()).t()
+        cam_src = (w2c_src @ world.t()).t() # [N, 4]
+
+        # Project to source pixel coordinates.
+        z_src = cam_src[:, 2]
+        u_src = fx_src * cam_src[:, 0] / z_src + cx_src
+        v_src = fy_src * cam_src[:, 1] / z_src + cy_src
+
+        # Validity mask: in front of both cameras and within source image bounds.
+        valid = (
+            valid_depth.view(-1)
+            & (z_src > depth_min)
+            & (u_src >= 0)
+            & (u_src < W)
+            & (v_src >= 0)
+            & (v_src < H)
+        )
+
+        # Stabilize invalid projections before rounding.
+        u_src = torch.nan_to_num(u_src, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        v_src = torch.nan_to_num(v_src, nan=-1.0, posinf=-1.0, neginf=-1.0)
+        u_int = u_src.round().long().clamp(0, W - 1)
+        v_int = v_src.round().long().clamp(0, H - 1)
+
+        frame_name = frame_names[bi]
+        src_mask = src_masks_by_name.get(frame_name)
+        if src_mask is None:
+            raise KeyError(f"Frame name {frame_name} not found in source mask cache.")
+        src_mask_bool = src_mask.to(device=device)[..., 0] > 0.5
+        src_vals = src_mask_bool[v_int, u_int]
+
+        # Keep target pixels that reproject into source foreground and were valid.
+        mask_flat = valid & src_vals
+        mask_hw = mask_flat.view(H, W).unsqueeze(-1).to(depth.dtype)
+
+        if seed_masks is not None:
+            # Union with a high-confidence seed (e.g., SMPL-X silhouette).
+            seed_hw = seed_masks[bi, :, :, 0] > 0.5
+            mask_hw = torch.logical_or(seed_hw, mask_hw[:, :, 0] > 0.5).unsqueeze(-1).to(depth.dtype)
+
+        out_masks.append(mask_hw)
+
+    return torch.stack(out_masks, dim=0)
+
 def overlay_mask_on_image(
     image: torch.Tensor,
     mask: torch.Tensor,
@@ -1149,12 +1271,41 @@ class MultiHumanTrainer:
     @torch.no_grad()
     def prepare_nv_masks(self, cam_id: int):
 
-        # Load dataset
+        # Load dataset for the cam ID to compute masks for
         new_cam_sample_every = 1 # because nv frames are already subsampled / filtered
-        new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
+        mask_estimation_method = self.cfg.mask_estimator_kind
+        use_depth = mask_estimation_method == "src_reprojection"
+        new_cam_dataset = SceneDataset(
+            self.trn_data_dir,
+            cam_id,
+            use_depth=use_depth,
+            device=self.tuner_device,
+            sample_every=new_cam_sample_every,
+        )
         new_cam_loader = DataLoader(
             new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
+
+        # If using source reprojection, load source masks + cameras
+        src_masks_by_name: Optional[Dict[str, torch.Tensor]] = None
+        src_K = None
+        src_c2w = None
+        if mask_estimation_method == "src_reprojection":
+            src_cam_id = self.cfg.nvs_eval.source_camera_id
+            skip_frames = load_skip_frames(self.trn_data_dir)
+            src_dataset = SceneDataset(
+                self.trn_data_dir,
+                src_cam_id,
+                device=self.tuner_device,
+                sample_every=self.sample_every,
+                skip_frames=skip_frames,
+            )
+            src_masks_by_name = {}
+            for idx in range(len(src_dataset)):
+                sample = src_dataset[idx]
+                src_masks_by_name[sample["frame_name"]] = sample["mask"]
+            src_K = src_dataset.K
+            src_c2w = src_dataset.c2w
 
 
         # Compute masks for the nv dataset
@@ -1170,6 +1321,16 @@ class MultiHumanTrainer:
                 binary_masks = (rgb_frames > eps).any(dim=-1, keepdim=True).float() # [B, H, W, 1]
             elif mask_estimation_method == "smplx_mesh_based":
                 binary_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)  # [B, H, W, 1]
+            elif mask_estimation_method == "src_reprojection":
+                seed_masks = estimate_masks_from_smplx_batch(batch, self.renderer.smplx_model)
+                assert src_masks_by_name is not None and src_K is not None and src_c2w is not None
+                binary_masks = estimate_masks_from_src_reprojection_batch(
+                    batch,
+                    src_masks_by_name=src_masks_by_name,
+                    src_K=src_K,
+                    src_c2w=src_c2w,
+                    seed_masks=seed_masks,
+                )
 
             # - Save binary masks
             masks_save_dir = root_dir_to_mask_dir(self.trn_data_dir, cam_id)
