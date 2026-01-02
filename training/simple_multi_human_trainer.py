@@ -1,28 +1,25 @@
 import os
 import sys
 import subprocess
-from collections import deque
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-from tqdm import tqdm
+from collections import deque
+
+
 import pandas as pd
-from omegaconf import DictConfig
-
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-
 import hydra
 import numpy as np
+import wandb
+from tqdm import tqdm
+from omegaconf import DictConfig
 from PIL import Image
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, ConcatDataset
 
-import torch.nn.functional as F
-
-from fused_ssim import fused_ssim
-import wandb
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -32,10 +29,24 @@ sys.path.insert(
         os.path.join(os.path.dirname(__file__), "..", "submodules", "lhm")
     ),
 )
+
 from training.helpers.gs_renderer import GS3DRenderer
-from training.helpers.dataset import SceneDataset, fetch_data_if_available, root_dir_to_image_dir, root_dir_to_mask_dir, root_dir_to_skip_frames_path, root_dir_to_depth_dir
-from training.helpers.debug import save_depth_comparison, create_and_save_depth_debug_vis
-from training.helpers.eval_metrics import ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics
+from training.helpers.dataset import (
+    SceneDataset, 
+    fetch_data_if_available, 
+    root_dir_to_image_dir, 
+    root_dir_to_mask_dir, 
+    root_dir_to_skip_frames_path, 
+    root_dir_to_depth_dir
+)
+from training.helpers.debug import (
+    save_depth_comparison, 
+    create_and_save_depth_debug_vis
+)
+from training.helpers.eval_metrics import (
+    ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics
+)
+from fused_ssim import fused_ssim
 
 from training.helpers.difix import difix_refine
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
