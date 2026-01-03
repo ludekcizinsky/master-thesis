@@ -63,6 +63,10 @@ from training.helpers.masking import (
     save_segmentation_debug_figures
 )
 
+# ---------------------------------------------------------------------------
+# SMPLX Pose tuning / eval utilities
+# ---------------------------------------------------------------------------
+
 
 # ---------------------------------------------------------------------------
 # Utility functions
@@ -298,6 +302,7 @@ class MultiHumanTrainer:
         cameras_dir = Path(self.cfg.test_cameras_scene_dir)
         smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir)
         depths_dir = Path(self.cfg.test_depths_scene_dir) if self.cfg.test_depths_scene_dir is not None else None
+        smpl_params_dir = Path(self.cfg.test_smpl_params_scene_dir) if self.cfg.test_smpl_params_scene_dir is not None else None
 
 
         # Fetch testing dataset from the specified directories 
@@ -310,6 +315,7 @@ class MultiHumanTrainer:
                 cameras_dir,
                 smplx_params_dir,
                 depths_dir,
+                smpl_params_dir,
             )
 
     # ---------------- Model  ------------------------------
@@ -1351,11 +1357,64 @@ class MultiHumanTrainer:
                 to_log = {f"eval_segm/trn_cam/{metric_name}": v for metric_name, v in source_avg.items()}
                 to_log["epoch"] = epoch
                 wandb.log(to_log)
- 
+
+    @torch.no_grad()
+    def eval_loop_pose_estimation(self, epoch):
+        
+        # Prepare directories to save results
+        # - root save directory        
+        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Init datasets
+        # - Ground truth dataset
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval pose in world coords
+        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True)
+
+        # - Prediction dataset (use_smpl=False because we train using smplx, so we need to convert to smpl)
+        trn_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, use_smpl=False)
+        trn_loader = DataLoader(
+            trn_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+
+        for batch in tqdm(trn_loader, desc="Evaluating Pose Estimation", leave=False):
+
+            # Parse batch data
+            frame_indices = batch["frame_idx"]      # [B]
+            fnames = batch["frame_name"]      # [B]
+            bsize = int(batch["image"].shape[0])
+            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+
+            # Debug:
+            # - smplx key, value shape
+            for k, v in batch["smplx_params"].items():
+                print(f"smplx_params[{k}]: shape {v.shape}")
+
+
+            # Get corresponding gt smpl params
+            gt_smpl_params = []
+            gt_frame_names = []
+            for i in range(bsize):
+                sample_dict = gt_dataset[frame_indices[i].item()]
+                smpl_params = sample_dict["smpl_params"]
+                gt_smpl_params.append(smpl_params)
+                gt_frame_names.append(sample_dict["frame_name"])
+
+            # - Stack the returned gt smpl params
+            gt_smpl_params_batched = {k: torch.stack([gt_smpl_params[i][k] for i in range(bsize)], dim=0) for k in gt_smpl_params[0].keys()}
+            assert list(gt_frame_names) == list(fnames), "Predicted and GT frame names do not match!"
+
+            # Debug - gt smpl key, value shape
+            for k, v in gt_smpl_params_batched.items():
+                print(f"gt_smpl_params[{k}]: shape {v.shape}")
+
+
     @torch.no_grad()
     def eval_loop(self, epoch):
         self.eval_loop_nvs(epoch)
         self.eval_loop_segmentation(epoch)
+        self.eval_loop_pose_estimation(epoch)
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")

@@ -27,6 +27,9 @@ def root_dir_to_mask_dir(root_dir: Path, cam_id: int) -> Path:
 def root_dir_to_smplx_dir(root_dir: Path) -> Path:
     return root_dir / "smplx"
 
+def root_dir_to_smpl_dir(root_dir: Path) -> Path:
+    return root_dir / "smpl"
+
 def root_dir_to_cameras_path(root_dir: Path) -> Path:
     return root_dir / "cameras" / "rgb_cameras.npz"
 
@@ -42,6 +45,7 @@ class SceneDataset(Dataset):
                 scene_root_dir: Path,
                 src_cam_id: int,
                 use_depth: Optional[bool] = False,
+                use_smpl: Optional[bool] = False,
                 device: Optional[torch.device] = "cuda", 
                 sample_every: Optional[int] = 1,
                 skip_frames: Optional[list] = []):
@@ -77,6 +81,11 @@ class SceneDataset(Dataset):
         # Load SMPLX parameters
         self.smplx_dir: Path = root_dir_to_smplx_dir(scene_root_dir)
         self._load_smplx_paths()
+
+        # (Optional) Load SMPL parameters
+        if use_smpl:
+            self.smpl_dir: Path = root_dir_to_smpl_dir(scene_root_dir)
+            self._load_smpl_paths()
 
     # --------- Path loaders
     def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1, skip_frames: Optional[list] = []):
@@ -144,6 +153,18 @@ class SceneDataset(Dataset):
                 self.depth_paths.append(depth_path)
         if missing:
             raise RuntimeError(f"Missing depth files for frames (by stem): {missing[:5]}")
+        
+    def _load_smpl_paths(self):
+        self.smpl_paths = []
+        missing = []
+        for p in self.frame_paths:
+            smpl_path = self.smpl_dir / f"{p.stem}.npz"
+            if not smpl_path.exists():
+                missing.append(p.stem)
+            else:
+                self.smpl_paths.append(smpl_path)
+        if missing:
+            raise RuntimeError(f"Missing SMPL files for frames (by stem): {missing[:5]}")
 
 
     # -------- Data loaders for camera parameters and SMPLX
@@ -241,6 +262,29 @@ class SceneDataset(Dataset):
 
         return smplx
 
+    def _load_smpl(self, path: Path):
+
+        npz = np.load(path)
+
+        def add_key(key):
+            arrs = torch.from_numpy(npz[key]).float()
+            return arrs.to(self.device)  # [P, ...]
+
+        body_pose = add_key("body_pose")
+        # SMPL often stores body pose as a flattened axis-angle vector [P, 69] (= 23 joints * 3).
+        # Reshape to match the structured representation used elsewhere: [P, 23, 3].
+        if body_pose.ndim == 2 and body_pose.shape[-1] == 69:
+            body_pose = body_pose.reshape(body_pose.shape[0], 23, 3)
+
+        smpl = {
+            "betas": add_key("betas"),
+            "body_pose": body_pose,
+            "root_pose": add_key("global_orient"),   # [P,3] world axis-angle
+            "trans": add_key("transl"),           # [P,3] world translation
+            "contact": add_key("contact"),
+        }
+
+        return smpl
 
     # -------- Dataset interface
     def __len__(self):
@@ -274,11 +318,17 @@ class SceneDataset(Dataset):
             depth = self._load_depth(self.depth_paths[idx])
             to_return_values["depth"] = depth
 
+        # - (Optional) load SMPL parameters
+        if hasattr(self, "smpl_paths"):
+            smpl_params = self._load_smpl(self.smpl_paths[idx])
+            to_return_values["smpl_params"] = smpl_params
+
         return to_return_values
 
 
 def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_dir: Path, masks_scene_dir: Path, cam_scene_dir: Optional[Path] = None,  
-                                smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, resolution_hw: Optional[Tuple[int, int]] = (1280, 940), frame_paths: Optional[list] = None):
+                                smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, smpl_params_scene_dir: Optional[Path] = None,
+                                resolution_hw: Optional[Tuple[int, int]] = (1280, 940), frame_paths: Optional[list] = None):
     """
     Copy data from the specified scene directories to the tgt scene directory. If the given
     source directory is None, skip copying that data type. If the source directory does not exist,
@@ -346,6 +396,16 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_depths_dir), str(tgt_depths_dir)])
         else:
             raise NotImplementedError(f"Depth directory not found: {src_depths_dir}")
+
+    # SMPL parameters
+    if smpl_params_scene_dir is not None:
+        src_smpl_params_dir = root_dir_to_smpl_dir(smpl_params_scene_dir)
+        tgt_smpl_params_dir = root_dir_to_smpl_dir(tgt_scene_dir)
+        tgt_smpl_params_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_smpl_params_dir.exists():
+            subprocess.run(["cp", "-r", str(src_smpl_params_dir), str(tgt_smpl_params_dir.parent)])
+        else:
+            raise ValueError(f"SMPL parameters directory not found: {src_smpl_params_dir}")
 
     # Skip frames
     src_skip_frames_path = root_dir_to_skip_frames_path(frames_scene_dir)
