@@ -19,7 +19,7 @@ cd /home/cizinsky/master-thesis
 
 seq_name="hi4d_pair16_jump"
 num_persons=2
-exp_name="v1_of_pose_est_metrics"
+exp_name="v2_of_pose_est_metrics"
 source_cam_id=4
 target_cam_ids="[76,4,28]"
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16

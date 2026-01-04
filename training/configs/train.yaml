@@ -25,11 +25,12 @@ apply_mask_to_render_for_nvs: true
 # train
 cameras_scene_dir: ${root_gt_dir_path}
 frames_scene_dir: ${preprocessing_dir}
-masks_scene_dir: ${preprocessing_dir}
-use_estimated_masks: true
+masks_scene_dir: ${root_gt_dir_path}
+use_estimated_masks: false
 mask_estimator_kind: "rgb_smplx_band" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
-smplx_params_scene_dir: ${root_gt_dir_path}
+smplx_params_scene_dir: ${preprocessing_dir}
 depths_scene_dir: ${preprocessing_dir}  
+smpl_params_scene_dir: ${preprocessing_dir}
 use_depth: true
 
 # test

@@ -50,6 +50,7 @@ from fused_ssim import fused_ssim
 
 from training.helpers.difix import difix_refine
 from submodules.difix3d.src.pipeline_difix import DifixPipeline
+from submodules.smplx import smplx
 
 from training.helpers.masking import (
     get_masks_based_bbox,
@@ -66,6 +67,68 @@ from training.helpers.masking import (
 # ---------------------------------------------------------------------------
 # SMPLX Pose tuning / eval utilities
 # ---------------------------------------------------------------------------
+
+def _flatten_smpl_pose(pose: torch.Tensor) -> torch.Tensor:
+    if pose.dim() == 4:
+        return pose.reshape(pose.shape[0], pose.shape[1], -1)
+    if pose.dim() == 3:
+        return pose
+    raise ValueError(f"Unexpected pose shape: {pose.shape}")
+
+
+def _smpl_params_to_joints(
+    smpl_params: Dict[str, torch.Tensor],
+    smpl_layer,
+) -> torch.Tensor:
+    if "contact" in smpl_params:
+        smpl_params = {k: v for k, v in smpl_params.items() if k != "contact"}
+
+    betas = smpl_params["betas"]
+    body_pose = smpl_params["body_pose"]
+    root_pose = smpl_params["root_pose"]
+    trans = smpl_params["trans"]
+
+    if betas.dim() != 3:
+        raise ValueError(f"Expected betas shape [B,P,?], got {betas.shape}")
+
+    bsize, npeople = betas.shape[:2]
+    betas = betas.reshape(bsize * npeople, -1)
+    body_pose = _flatten_smpl_pose(body_pose).reshape(bsize * npeople, -1)
+    root_pose = _flatten_smpl_pose(root_pose).reshape(bsize * npeople, -1)
+    trans = trans.reshape(bsize * npeople, -1)
+
+    output = smpl_layer(
+        global_orient=root_pose,
+        body_pose=body_pose,
+        betas=betas,
+        transl=trans,
+    )
+    joints = output.joints
+    return joints.reshape(bsize, npeople, joints.shape[1], 3)
+
+
+def compute_smpl_mpjpe_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_smpl_params: Dict[str, torch.Tensor],
+    smpl_layer,
+    unit: str = "mm",
+) -> torch.Tensor:
+    pred_joints = _smpl_params_to_joints(pred_smpl_params, smpl_layer)
+    gt_joints = _smpl_params_to_joints(gt_smpl_params, smpl_layer)
+    per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
+    per_frame = per_joint.mean(dim=(1, 2))
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported MPJPE unit: {unit}")
+
+    return per_frame * scale
 
 
 # ---------------------------------------------------------------------------
@@ -232,28 +295,29 @@ class MultiHumanTrainer:
         # Preare model
         self._load_model()
 
-        # Initialize difix
-        self._init_nv_generation()
+        if False:
+            # Initialize difix
+            self._init_nv_generation()
 
-        # Generate novel views 
-        is_nv_gen_done = False
-        n_its_nv_gen = 0
-        while not is_nv_gen_done:
-            is_nv_gen_done = self.novel_view_generation_step()
-            n_its_nv_gen += 1
-            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+            # Generate novel views 
+            is_nv_gen_done = False
+            n_its_nv_gen = 0
+            while not is_nv_gen_done:
+                is_nv_gen_done = self.novel_view_generation_step()
+                n_its_nv_gen += 1
+                print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
 
-        # Prepare training dataset from all the new cameras
-        for cam_id in self.difix_cam_ids_all:
-            scene_ds = SceneDataset(
-                self.trn_data_dir,
-                int(cam_id),
-                use_depth=self.cfg.use_depth,
-                device=self.tuner_device,
-                sample_every=1,
-            )
-            self.trn_datasets.append(scene_ds)
-        self.trn_dataset = ConcatDataset(self.trn_datasets)
+            # Prepare training dataset from all the new cameras
+            for cam_id in self.difix_cam_ids_all:
+                scene_ds = SceneDataset(
+                    self.trn_data_dir,
+                    int(cam_id),
+                    use_depth=self.cfg.use_depth,
+                    device=self.tuner_device,
+                    sample_every=1,
+                )
+                self.trn_datasets.append(scene_ds)
+            self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -270,6 +334,7 @@ class MultiHumanTrainer:
             Path(self.cfg.cameras_scene_dir),
             Path(self.cfg.smplx_params_scene_dir),
             Path(self.cfg.depths_scene_dir) if self.cfg.use_depth else None,
+            Path(self.cfg.smpl_params_scene_dir),
         )
 
         # Load skip frames if needed
@@ -1367,32 +1432,29 @@ class MultiHumanTrainer:
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Init datasets
+        skip_frames = load_skip_frames(self.trn_data_dir)
         # - Ground truth dataset
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval pose in world coords
-        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True)
+        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True, skip_frames=skip_frames)
 
-        # - Prediction dataset (use_smpl=False because we train using smplx, so we need to convert to smpl)
-        trn_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, use_smpl=False)
-        trn_loader = DataLoader(
-            trn_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        # - Prediction dataset 
+        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True, skip_frames=skip_frames)
+        pred_loader = DataLoader(
+            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
-        for batch in tqdm(trn_loader, desc="Evaluating Pose Estimation", leave=False):
+        smpl_layer = None
+
+        metrics_per_frame = []
+        for batch in tqdm(pred_loader, desc="Evaluating Pose Estimation", leave=False):
 
             # Parse batch data
             frame_indices = batch["frame_idx"]      # [B]
             fnames = batch["frame_name"]      # [B]
             bsize = int(batch["image"].shape[0])
-            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
-
-            # Debug:
-            # - smplx key, value shape
-            for k, v in batch["smplx_params"].items():
-                print(f"smplx_params[{k}]: shape {v.shape}")
-
 
             # Get corresponding gt smpl params
+            # - Loop over batch to get gt smpl params
             gt_smpl_params = []
             gt_frame_names = []
             for i in range(bsize):
@@ -1405,16 +1467,60 @@ class MultiHumanTrainer:
             gt_smpl_params_batched = {k: torch.stack([gt_smpl_params[i][k] for i in range(bsize)], dim=0) for k in gt_smpl_params[0].keys()}
             assert list(gt_frame_names) == list(fnames), "Predicted and GT frame names do not match!"
 
-            # Debug - gt smpl key, value shape
-            for k, v in gt_smpl_params_batched.items():
-                print(f"gt_smpl_params[{k}]: shape {v.shape}")
+            # Get smpl layer if not yet done
+            if smpl_layer is None:
+                model_root = Path(self.renderer.smplx_model.smpl_x.human_model_path)
+                smpl_layer = smplx.create(
+                    str(model_root),
+                    "smpl",
+                    gender="neutral",
+                    num_betas=batch["smpl_params"]["betas"].shape[-1],
+                    use_pca=False,
+                ).to(self.tuner_device).eval()
 
+            # Compute pose metrics
+            # - MPJPE per frame
+            mpjpe_per_frame = compute_smpl_mpjpe_per_frame(
+                batch["smpl_params"],
+                gt_smpl_params_batched,
+                smpl_layer,
+                unit="mm",
+            )
+            for fname, mpjpe in zip(fnames, mpjpe_per_frame):
+                fid = int(fname)
+                metrics_per_frame.append(
+                    (fid, mpjpe.item())
+                )
+
+        # Save metrics to CSV
+        # - save per-frame metrics
+        df = pd.DataFrame(metrics_per_frame, columns=["frame_id", "mpjpe_mm"])
+        csv_path = save_dir / "pose_estimation_metrics_per_frame.csv"
+        df.to_csv(csv_path, index=False)
+
+        # - save average metrics
+        overall_avg = {
+            "mpjpe_mm": df["mpjpe_mm"].mean(),
+        }
+        overall_avg_path = save_dir / "pose_estimation_overall_results.txt"
+        with open(overall_avg_path, "w") as f:
+            for k, v in overall_avg.items():
+                f.write(f"{k}: {v:.4f}\n")
+        
+        # - debug
+        print(f"Overall Pose Estimation MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}")
+        # - log the overall average metrics to wandb
+        if self.cfg.wandb.enable:
+            to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}
+            to_log["epoch"] = epoch
+            wandb.log(to_log)
 
     @torch.no_grad()
     def eval_loop(self, epoch):
-        self.eval_loop_nvs(epoch)
-        self.eval_loop_segmentation(epoch)
+        # self.eval_loop_nvs(epoch)
+        # self.eval_loop_segmentation(epoch)
         self.eval_loop_pose_estimation(epoch)
+        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
