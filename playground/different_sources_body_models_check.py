@@ -25,6 +25,7 @@ class DebugConfig:
     source_b_scene_dir: Path = Path("/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair17_dance")
     src_cam_id: int = 4
     device: str = "cuda"
+    body_model_kind: str = "smplx"  # smplx | smpl
     smplx_model_path: Path = Path("/scratch/izar/cizinsky/pretrained/pretrained_models/human_model_files/smplx/SMPLX_NEUTRAL.npz")
     port: int = 8080
     initial_view: str = "estimated"  # source_a_name | source_b_name | none
@@ -89,36 +90,82 @@ def get_color(idx: int) -> np.ndarray:
     return palette[idx % len(palette)]
 
 
-def build_smplx_layer(model_root: Path, num_betas: int, num_expr: int, device: torch.device):
-    layer = smplx.create(
-        str(model_root),
-        "smplx",
-        gender="neutral",
-        num_betas=num_betas,
-        num_expression_coeffs=num_expr,
-        use_pca=False,
-        use_face_contour=True,
-        flat_hand_mean=True,
-    )
+def normalize_body_model_kind(kind: str) -> str:
+    return kind.strip().lower()
+
+def build_body_model_layer(
+    model_root: Path,
+    body_model_kind: str,
+    num_betas: int,
+    num_expr: int,
+    device: torch.device,
+):
+    if body_model_kind == "smplx":
+        layer = smplx.create(
+            str(model_root),
+            "smplx",
+            gender="neutral",
+            num_betas=num_betas,
+            num_expression_coeffs=num_expr,
+            use_pca=False,
+            use_face_contour=True,
+            flat_hand_mean=True,
+        )
+    elif body_model_kind == "smpl":
+        layer = smplx.create(
+            str(model_root),
+            "smpl",
+            gender="neutral",
+            num_betas=num_betas,
+            use_pca=False,
+        )
+    else:
+        raise ValueError(f"Unsupported body_model_kind: {body_model_kind}")
     return layer.to(device)
 
 
-def smplx_vertices(smplx_layer, smplx_params: dict) -> torch.Tensor:
-    params = {
-        "global_orient": smplx_params["root_pose"],
-        "body_pose": smplx_params["body_pose"],
-        "jaw_pose": smplx_params["jaw_pose"],
-        "leye_pose": smplx_params["leye_pose"],
-        "reye_pose": smplx_params["reye_pose"],
-        "left_hand_pose": smplx_params["lhand_pose"],
-        "right_hand_pose": smplx_params["rhand_pose"],
-        "betas": smplx_params["betas"],
-        "transl": smplx_params["trans"],
-        "expression": smplx_params["expr"],
-    }
+def body_model_vertices(body_model_kind: str, body_model_layer, body_model_params: dict) -> torch.Tensor:
+    if body_model_kind == "smplx":
+        params = {
+            "global_orient": body_model_params["root_pose"],
+            "body_pose": body_model_params["body_pose"],
+            "jaw_pose": body_model_params["jaw_pose"],
+            "leye_pose": body_model_params["leye_pose"],
+            "reye_pose": body_model_params["reye_pose"],
+            "left_hand_pose": body_model_params["lhand_pose"],
+            "right_hand_pose": body_model_params["rhand_pose"],
+            "betas": body_model_params["betas"],
+            "transl": body_model_params["trans"],
+            "expression": body_model_params["expr"],
+        }
+    elif body_model_kind == "smpl":
+        root_pose = body_model_params["root_pose"]
+        body_pose = body_model_params["body_pose"]
+        if body_pose.dim() == 3:
+            body_pose = body_pose.reshape(body_pose.shape[0], -1)
+        if root_pose.dim() == 3:
+            root_pose = root_pose.reshape(root_pose.shape[0], -1)
+        params = {
+            "global_orient": root_pose,
+            "body_pose": body_pose,
+            "betas": body_model_params["betas"],
+            "transl": body_model_params["trans"],
+        }
+    else:
+        raise ValueError(f"Unsupported body_model_kind: {body_model_kind}")
+
     with torch.no_grad():
-        output = smplx_layer(**params)
+        output = body_model_layer(**params)
     return output.vertices
+
+
+def get_body_model_params(sample: dict, body_model_kind: str, frame_idx: int) -> dict:
+    params_key = "smplx_params" if body_model_kind == "smplx" else "smpl_params"
+    if params_key not in sample:
+        raise KeyError(
+            f"Missing {params_key} in sample. Ensure {params_key} is available for body_model_kind={body_model_kind}."
+        )
+    return select_frame_params(sample[params_key], frame_idx)
 
 
 def add_camera_frustum(server, name: str, image: torch.Tensor, K: torch.Tensor, c2w: torch.Tensor):
@@ -167,23 +214,23 @@ def set_initial_camera(client, image: torch.Tensor, K: torch.Tensor, c2w: torch.
 def update_meshes(
     server: viser.ViserServer,
     root_name: str,
-    smplx_verts: torch.Tensor,
-    smplx_faces: np.ndarray,
+    body_model_verts: torch.Tensor,
+    body_model_faces: np.ndarray,
     handles: list,
     color: np.ndarray,
 ) -> None:
     color_tuple = tuple(int(c) for c in color.tolist())
-    for pid in range(smplx_verts.shape[0]):
+    for pid in range(body_model_verts.shape[0]):
         name = f"/scene/{root_name}/person_{pid}"
         handle = handles[pid] if pid < len(handles) else None
-        vertices = smplx_verts[pid].detach().cpu().numpy()
+        vertices = body_model_verts[pid].detach().cpu().numpy()
         if handle is not None and hasattr(handle, "update"):
-            handle.update(vertices=vertices, faces=smplx_faces, color=color_tuple)
+            handle.update(vertices=vertices, faces=body_model_faces, color=color_tuple)
         else:
             handle = server.scene.add_mesh_simple(
                 name,
                 vertices=vertices,
-                faces=smplx_faces,
+                faces=body_model_faces,
                 color=color_tuple,
             )
             if pid < len(handles):
@@ -191,7 +238,7 @@ def update_meshes(
             else:
                 handles.append(handle)
         handles[pid].visible = True
-    for pid in range(smplx_verts.shape[0], len(handles)):
+    for pid in range(body_model_verts.shape[0], len(handles)):
         handles[pid].visible = False
 
 
@@ -240,18 +287,18 @@ def add_scene(
     image: torch.Tensor,
     K: torch.Tensor,
     c2w: torch.Tensor,
-    smplx_verts: torch.Tensor,
-    smplx_faces: np.ndarray,
+    body_model_verts: torch.Tensor,
+    body_model_faces: np.ndarray,
     color: np.ndarray,
 ):
     root = server.scene.add_frame(f"/scene/{root_name}", show_axes=True)
     add_camera_frustum(server, f"/scene/{root_name}/camera", image, K, c2w)
     color_tuple = tuple(int(c) for c in color.tolist())
-    for pid in range(smplx_verts.shape[0]):
+    for pid in range(body_model_verts.shape[0]):
         server.scene.add_mesh_simple(
             f"/scene/{root_name}/person_{pid}",
-            vertices=smplx_verts[pid].detach().cpu().numpy(),
-            faces=smplx_faces,
+            vertices=body_model_verts[pid].detach().cpu().numpy(),
+            faces=body_model_faces,
             color=color_tuple,
         )
     return root
@@ -259,11 +306,27 @@ def add_scene(
 
 if __name__ == "__main__":
     cfg = tyro.cli(DebugConfig)
+    body_model_kind = normalize_body_model_kind(cfg.body_model_kind)
+    if body_model_kind not in {"smplx", "smpl"}:
+        raise ValueError(f"Unsupported body_model_kind: {cfg.body_model_kind}")
     device = torch.device(cfg.device)
 
     skip_frames = load_skip_frames(cfg.source_a_scene_dir)
-    source_a_ds = SceneDataset(cfg.source_a_scene_dir, src_cam_id=cfg.src_cam_id, device=device, skip_frames=skip_frames)
-    source_b_ds = SceneDataset(cfg.source_b_scene_dir, src_cam_id=cfg.src_cam_id, device=device, skip_frames=skip_frames)
+    use_smpl = body_model_kind == "smpl"
+    source_a_ds = SceneDataset(
+        cfg.source_a_scene_dir,
+        src_cam_id=cfg.src_cam_id,
+        device=device,
+        skip_frames=skip_frames,
+        use_smpl=use_smpl,
+    )
+    source_b_ds = SceneDataset(
+        cfg.source_b_scene_dir,
+        src_cam_id=cfg.src_cam_id,
+        device=device,
+        skip_frames=skip_frames,
+        use_smpl=use_smpl,
+    )
 
     source_a_len = len(source_a_ds)
     source_b_len = len(source_b_ds)
@@ -279,18 +342,20 @@ if __name__ == "__main__":
     source_a_sample = source_a_ds[0]
     source_b_sample = source_b_ds[0]
 
-    source_a_smplx = select_frame_params(source_a_sample["smplx_params"], 0)
-    source_b_smplx = select_frame_params(source_b_sample["smplx_params"], 0)
+    source_a_params = get_body_model_params(source_a_sample, body_model_kind, 0)
+    source_b_params = get_body_model_params(source_b_sample, body_model_kind, 0)
 
     model_root = resolve_human_model_root(cfg.smplx_model_path)
-    source_a_layer = build_smplx_layer(
-        model_root, source_a_smplx["betas"].shape[-1], source_a_smplx["expr"].shape[-1], device
+    source_a_num_expr = source_a_params["expr"].shape[-1] if body_model_kind == "smplx" else 0
+    source_b_num_expr = source_b_params["expr"].shape[-1] if body_model_kind == "smplx" else 0
+    source_a_layer = build_body_model_layer(
+        model_root, body_model_kind, source_a_params["betas"].shape[-1], source_a_num_expr, device
     )
-    source_b_layer = build_smplx_layer(
-        model_root, source_b_smplx["betas"].shape[-1], source_b_smplx["expr"].shape[-1], device
+    source_b_layer = build_body_model_layer(
+        model_root, body_model_kind, source_b_params["betas"].shape[-1], source_b_num_expr, device
     )
 
-    smplx_faces = source_a_layer.faces.astype(np.int32)
+    body_model_faces = source_a_layer.faces.astype(np.int32)
 
     server = viser.ViserServer(port=cfg.port)
 
@@ -336,11 +401,11 @@ if __name__ == "__main__":
         source_a_sample = source_a_ds[frame_idx]
         source_b_sample = source_b_ds[frame_idx]
 
-        source_a_smplx = select_frame_params(source_a_sample["smplx_params"], frame_idx)
-        source_b_smplx = select_frame_params(source_b_sample["smplx_params"], frame_idx)
+        source_a_params = get_body_model_params(source_a_sample, body_model_kind, frame_idx)
+        source_b_params = get_body_model_params(source_b_sample, body_model_kind, frame_idx)
 
-        source_a_verts = smplx_vertices(source_a_layer, source_a_smplx)
-        source_b_verts = smplx_vertices(source_b_layer, source_b_smplx)
+        source_a_verts = body_model_vertices(body_model_kind, source_a_layer, source_a_params)
+        source_b_verts = body_model_vertices(body_model_kind, source_b_layer, source_b_params)
 
         source_a_color = get_color(0)
         source_b_color = get_color(1)
@@ -349,7 +414,7 @@ if __name__ == "__main__":
             server,
             cfg.source_a_name,
             source_a_verts,
-            smplx_faces,
+            body_model_faces,
             source_a_handles,
             source_a_color,
         )
@@ -357,7 +422,7 @@ if __name__ == "__main__":
             server,
             cfg.source_b_name,
             source_b_verts,
-            smplx_faces,
+            body_model_faces,
             source_b_handles,
             source_b_color,
         )

@@ -15,11 +15,12 @@ src_a_dir=/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair16_jump
 src_a_name="estimated"
 src_b_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
 src_b_name="ground_truth"
-python playground/different_sources_body_models_check.py --source_a_scene_dir $src_a_dir --source_a_name $src_a_name --source_b_scene_dir $src_b_dir --source_b_name $src_b_name --src_cam_id 4
+body_model_kind="smpl"
+python playground/different_sources_body_models_check.py --source_a_scene_dir $src_a_dir --source_a_name $src_a_name --source_b_scene_dir $src_b_dir --source_b_name $src_b_name --src_cam_id 4 --body_model_kind $body_model_kind
 
 
 # # SMPLX to SMPL conversion debug
-# scene_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair15_fight/v3_est_masks_gt_smplx_h6_rgb_smplx_band_and_apply_mask_to_renders
+# scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair16_jump
 # # - conversion
 # bash /home/cizinsky/master-thesis/submodules/smplx/tools/run_conversion.sh $scene_dir smplx smpl
 # # - check conversion

@@ -267,7 +267,10 @@ class SceneDataset(Dataset):
         npz = np.load(path)
 
         def add_key(key):
-            arrs = torch.from_numpy(npz[key]).float()
+            if not key in npz:
+                arrs = torch.zeros((npz["betas"].shape[0], 10), device=self.device)
+            else:
+                arrs = torch.from_numpy(npz[key]).float()
             return arrs.to(self.device)  # [P, ...]
 
         body_pose = add_key("body_pose")
@@ -281,7 +284,7 @@ class SceneDataset(Dataset):
             "body_pose": body_pose,
             "root_pose": add_key("global_orient"),   # [P,3] world axis-angle
             "trans": add_key("transl"),           # [P,3] world translation
-            "contact": add_key("contact"),
+            "contact": add_key("contact"), # [P, N_contact] - may be dummy depending on source
         }
 
         return smpl
