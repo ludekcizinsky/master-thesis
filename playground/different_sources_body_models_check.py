@@ -3,6 +3,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import torch
@@ -12,7 +13,7 @@ import viser.transforms as tf
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from training.helpers.dataset import SceneDataset
+from training.helpers.dataset import SceneDataset, root_dir_to_skip_frames_path
 from submodules.smplx import smplx
 
 
@@ -28,6 +29,29 @@ class DebugConfig:
     port: int = 8080
     initial_view: str = "estimated"  # source_a_name | source_b_name | none
     camera_backoff: float = 0.5
+
+def load_skip_frames(scene_dir: Path) -> List[int]:
+    """
+    Load skip frames from skip_frames.csv in the scene directory.
+
+    Note: the frame indicies are actual frame indexes and the frames dir may
+    not always start with frame 0. Therefore, the returnd indices correspond to
+    the actual frame indices to skip. e.g. if we have frames 10, 11, 12, 13 and skip_frames.csv contains "11,13",
+    we will skip frames 11 and 13.
+
+    Args:
+        scene_dir: Path to the scene directory.
+    Returns:
+        List of frame indices to skip.
+    """
+
+    skip_frames_file = root_dir_to_skip_frames_path(scene_dir)
+    if not skip_frames_file.exists():
+        return []
+    with open(skip_frames_file, "r") as f:
+        line = f.readline().strip()
+        skip_frames = [int(idx_str) for idx_str in line.split(",") if idx_str.isdigit()]
+    return skip_frames
 
 
 def resolve_human_model_root(model_path: Path) -> Path:
@@ -146,21 +170,21 @@ def update_meshes(
     smplx_verts: torch.Tensor,
     smplx_faces: np.ndarray,
     handles: list,
-    color_offset: int,
+    color: np.ndarray,
 ) -> None:
+    color_tuple = tuple(int(c) for c in color.tolist())
     for pid in range(smplx_verts.shape[0]):
-        color = get_color(pid + color_offset).tolist()
         name = f"/scene/{root_name}/person_{pid}"
         handle = handles[pid] if pid < len(handles) else None
         vertices = smplx_verts[pid].detach().cpu().numpy()
         if handle is not None and hasattr(handle, "update"):
-            handle.update(vertices=vertices, faces=smplx_faces, color=tuple(int(c) for c in color))
+            handle.update(vertices=vertices, faces=smplx_faces, color=color_tuple)
         else:
             handle = server.scene.add_mesh_simple(
                 name,
                 vertices=vertices,
                 faces=smplx_faces,
-                color=tuple(int(c) for c in color),
+                color=color_tuple,
             )
             if pid < len(handles):
                 handles[pid] = handle
@@ -179,9 +203,6 @@ def update_camera_frustum(
     K: torch.Tensor,
     c2w: torch.Tensor,
 ):
-    if handle is not None and hasattr(handle, "remove"):
-        handle.remove()
-
     image_np = (image.detach().cpu().numpy() * 255).astype(np.uint8)
     K_np = K.detach().cpu().numpy()
     c2w_np = c2w.detach().cpu().numpy()
@@ -193,15 +214,24 @@ def update_camera_frustum(
     wxyz = tf.SO3.from_matrix(c2w_np[:3, :3]).wxyz
     position = c2w_np[:3, 3]
 
-    return server.scene.add_camera_frustum(
-        name=name,
-        fov=fov,
-        aspect=aspect,
-        scale=0.2,
-        wxyz=wxyz,
-        position=position,
-        image=image_np,
-    )
+    if handle is None or not hasattr(handle, "_impl") or handle._impl.removed:
+        return server.scene.add_camera_frustum(
+            name=name,
+            fov=fov,
+            aspect=aspect,
+            scale=0.2,
+            wxyz=wxyz,
+            position=position,
+            image=image_np,
+        )
+
+    handle.image = image_np
+    handle.fov = fov
+    handle.aspect = aspect
+    handle.scale = 0.2
+    handle.wxyz = wxyz
+    handle.position = position
+    return handle
 
 
 def add_scene(
@@ -212,17 +242,17 @@ def add_scene(
     c2w: torch.Tensor,
     smplx_verts: torch.Tensor,
     smplx_faces: np.ndarray,
-    color_offset: int = 0,
+    color: np.ndarray,
 ):
     root = server.scene.add_frame(f"/scene/{root_name}", show_axes=True)
     add_camera_frustum(server, f"/scene/{root_name}/camera", image, K, c2w)
+    color_tuple = tuple(int(c) for c in color.tolist())
     for pid in range(smplx_verts.shape[0]):
-        color = get_color(pid + color_offset).tolist()
         server.scene.add_mesh_simple(
             f"/scene/{root_name}/person_{pid}",
             vertices=smplx_verts[pid].detach().cpu().numpy(),
             faces=smplx_faces,
-            color=tuple(int(c) for c in color),
+            color=color_tuple,
         )
     return root
 
@@ -231,8 +261,9 @@ if __name__ == "__main__":
     cfg = tyro.cli(DebugConfig)
     device = torch.device(cfg.device)
 
-    source_a_ds = SceneDataset(cfg.source_a_scene_dir, src_cam_id=cfg.src_cam_id, device=device)
-    source_b_ds = SceneDataset(cfg.source_b_scene_dir, src_cam_id=cfg.src_cam_id, device=device)
+    skip_frames = load_skip_frames(cfg.source_a_scene_dir)
+    source_a_ds = SceneDataset(cfg.source_a_scene_dir, src_cam_id=cfg.src_cam_id, device=device, skip_frames=skip_frames)
+    source_b_ds = SceneDataset(cfg.source_b_scene_dir, src_cam_id=cfg.src_cam_id, device=device, skip_frames=skip_frames)
 
     source_a_len = len(source_a_ds)
     source_b_len = len(source_b_ds)
@@ -311,13 +342,16 @@ if __name__ == "__main__":
         source_a_verts = smplx_vertices(source_a_layer, source_a_smplx)
         source_b_verts = smplx_vertices(source_b_layer, source_b_smplx)
 
+        source_a_color = get_color(0)
+        source_b_color = get_color(1)
+
         update_meshes(
             server,
             cfg.source_a_name,
             source_a_verts,
             smplx_faces,
             source_a_handles,
-            color_offset=0,
+            source_a_color,
         )
         update_meshes(
             server,
@@ -325,7 +359,7 @@ if __name__ == "__main__":
             source_b_verts,
             smplx_faces,
             source_b_handles,
-            color_offset=10,
+            source_b_color,
         )
 
         camera_handles["a"] = update_camera_frustum(
