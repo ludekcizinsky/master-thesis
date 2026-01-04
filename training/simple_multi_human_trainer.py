@@ -107,6 +107,37 @@ def _smpl_params_to_joints(
     return joints.reshape(bsize, npeople, joints.shape[1], 3)
 
 
+def _smpl_params_to_vertices(
+    smpl_params: Dict[str, torch.Tensor],
+    smpl_layer,
+) -> torch.Tensor:
+    if "contact" in smpl_params:
+        smpl_params = {k: v for k, v in smpl_params.items() if k != "contact"}
+
+    betas = smpl_params["betas"]
+    body_pose = smpl_params["body_pose"]
+    root_pose = smpl_params["root_pose"]
+    trans = smpl_params["trans"]
+
+    if betas.dim() != 3:
+        raise ValueError(f"Expected betas shape [B,P,?], got {betas.shape}")
+
+    bsize, npeople = betas.shape[:2]
+    betas = betas.reshape(bsize * npeople, -1)
+    body_pose = _flatten_smpl_pose(body_pose).reshape(bsize * npeople, -1)
+    root_pose = _flatten_smpl_pose(root_pose).reshape(bsize * npeople, -1)
+    trans = trans.reshape(bsize * npeople, -1)
+
+    output = smpl_layer(
+        global_orient=root_pose,
+        body_pose=body_pose,
+        betas=betas,
+        transl=trans,
+    )
+    vertices = output.vertices
+    return vertices.reshape(bsize, npeople, vertices.shape[1], 3)
+
+
 def compute_smpl_mpjpe_per_frame(
     pred_smpl_params: Dict[str, torch.Tensor],
     gt_smpl_params: Dict[str, torch.Tensor],
@@ -127,6 +158,100 @@ def compute_smpl_mpjpe_per_frame(
         scale = 1000.0
     else:
         raise ValueError(f"Unsupported MPJPE unit: {unit}")
+
+    return per_frame * scale
+
+
+def compute_smpl_mve_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_smpl_params: Dict[str, torch.Tensor],
+    smpl_layer,
+    unit: str = "mm",
+) -> torch.Tensor:
+    pred_verts = _smpl_params_to_vertices(pred_smpl_params, smpl_layer)
+    gt_verts = _smpl_params_to_vertices(gt_smpl_params, smpl_layer)
+    per_vertex = torch.linalg.norm(pred_verts - gt_verts, dim=-1)
+    per_frame = per_vertex.mean(dim=(1, 2))
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported MVE unit: {unit}")
+
+    return per_frame * scale
+
+
+def compute_smpl_contact_distance_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_contact: torch.Tensor,
+    smpl_layer,
+    unit: str = "mm",
+    invalid_value: int = 0,
+) -> torch.Tensor:
+    pred_verts = _smpl_params_to_vertices(pred_smpl_params, smpl_layer)
+    if gt_contact.dim() == 2:
+        gt_contact = gt_contact.unsqueeze(0)
+    if gt_contact.dim() != 3:
+        raise ValueError(f"Expected contact shape [B,P,V] or [P,V], got {gt_contact.shape}")
+
+    if gt_contact.shape[:2] != pred_verts.shape[:2] or gt_contact.shape[2] != pred_verts.shape[2]:
+        raise ValueError(
+            f"Contact shape {gt_contact.shape} does not match verts {pred_verts.shape}"
+        )
+
+    if pred_verts.shape[1] != 2:
+        raise ValueError(f"Contact distance expects 2 people, got {pred_verts.shape[1]}")
+
+    device = pred_verts.device
+    gt_contact = gt_contact.to(device)
+    num_verts = pred_verts.shape[2]
+    per_frame = []
+    for b in range(pred_verts.shape[0]):
+        verts_b = pred_verts[b]
+        contact_b = gt_contact[b].long()
+        cd_vals = []
+        for p in range(2):
+            other = 1 - p
+            corr = contact_b[p]
+            valid = (
+                (corr != invalid_value)
+                & (corr >= 0)
+                & (corr < num_verts)
+            )
+            if not torch.any(valid):
+                cd_vals.append(None)
+                continue
+            idx = torch.nonzero(valid, as_tuple=False).squeeze(-1)
+            src = verts_b[p, idx]
+            dst = verts_b[other, corr[idx]]
+            cd_vals.append(torch.linalg.norm(src - dst, dim=-1).mean())
+
+        if cd_vals[0] is not None and cd_vals[1] is not None:
+            cd = 0.5 * (cd_vals[0] + cd_vals[1])
+        elif cd_vals[0] is not None:
+            cd = cd_vals[0]
+        elif cd_vals[1] is not None:
+            cd = cd_vals[1]
+        else:
+            cd = torch.tensor(0.0, device=device)
+        per_frame.append(cd)
+
+    per_frame = torch.stack(per_frame, dim=0)
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported CD unit: {unit}")
 
     return per_frame * scale
 
@@ -1486,21 +1611,41 @@ class MultiHumanTrainer:
                 smpl_layer,
                 unit="mm",
             )
-            for fname, mpjpe in zip(fnames, mpjpe_per_frame):
+            mve_per_frame = compute_smpl_mve_per_frame(
+                batch["smpl_params"],
+                gt_smpl_params_batched,
+                smpl_layer,
+                unit="mm",
+            )
+            cd_per_frame = compute_smpl_contact_distance_per_frame(
+                batch["smpl_params"],
+                gt_smpl_params_batched["contact"],
+                smpl_layer,
+                unit="mm",
+            )
+            for fname, mpjpe, mve, cd in zip(
+                fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame
+            ):
                 fid = int(fname)
                 metrics_per_frame.append(
-                    (fid, mpjpe.item())
+                    (fid, mpjpe.item(), mve.item(), cd.item())
                 )
 
         # Save metrics to CSV
         # - save per-frame metrics
-        df = pd.DataFrame(metrics_per_frame, columns=["frame_id", "mpjpe_mm"])
+        df = pd.DataFrame(
+            metrics_per_frame, columns=["frame_id", "mpjpe_mm", "mve_mm", "cd_mm"]
+        )
         csv_path = save_dir / "pose_estimation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics
+        cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
+        cd_mean = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
         overall_avg = {
             "mpjpe_mm": df["mpjpe_mm"].mean(),
+            "mve_mm": df["mve_mm"].mean(),
+            "cd_mm": cd_mean,
         }
         overall_avg_path = save_dir / "pose_estimation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
@@ -1508,7 +1653,12 @@ class MultiHumanTrainer:
                 f.write(f"{k}: {v:.4f}\n")
         
         # - debug
-        print(f"Overall Pose Estimation MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}")
+        print(
+            "Overall Pose Estimation "
+            f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
+            f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+            f"CD (mm): {overall_avg['cd_mm']:.4f}"
+        )
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
             to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}
