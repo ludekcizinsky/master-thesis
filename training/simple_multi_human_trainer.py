@@ -256,6 +256,141 @@ def compute_smpl_contact_distance_per_frame(
     return per_frame * scale
 
 
+def _verts_world_to_cam(verts_world: torch.Tensor, c2w: torch.Tensor) -> torch.Tensor:
+    if c2w.dim() == 2:
+        c2w = c2w.unsqueeze(0)
+    if c2w.dim() != 3 or c2w.shape[1:] != (4, 4):
+        raise ValueError(f"Expected c2w shape [B,4,4] or [4,4], got {c2w.shape}")
+    w2c = torch.inverse(c2w)
+    rot = w2c[:, :3, :3]
+    trans = w2c[:, :3, 3]
+    verts_cam = torch.einsum("bpvj,bkj->bpvk", verts_world, rot)
+    return verts_cam + trans[:, None, None, :]
+
+
+def compute_smpl_pcdr_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_smpl_params: Dict[str, torch.Tensor],
+    gt_contact: torch.Tensor,
+    c2w: torch.Tensor,
+    smpl_layer,
+    eps: float = 0.15,
+    invalid_value: int = 0,
+) -> Dict[str, torch.Tensor]:
+    """Compute PCDR per frame in camera coordinates (range [0,1]).
+
+    Uses GT contact correspondences to compare depth ordering between two people.
+    Correspondences are directional (0->1 and 1->0) and averaged with fallback.
+    Pairs where |dz_gt| < eps are excluded.
+
+    Args:
+        pred_smpl_params: Predicted SMPL params with shapes [B, P, ...].
+        gt_smpl_params: GT SMPL params with shapes [B, P, ...].
+        gt_contact: Contact correspondences from GT, shape [B, P, V] or [P, V].
+        c2w: Camera-to-world matrices, shape [B, 4, 4] or [4, 4].
+        smpl_layer: SMPL layer used to generate vertices.
+        eps: Depth tie threshold in meters for exclusion.
+        invalid_value: Sentinel value marking non-contact entries.
+
+    Returns:
+        Dict with key "pcdr" mapping to a tensor of per-frame PCDR values of shape [B],
+        and counts for excluded and possible pairs.
+
+    Notes:
+        - PCDR is view-dependent; vertices are transformed from world to camera space
+          using the provided c2w matrices.
+        - Contact correspondences are directional and not necessarily symmetric, so
+          the function averages 0->1 and 1->0 directions with fallback.
+        - Depth ties are excluded using the eps threshold.
+    """
+    pred_verts = _smpl_params_to_vertices(pred_smpl_params, smpl_layer)
+    gt_verts = _smpl_params_to_vertices(gt_smpl_params, smpl_layer)
+
+    # PCDR is view-dependent, so project both GT and prediction into camera space.
+    pred_cam = _verts_world_to_cam(pred_verts, c2w)
+    gt_cam = _verts_world_to_cam(gt_verts, c2w)
+
+    if gt_contact.dim() == 2:
+        gt_contact = gt_contact.unsqueeze(0)
+    if gt_contact.dim() != 3:
+        raise ValueError(f"Expected contact shape [B,P,V] or [P,V], got {gt_contact.shape}")
+
+    if gt_contact.shape[:2] != pred_cam.shape[:2] or gt_contact.shape[2] != pred_cam.shape[2]:
+        raise ValueError(
+            f"Contact shape {gt_contact.shape} does not match verts {pred_cam.shape}"
+        )
+    if pred_cam.shape[1] != 2:
+        raise ValueError(f"PCDR expects 2 people, got {pred_cam.shape[1]}")
+
+    device = pred_cam.device
+    gt_contact = gt_contact.to(device)
+    num_verts = pred_cam.shape[2]
+    per_frame_avg = []
+    per_frame_excluded = []
+    per_frame_possible = []
+    per_frame_0to1 = []
+    per_frame_1to0 = []
+    valid_0to1 = []
+    valid_1to0 = []
+    excluded_0to1 = []
+    excluded_1to0 = []
+
+    for b in range(pred_cam.shape[0]):
+        def _directional_pcdr(src_idx: int) -> tuple[torch.Tensor | None, int, int]:
+            dst_idx = 1 - src_idx
+            corr = gt_contact[b, src_idx].long()
+            valid = (
+                (corr != invalid_value)
+                & (corr >= 0)
+                & (corr < num_verts)
+            )
+            if not torch.any(valid):
+                return None, 0, 0
+            src_ids = torch.nonzero(valid, as_tuple=False).squeeze(-1)
+            dst_ids = corr[src_ids]
+            dz_gt = gt_cam[b, src_idx, src_ids, 2] - gt_cam[b, dst_idx, dst_ids, 2]
+            # Exclude ambiguous depth relations in GT.
+            tie_mask = dz_gt.abs() >= eps
+            excluded = int((~tie_mask).sum().item())
+            if not torch.any(tie_mask):
+                return None, 0, excluded
+            src_ids = src_ids[tie_mask]
+            dst_ids = dst_ids[tie_mask]
+            dz_gt = dz_gt[tie_mask]
+            dz_pr = pred_cam[b, src_idx, src_ids, 2] - pred_cam[b, dst_idx, dst_ids, 2]
+            # Correct if predicted and GT depth ordering agree.
+            correct = (torch.sign(dz_pr) == torch.sign(dz_gt)).float()
+            pcdr = correct.mean()
+            return pcdr, int(correct.numel()), excluded
+
+        pcdr_0, valid0, excl0 = _directional_pcdr(0)
+        pcdr_1, valid1, excl1 = _directional_pcdr(1)
+
+        if pcdr_0 is not None and pcdr_1 is not None:
+            pcdr_avg = 0.5 * (pcdr_0 + pcdr_1)
+        elif pcdr_0 is not None:
+            pcdr_avg = pcdr_0
+        elif pcdr_1 is not None:
+            pcdr_avg = pcdr_1
+        else:
+            pcdr_avg = torch.tensor(0.0, device=device)
+
+        per_frame_avg.append(pcdr_avg)
+        per_frame_excluded.append(excl0 + excl1)
+        per_frame_possible.append(valid0 + excl0 + valid1 + excl1)
+        per_frame_0to1.append(pcdr_0 if pcdr_0 is not None else torch.tensor(float("nan"), device=device))
+        per_frame_1to0.append(pcdr_1 if pcdr_1 is not None else torch.tensor(float("nan"), device=device))
+        valid_0to1.append(valid0)
+        valid_1to0.append(valid1)
+        excluded_0to1.append(excl0)
+        excluded_1to0.append(excl1)
+
+    return {
+        "pcdr": torch.stack(per_frame_avg, dim=0),
+        "pcdr_excluded": torch.tensor(per_frame_excluded, device=device),
+        "pcdr_possible": torch.tensor(per_frame_possible, device=device),
+    }
+
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
@@ -1623,18 +1758,39 @@ class MultiHumanTrainer:
                 smpl_layer,
                 unit="mm",
             )
-            for fname, mpjpe, mve, cd in zip(
-                fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame
+            pcdr = compute_smpl_pcdr_per_frame(
+                batch["smpl_params"],
+                gt_smpl_params_batched,
+                gt_smpl_params_batched["contact"],
+                batch["c2w"],
+                smpl_layer,
+                eps=0.15,
+            )
+            for idx, (fname, mpjpe, mve, cd) in enumerate(
+                zip(fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame)
             ):
                 fid = int(fname)
                 metrics_per_frame.append(
-                    (fid, mpjpe.item(), mve.item(), cd.item())
+                    (
+                        fid,
+                        mpjpe.item(),
+                        mve.item(),
+                        cd.item(),
+                        pcdr["pcdr"][idx].item(),
+                    )
                 )
 
         # Save metrics to CSV
         # - save per-frame metrics
         df = pd.DataFrame(
-            metrics_per_frame, columns=["frame_id", "mpjpe_mm", "mve_mm", "cd_mm"]
+            metrics_per_frame,
+            columns=[
+                "frame_id",
+                "mpjpe_mm",
+                "mve_mm",
+                "cd_mm",
+                "pcdr",
+            ],
         )
         csv_path = save_dir / "pose_estimation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
@@ -1642,10 +1798,13 @@ class MultiHumanTrainer:
         # - save average metrics
         cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
         cd_mean = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
+        pcdr_nonzero = df["pcdr"][df["pcdr"] > 0]
+        pcdr_mean = pcdr_nonzero.mean() if not pcdr_nonzero.empty else 0.0
         overall_avg = {
             "mpjpe_mm": df["mpjpe_mm"].mean(),
             "mve_mm": df["mve_mm"].mean(),
             "cd_mm": cd_mean,
+            "pcdr": pcdr_mean,
         }
         overall_avg_path = save_dir / "pose_estimation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
@@ -1657,7 +1816,8 @@ class MultiHumanTrainer:
             "Overall Pose Estimation "
             f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
             f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
-            f"CD (mm): {overall_avg['cd_mm']:.4f}"
+            f"CD (mm): {overall_avg['cd_mm']:.4f}, "
+            f"PCDR: {overall_avg['pcdr']:.2f}"
         )
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
@@ -1670,7 +1830,6 @@ class MultiHumanTrainer:
         # self.eval_loop_nvs(epoch)
         # self.eval_loop_segmentation(epoch)
         self.eval_loop_pose_estimation(epoch)
-        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
