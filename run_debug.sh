@@ -17,6 +17,6 @@ cd /home/cizinsky/master-thesis
 # SMPLX to SMPL conversion debug
 scene_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair15_fight/v3_est_masks_gt_smplx_h6_rgb_smplx_band_and_apply_mask_to_renders
 # - conversion
-# bash /home/cizinsky/master-thesis/submodules/smplx/tools/run_smplx_to_smpl.sh  $scene_dir
+# bash /home/cizinsky/master-thesis/submodules/smplx/tools/run_smplx_to_smpl.sh $scene_dir
 # - check conversion
-python playground/smplx_to_smpl_check.py --scene-dir $scene_dir --model-folder /home/cizinsky/body_models
+python playground/smplx_to_smpl_check.py --scene-dir $scene_dir --model-folder /home/cizinsky/body_models --src-cam-id 4 --image-width 940 --image-height 1280

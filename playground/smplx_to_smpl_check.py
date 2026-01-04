@@ -8,16 +8,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import time
 
 import numpy as np
+import torch
 import tyro
 import viser
+import viser.transforms as tf
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from submodules.smplx import smplx
+from training.helpers.dataset import extr_to_w2c_4x4, intr_to_4x4
 
 
 @dataclass
 class Config:
     scene_dir: Path
+    src_cam_id: int = 4
     smplx_folder: str = "smplx"
     smpl_folder: str = "smpl"
     model_folder: Path = Path("/home/cizinsky/body_models")
@@ -25,7 +29,9 @@ class Config:
     smpl_model_ext: str = "pkl"
     gender: str = "neutral"
     port: int = 8080
-
+    camera_backoff: float = 0.5
+    image_width: int = 940
+    image_height: int = 1280
 
 def _load_faces(model_folder: Path, model_type: str, gender: str, ext: str) -> np.ndarray:
     model = smplx.create(
@@ -36,6 +42,36 @@ def _load_faces(model_folder: Path, model_type: str, gender: str, ext: str) -> n
     )
     return np.asarray(model.faces, dtype=np.int32)
 
+def _load_camera_from_npz(camera_params_path: Path, src_cam_id: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+    
+    camera_npz_path = Path(camera_params_path)
+    with np.load(camera_npz_path) as cams:
+        missing = [k for k in ("ids", "intrinsics", "extrinsics") if k not in cams.files]
+        if missing:
+            raise KeyError(f"Missing keys {missing} in camera file {camera_npz_path}")
+
+        ids = cams["ids"]
+        matches = np.nonzero(ids == src_cam_id)[0]
+        if len(matches) == 0:
+            raise ValueError(f"Camera id {src_cam_id} not found in {camera_npz_path}")
+        idx = int(matches[0])
+
+        intrinsics = torch.from_numpy(cams["intrinsics"][idx]).float()
+        extrinsics = torch.from_numpy(cams["extrinsics"][idx]).float()
+
+        device = torch.device(device)
+        intrinsics = intrinsics.to(device)
+        extrinsics = extrinsics.to(device)
+
+    return intrinsics, extrinsics
+
+def _load_cameras(cam_path: Path, cam_id: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    intr, extr = _load_camera_from_npz(cam_path, cam_id, device)
+    w2c = extr_to_w2c_4x4(extr, device)
+    c2w = torch.inverse(w2c) # shape is [4, 4]
+    K = intr_to_4x4(intr, device) # shape is [4,4]
+
+    return K, w2c, c2w
 
 def _load_npz(path: Path) -> Optional[Dict[str, np.ndarray]]:
     if not path.exists():
@@ -77,6 +113,22 @@ def _update_mesh(
         color=color,
     )
 
+def _set_initial_camera(client, K: torch.Tensor, c2w: torch.Tensor, image_hw: Tuple[int, int], backoff: float):
+    K_np = K.detach().cpu().numpy()
+    c2w_np = c2w.detach().cpu().numpy()
+
+    H, W = image_hw
+    fov = 2.0 * np.arctan2(H / 2.0, K_np[1, 1])
+
+    wxyz = tf.SO3.from_matrix(c2w_np[:3, :3]).wxyz
+    position = c2w_np[:3, 3].copy()
+    if backoff != 0.0:
+        forward = c2w_np[:3, 2]
+        position = position - backoff * forward
+
+    client.camera.wxyz = wxyz
+    client.camera.position = position
+    client.camera.fov = fov
 
 def main() -> None:
     cfg = tyro.cli(Config)
@@ -86,11 +138,20 @@ def main() -> None:
     frames = _collect_frames(smplx_dir, smpl_dir)
     if not frames:
         raise FileNotFoundError(f"No npz files found under {smplx_dir} or {smpl_dir}")
+    
+    cam_dir = cfg.scene_dir / "cameras"
+    cam_path = cam_dir / "rgb_cameras.npz"
+    K, _, c2w = _load_cameras(cam_path, cfg.src_cam_id, torch.device("cpu"))
 
     smplx_faces = _load_faces(cfg.model_folder, "smplx", cfg.gender, cfg.smplx_model_ext)
     smpl_faces = _load_faces(cfg.model_folder, "smpl", cfg.gender, cfg.smpl_model_ext)
 
     server = viser.ViserServer(port=cfg.port)
+
+    def _set_camera(client: viser.ClientHandle) -> None:
+        _set_initial_camera(client, K, c2w, (cfg.image_height, cfg.image_width), cfg.camera_backoff)
+
+    server.on_client_connect(_set_camera)
 
     smplx_root = server.scene.add_frame("/smplx", show_axes=True)
     smpl_root = server.scene.add_frame("/smpl", show_axes=True)
@@ -157,8 +218,6 @@ def main() -> None:
         else:
             for handle in handles["smpl"]:
                 handle.visible = False
-
-        print(f"Showing frame {frame_id} ({frame_idx + 1}/{len(frames)})")
 
     @frame_slider.on_update
     def _(_) -> None:
