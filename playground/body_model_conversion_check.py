@@ -1,3 +1,7 @@
+"""
+Viser visualization to compare SMPL-X and SMPL body model conversions.
+"""
+
 from __future__ import annotations
 
 import os
