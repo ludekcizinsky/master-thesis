@@ -37,7 +37,8 @@ from training.helpers.dataset import (
     root_dir_to_image_dir, 
     root_dir_to_mask_dir, 
     root_dir_to_skip_frames_path, 
-    root_dir_to_depth_dir
+    root_dir_to_depth_dir,
+    fetch_masks_if_exist
 )
 from training.helpers.debug import (
     save_depth_comparison, 
@@ -954,7 +955,7 @@ class MultiHumanTrainer:
             difix_pipe.to(self.tuner_device)
             difix_pipe.set_progress_bar_config(disable=True)
 
-        # -- Generate new datasets for the new cameras
+        # -- Generate new novel rgb frames for the new cameras
         for cam_id, prev_cam_id in zip(new_cams, previous_cams):
             self.prepare_nv_rgb_frames(
                 cam_id,
@@ -974,6 +975,11 @@ class MultiHumanTrainer:
         if self.cfg.use_estimated_masks:
             for cam_id in new_cams:
                 self.prepare_nv_masks(cam_id)
+        else:
+            for cam_id in new_cams:
+                print(f"Preparing NV masks for cam {cam_id} by fetching from scene masks dir")
+                were_masks_fetched = fetch_masks_if_exist(Path(self.cfg.masks_scene_dir), self.trn_data_dir, cam_id)
+                assert were_masks_fetched, f"Masks for cam {cam_id} not found in {self.cfg.masks_scene_dir}"
 
         # Update the left and right previous cam ids
         self.left_cam_id = new_left_cam_id
@@ -1488,14 +1494,14 @@ class MultiHumanTrainer:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
         
-        # - debug
-        print(
-            "Overall Pose Estimation "
-            f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
-            f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
-            f"CD (mm): {overall_avg['cd_mm']:.4f}, "
-            f"PCDR: {overall_avg['pcdr']:.2f}"
-        )
+#        # - debug
+        #print(
+            #"Overall Pose Estimation "
+            #f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
+            #f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+            #f"CD (mm): {overall_avg['cd_mm']:.4f}, "
+            #f"PCDR: {overall_avg['pcdr']:.2f}"
+        #)
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
             to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}

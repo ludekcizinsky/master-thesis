@@ -7,6 +7,7 @@ import pyrender
 import trimesh
 import matplotlib.colors as mcolors
 from matplotlib import colormaps
+import matplotlib.pyplot as plt
 
 def smplx_base_vertices(
     smplx_model,

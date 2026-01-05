@@ -329,6 +329,17 @@ class SceneDataset(Dataset):
         return to_return_values
 
 
+def fetch_masks_if_exist(masks_scene_dir: Path, tgt_scene_dir: Path, camera_id: int):
+    src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
+    tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
+    tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
+    if src_masks_dir.exists():
+        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir.parent)])
+        return True
+    else:
+        return False
+
+
 def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_dir: Path, masks_scene_dir: Path, cam_scene_dir: Optional[Path] = None,  
                                 smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, smpl_params_scene_dir: Optional[Path] = None,
                                 resolution_hw: Optional[Tuple[int, int]] = (1280, 940), frame_paths: Optional[list] = None):
@@ -357,12 +368,9 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             dummy_frame.save(dummy_frame_path)
 
     # Masks
-    src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
-    tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
-    tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
-    if src_masks_dir.exists():
-        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir.parent)])
-    else:
+    masks_were_fetched = fetch_masks_if_exist(masks_scene_dir, tgt_scene_dir, camera_id)
+    if not masks_were_fetched:
+        tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
         assert frame_paths is not None, "Source masks directory does not exist; frame_paths must be provided to create dummy masks."
         mask_ext = ".png"
         frame_names = [Path(fp).stem for fp in frame_paths]

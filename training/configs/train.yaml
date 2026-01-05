@@ -28,9 +28,9 @@ frames_scene_dir: ${preprocessing_dir}
 masks_scene_dir: ${root_gt_dir_path}
 use_estimated_masks: false
 mask_estimator_kind: "rgb_smplx_band" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
-smplx_params_scene_dir: ${preprocessing_dir}
+smplx_params_scene_dir: ${preprocessing_dir} # we use this for the movement of 3dgs during training
 depths_scene_dir: ${preprocessing_dir}  
-smpl_params_scene_dir: ${preprocessing_dir}
+smpl_params_scene_dir: ${preprocessing_dir} # for now, this is just here to be able to compute pose metrics during eval, these are derived from smplx params
 use_depth: true
 
 # test
