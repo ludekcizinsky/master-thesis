@@ -256,18 +256,6 @@ def compute_smpl_contact_distance_per_frame(
     return per_frame * scale
 
 
-def _verts_world_to_cam(verts_world: torch.Tensor, c2w: torch.Tensor) -> torch.Tensor:
-    if c2w.dim() == 2:
-        c2w = c2w.unsqueeze(0)
-    if c2w.dim() != 3 or c2w.shape[1:] != (4, 4):
-        raise ValueError(f"Expected c2w shape [B,4,4] or [4,4], got {c2w.shape}")
-    w2c = torch.inverse(c2w)
-    rot = w2c[:, :3, :3]
-    trans = w2c[:, :3, 3]
-    verts_cam = torch.einsum("bpvj,bkj->bpvk", verts_world, rot)
-    return verts_cam + trans[:, None, None, :]
-
-
 def _points_world_to_cam(points_world: torch.Tensor, c2w: torch.Tensor) -> torch.Tensor:
     if c2w.dim() == 2:
         c2w = c2w.unsqueeze(0)
@@ -284,22 +272,26 @@ def compute_smpl_pcdr_per_frame(
     pred_smpl_params: Dict[str, torch.Tensor],
     gt_smpl_params: Dict[str, torch.Tensor],
     c2w: torch.Tensor,
-    eps: float = 0.15,
+    tau: float = 0.15,
+    gamma: float = 0.3,
 ) -> Dict[str, torch.Tensor]:
-    """Compute PCDR per frame in camera coordinates (range [0,1]).
+    """Compute BEV-style PCDR per frame in camera coordinates (range [0,1]).
 
-    Uses GT person depths to compare pairwise ordering between all people.
-    Pairs where |dz_gt| <= eps are excluded.
+    This follows BEV's Relative Human (RH) evaluation protocol:
+    - Derive ordinal depth layers from GT depths (DLs) using the grouping threshold `gamma`.
+    - For each person pair, assign the GT relation category: eq / closer / farther.
+    - A relation is correct if the predicted depth difference satisfies the category rule
+      under threshold `tau` (applied to predicted depth differences).
 
     Args:
         pred_smpl_params: Predicted SMPL params with shapes [B, P, ...].
         gt_smpl_params: GT SMPL params with shapes [B, P, ...].
         c2w: Camera-to-world matrices, shape [B, 4, 4] or [4, 4].
-        eps: Depth tie threshold in meters for exclusion.
+        tau: Depth-relation threshold in meters for correctness.
+        gamma: Depth-layer grouping threshold in meters (people within gamma are "equal depth").
 
     Returns:
-        Dict with key "pcdr" mapping to a tensor of per-frame PCDR values of shape [B],
-        and counts for excluded and possible pairs.
+        Dict with key "pcdr" mapping to a tensor of per-frame PCDR values of shape [B]
 
     Notes:
         - PCDR is view-dependent; person positions are transformed from world to camera
@@ -328,9 +320,7 @@ def compute_smpl_pcdr_per_frame(
     bsize, npeople, _ = pred_cam.shape
     if npeople < 2:
         return {
-            "pcdr": torch.zeros((bsize,), device=device),
-            "pcdr_excluded": torch.zeros((bsize,), device=device, dtype=torch.long),
-            "pcdr_possible": torch.zeros((bsize,), device=device, dtype=torch.long),
+            "pcdr": torch.zeros((bsize,), device=device)
         }
 
     z_pred = pred_cam[:, :, 2]
@@ -338,27 +328,45 @@ def compute_smpl_pcdr_per_frame(
 
     idx_i, idx_j = torch.triu_indices(npeople, npeople, offset=1, device=device)
     total_pairs = idx_i.numel()
-    per_frame_avg = []
-    per_frame_excluded = []
+    per_frame_pcdr = []
 
     for b in range(bsize):
-        dz_gt = z_gt[b, idx_i] - z_gt[b, idx_j]
-        dz_pr = z_pred[b, idx_i] - z_pred[b, idx_j]
-        valid = dz_gt.abs() > eps
-        valid_count = int(valid.sum().item())
-        excluded = total_pairs - valid_count
-        if valid_count == 0:
-            pcdr_val = torch.tensor(0.0, device=device)
-        else:
-            correct = torch.sign(dz_pr[valid]) == torch.sign(dz_gt[valid])
-            pcdr_val = correct.float().mean()
-        per_frame_avg.append(pcdr_val)
-        per_frame_excluded.append(excluded)
+        z_gt_b = z_gt[b]
+        z_pred_b = z_pred[b]
+
+        # Derive ordinal depth layers (DLs) from GT using 1D clustering along z.
+        # Closest person gets layer 0; a new layer starts if the depth gap exceeds gamma.
+        sorted_z, sorted_idx = torch.sort(z_gt_b, dim=0)
+        layer_ids = torch.empty((npeople,), device=device, dtype=torch.long)
+        current_layer = 0
+        layer_ids[sorted_idx[0]] = current_layer
+        for k in range(1, npeople):
+            if (sorted_z[k] - sorted_z[k - 1]) > gamma:
+                current_layer += 1
+            layer_ids[sorted_idx[k]] = current_layer
+
+        li = layer_ids[idx_i]
+        lj = layer_ids[idx_j]
+        dz_pred = z_pred_b[idx_i] - z_pred_b[idx_j]
+
+        eq_mask = li == lj
+        cd_mask = li < lj  # i is closer than j
+        fd_mask = li > lj  # i is farther than j
+
+        correct_eq = (dz_pred.abs() < tau)[eq_mask]
+        correct_cd = (dz_pred < -tau)[cd_mask]
+        correct_fd = (dz_pred > tau)[fd_mask]
+
+        correct_total = (
+            correct_eq.sum()
+            + correct_cd.sum()
+            + correct_fd.sum()
+        ).float()
+        pcdr_val = correct_total / float(total_pairs)
+        per_frame_pcdr.append(pcdr_val)
 
     return {
-        "pcdr": torch.stack(per_frame_avg, dim=0),
-        "pcdr_excluded": torch.tensor(per_frame_excluded, device=device),
-        "pcdr_possible": torch.full((bsize,), total_pairs, device=device, dtype=torch.long),
+        "pcdr": torch.stack(per_frame_pcdr, dim=0),
     }
 
 # ---------------------------------------------------------------------------
@@ -1676,7 +1684,6 @@ class MultiHumanTrainer:
         smpl_layer = None
 
         metrics_per_frame = []
-        pcdr_valid_pairs = []
         for batch in tqdm(pred_loader, desc="Evaluating Pose Estimation", leave=False):
 
             # Parse batch data
@@ -1717,35 +1724,32 @@ class MultiHumanTrainer:
                 smpl_layer,
                 unit="mm",
             )
+            # - MVE per frame
             mve_per_frame = compute_smpl_mve_per_frame(
                 batch["smpl_params"],
                 gt_smpl_params_batched,
                 smpl_layer,
                 unit="mm",
             )
+            # - Contact distance per frame
             cd_per_frame = compute_smpl_contact_distance_per_frame(
                 batch["smpl_params"],
                 gt_smpl_params_batched["contact"],
                 smpl_layer,
                 unit="mm",
             )
+            # - Percentage of Correct Depth Relations
             pcdr = compute_smpl_pcdr_per_frame(
                 batch["smpl_params"],
                 gt_smpl_params_batched,
                 batch["c2w"],
-                eps=0.15,
+                tau=0.15,
+                gamma=0.3,
             )
             for idx, (fname, mpjpe, mve, cd) in enumerate(
                 zip(fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame)
             ):
                 fid = int(fname)
-                excluded = int(pcdr["pcdr_excluded"][idx].item())
-                possible = int(pcdr["pcdr_possible"][idx].item())
-                if possible > 0:
-                    print(
-                        f"PCDR excluded pairs for frame {fid}: {excluded} / {possible}"
-                    )
-                pcdr_valid_pairs.append(possible - excluded)
                 metrics_per_frame.append(
                     (
                         fid,
@@ -1774,12 +1778,7 @@ class MultiHumanTrainer:
         # - save average metrics
         cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
         cd_mean = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
-        pcdr_valid_mask = np.array(pcdr_valid_pairs) > 0
-        pcdr_mean = (
-            df.loc[pcdr_valid_mask, "pcdr"].mean()
-            if pcdr_valid_mask.any()
-            else 0.0
-        )
+        pcdr_mean = df["pcdr"].mean()
         overall_avg = {
             "mpjpe_mm": df["mpjpe_mm"].mean(),
             "mve_mm": df["mve_mm"].mean(),
