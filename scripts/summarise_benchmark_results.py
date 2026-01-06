@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple, Literal
 
 import pandas as pd
 import tyro
@@ -10,6 +10,8 @@ class Args:
     exp_name: str
     epoch_str: str
     scene_names: List[str]
+    src_cam_ids: List[int] = field(default_factory=list)
+    include_segmentation_novel_cams: bool = False
     results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
     output_dir: Path = Path("/home/cizinsky/master-thesis/results")
 
@@ -18,6 +20,7 @@ class Args:
 class TaskSpec:
     name: str
     title: str
+    kind: Literal["kv", "csv_camera"]
     filename: str
     columns: Sequence[Tuple[str, str]]
     avg_formats: Dict[str, str] = field(default_factory=dict)
@@ -65,8 +68,19 @@ def _to_markdown_table(df: pd.DataFrame) -> str:
 
 
 def _collect_task_results(args: Args, task: TaskSpec) -> pd.DataFrame:
+    if task.kind == "csv_camera":
+        if not args.src_cam_ids:
+            raise ValueError(
+                f"Task '{task.name}' requires --src-cam-ids (one per scene)."
+            )
+        if len(args.src_cam_ids) != len(args.scene_names):
+            raise ValueError(
+                f"--src-cam-ids must have the same length as --scene-names "
+                f"({len(args.src_cam_ids)} vs {len(args.scene_names)})."
+            )
+
     rows = []
-    for scene in args.scene_names:
+    for idx, scene in enumerate(args.scene_names):
         results_path = (
             args.results_root
             / scene
@@ -75,7 +89,22 @@ def _collect_task_results(args: Args, task: TaskSpec) -> pd.DataFrame:
             / f"epoch_{args.epoch_str}"
             / task.filename
         )
-        metrics = _parse_metrics(results_path)
+        if task.kind == "kv":
+            metrics = _parse_metrics(results_path)
+        else:
+            src_cam_id = int(args.src_cam_ids[idx])
+            df = pd.read_csv(results_path)
+            if "camera_id" not in df.columns:
+                raise ValueError(
+                    f"Expected a 'camera_id' column in {results_path}, got {list(df.columns)}"
+                )
+            row_match = df.loc[df["camera_id"] == src_cam_id]
+            if row_match.empty:
+                raise ValueError(
+                    f"No row found for camera_id={src_cam_id} in {results_path}"
+                )
+            metrics = row_match.iloc[0].to_dict()
+
         row: Dict[str, float] = {"scene": scene}
         for column, metric_key in task.columns:
             row[column] = metrics[metric_key]
@@ -92,6 +121,7 @@ def main(args: Args) -> None:
         TaskSpec(
             name="nvs",
             title="NVS",
+            kind="kv",
             filename="novel_view_results.txt",
             columns=[("SSIM", "ssim"), ("PSNR", "psnr"), ("LPIPS", "lpips")],
             avg_formats={"SSIM": ".3f", "PSNR": ".1f", "LPIPS": ".4f"},
@@ -99,6 +129,7 @@ def main(args: Args) -> None:
         TaskSpec(
             name="pose_estimation",
             title="Pose Estimation",
+            kind="kv",
             filename="pose_estimation_overall_results.txt",
             columns=[
                 ("MPJPE_mm", "mpjpe_mm"),
@@ -107,13 +138,29 @@ def main(args: Args) -> None:
                 ("PCDR", "pcdr"),
             ],
         ),
-        TaskSpec(
-            name="segmentation",
-            title="Segmentation",
-            filename="segmentation_overall_results.txt",
-            columns=[("IoU", "iou"), ("Recall", "recall"), ("F1", "f1")],
-        ),
     ]
+
+    if args.include_segmentation_novel_cams:
+        tasks.append(
+            TaskSpec(
+                name="segmentation",
+                title="Segmentation",
+                kind="kv",
+                filename="segmentation_overall_results.txt",
+                columns=[("IoU", "iou"), ("Recall", "recall"), ("F1", "f1")],
+            )
+        )
+
+    if args.src_cam_ids:
+        tasks.append(
+            TaskSpec(
+                name="segmentation_src_cam",
+                title="Segmentation (Src Cam)",
+                kind="csv_camera",
+                filename="segmentation_metrics_avg_per_camera.csv",
+                columns=[("IoU", "iou"), ("Recall", "recall"), ("F1", "f1")],
+            )
+        )
 
     out_dir = args.output_dir / args.exp_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +171,7 @@ def main(args: Args) -> None:
         formatted_df.to_csv(csv_path)
         md_path = out_dir / f"{task.name}.md"
         md_path.write_text(_to_markdown_table(formatted_df), encoding="utf-8")
-        combined_sections.append(f"## {task.title}\n{_to_markdown_table(formatted_df)}")
+        combined_sections.append(f"### {task.title}\n{_to_markdown_table(formatted_df)}")
         print(f"Wrote {csv_path}")
         print(f"Wrote {md_path}")
 

@@ -17,9 +17,11 @@ scene_names=(
   "hi4d_pair19_piggyback"
 )
 
+src_cam_ids=(4 4 28 4)
 
 python scripts/summarise_benchmark_results.py \
   --exp-name "$exp_name" \
   --epoch-str "$epoch_str" \
   --scene-names "${scene_names[@]}" \
+  --src-cam-ids "${src_cam_ids[@]}" \
   --results-root "/scratch/izar/cizinsky/thesis/results"
