@@ -71,6 +71,43 @@ from training.helpers.masking import (
 )
 
 # ---------------------------------------------------------------------------
+# Reconstruction eval helper functions
+# ---------------------------------------------------------------------------
+
+def posed_gs_list_to_serializable_dict(posed_gs_list) -> Dict[str, torch.Tensor]:
+    if len(posed_gs_list) == 0:
+        raise ValueError("posed_gs_list is empty; expected at least one person.")
+
+    merged_xyz = torch.cat([gs.xyz for gs in posed_gs_list], dim=0)
+    merged_opacity = torch.cat([gs.opacity for gs in posed_gs_list], dim=0)
+    merged_rotation = torch.cat([gs.rotation for gs in posed_gs_list], dim=0)
+    merged_scaling = torch.cat([gs.scaling for gs in posed_gs_list], dim=0)
+    merged_shs = torch.cat([gs.shs for gs in posed_gs_list], dim=0)
+
+    person_ids = torch.cat(
+        [
+            torch.full((gs.xyz.shape[0],), i, dtype=torch.int32, device=gs.xyz.device)
+            for i, gs in enumerate(posed_gs_list)
+        ],
+        dim=0,
+    )
+    person_gaussian_counts = torch.tensor(
+        [gs.xyz.shape[0] for gs in posed_gs_list], dtype=torch.int32, device=merged_xyz.device
+    )
+
+    return {
+        "xyz": merged_xyz.detach().cpu(),
+        "opacity": merged_opacity.detach().cpu(),
+        "rotation": merged_rotation.detach().cpu(),
+        "scaling": merged_scaling.detach().cpu(),
+        "shs": merged_shs.detach().cpu(),
+        "person_ids": person_ids.detach().cpu(),
+        "person_gaussian_counts": person_gaussian_counts.detach().cpu(),
+        "use_rgb": torch.tensor(bool(posed_gs_list[0].use_rgb), dtype=torch.bool),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
@@ -78,6 +115,7 @@ def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
 
 def root_dir_to_est_masks_debug_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "est_masks_debug" / f"{cam_id}"
+
 
 def root_dir_to_depths_debug_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "est_depths_debug" / f"{cam_id}"
@@ -234,28 +272,30 @@ class MultiHumanTrainer:
         # Preare model
         self._load_model()
 
-        # Initialize difix
-        self._init_nv_generation()
+        if False:
 
-        # Generate novel views 
-        is_nv_gen_done = False
-        n_its_nv_gen = 0
-        while not is_nv_gen_done:
-            is_nv_gen_done = self.novel_view_generation_step()
-            n_its_nv_gen += 1
-            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+            # Initialize difix
+            self._init_nv_generation()
 
-        # Prepare training dataset from all the new cameras
-        for cam_id in self.difix_cam_ids_all:
-            scene_ds = SceneDataset(
-                self.trn_data_dir,
-                int(cam_id),
-                use_depth=self.cfg.use_depth,
-                device=self.tuner_device,
-                sample_every=1,
-            )
-            self.trn_datasets.append(scene_ds)
-        self.trn_dataset = ConcatDataset(self.trn_datasets)
+            # Generate novel views 
+            is_nv_gen_done = False
+            n_its_nv_gen = 0
+            while not is_nv_gen_done:
+                is_nv_gen_done = self.novel_view_generation_step()
+                n_its_nv_gen += 1
+                print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+
+            # Prepare training dataset from all the new cameras
+            for cam_id in self.difix_cam_ids_all:
+                scene_ds = SceneDataset(
+                    self.trn_data_dir,
+                    int(cam_id),
+                    use_depth=self.cfg.use_depth,
+                    device=self.tuner_device,
+                    sample_every=1,
+                )
+                self.trn_datasets.append(scene_ds)
+            self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -1518,11 +1558,71 @@ class MultiHumanTrainer:
             wandb.log(to_log)
 
     @torch.no_grad()
-    def eval_loop(self, epoch):
-        self.eval_loop_nvs(epoch)
-        self.eval_loop_segmentation(epoch)
-        self.eval_loop_pose_estimation(epoch)
+    def eval_loop_reconstruction(self, epoch):
 
+        # Prepare directories to save results
+        # - root save directory        
+        save_dir_root : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir_root.mkdir(parents=True, exist_ok=True)
+
+        # - posed 3DGS save directory (one file per frame)
+        save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
+        save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
+
+        # Init datasets
+        skip_frames = load_skip_frames(self.trn_data_dir)
+        # - Ground truth dataset
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval human reconstruction in world coords
+        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
+
+        # - Prediction dataset 
+        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
+        pred_loader = DataLoader(
+            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+
+        for batch in tqdm(pred_loader, desc="Evaluating Reconstruction", leave=False):
+
+            # Parse batch data
+            num_views = batch["K"].shape[0]
+            fnames = batch["frame_name"]      # [B]
+            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
+            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+            smplx_params = batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+
+            # For each view, pose 3dgs and save to disk
+            for view_idx in range(num_views):
+
+                # Pose
+                smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
+                n_persons = len(self.gs_model_list)
+
+                all_posed_gs_list = []
+                for person_idx in range(n_persons):
+                    person_canon_3dgs = self.gs_model_list[person_idx]
+                    person_query_pt = self.query_points[person_idx]
+                    person_smplx_data = {k: v[person_idx : person_idx + 1] for k, v in smplx_single_view.items()}
+                    posed_gs, neutral_posed_gs = self.renderer.animate_single_view_and_person(
+                        person_canon_3dgs,
+                        person_query_pt,
+                        person_smplx_data,
+                    )
+                    all_posed_gs_list.append(posed_gs)
+
+                fname = fnames[view_idx]
+                fname_str = str(fname)
+                out_path = save_dir_posed_3dgs / f"{fname_str}.pt"
+                torch.save(posed_gs_list_to_serializable_dict(all_posed_gs_list), out_path)
+
+
+
+    @torch.no_grad()
+    def eval_loop(self, epoch):
+        # self.eval_loop_nvs(epoch)
+        # self.eval_loop_segmentation(epoch)
+        # self.eval_loop_pose_estimation(epoch)
+        self.eval_loop_reconstruction(epoch)
+        quit()
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
