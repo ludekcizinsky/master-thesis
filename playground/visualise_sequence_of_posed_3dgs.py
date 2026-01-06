@@ -196,12 +196,18 @@ def main(args: Args) -> None:
             step=1,
             initial_value=0,
         )
+        play_button = server.gui.add_button("Play")
+        stop_button = server.gui.add_button("Stop", disabled=True)
+        fps_slider = server.gui.add_slider("FPS", min=1, max=60, step=0.5, initial_value=10)
     frame_label = server.gui.add_text("File", frame_files[0].name)
 
     gs_handle: Optional[Any] = None
     last_frame_idx: Optional[int] = None
     pending_frame_idx: Optional[int] = None
     pending_since: Optional[float] = None
+    ignore_slider_update: bool = False
+    playing: bool = False
+    last_play_step: float = time.monotonic()
 
     def _set_initial_camera(client: viser.ClientHandle) -> None:
         if not initial_camera:
@@ -211,6 +217,21 @@ def main(args: Args) -> None:
         client.camera.fov = float(initial_camera["fov"][0])
 
     server.on_client_connect(_set_initial_camera)
+
+    @play_button.on_click
+    def _(_) -> None:
+        nonlocal playing, last_play_step
+        playing = True
+        last_play_step = time.monotonic()
+        play_button.disabled = True
+        stop_button.disabled = False
+
+    @stop_button.on_click
+    def _(_) -> None:
+        nonlocal playing
+        playing = False
+        play_button.disabled = False
+        stop_button.disabled = True
 
     def _show_frame(frame_idx: int) -> None:
         nonlocal gs_handle, last_frame_idx
@@ -254,22 +275,43 @@ def main(args: Args) -> None:
 
     @frame_slider.on_update
     def _(_) -> None:
-        nonlocal pending_frame_idx, pending_since
+        nonlocal pending_frame_idx, pending_since, ignore_slider_update, last_play_step
+        if ignore_slider_update:
+            return
         pending_frame_idx = int(frame_slider.value)
         pending_since = time.monotonic()
+        last_play_step = time.monotonic()
 
     _show_frame(0)
 
-    debounce_s = max(0.0, args.debounce_ms / 1000.0)
     try:
         while True:
+            now = time.monotonic()
+
+            # Debounced manual slider update.
             if pending_frame_idx is not None and pending_since is not None:
-                if time.monotonic() - pending_since >= debounce_s:
+                if now - pending_since >= max(0.0, args.debounce_ms / 1000.0):
                     idx = pending_frame_idx
                     pending_frame_idx = None
                     pending_since = None
                     _show_frame(idx)
-            time.sleep(0.05)
+                    last_play_step = now
+
+            # Auto-play loop.
+            if playing:
+                fps = float(fps_slider.value)
+                step_s = 1.0 / max(fps, 1e-6)
+                if now - last_play_step >= step_s:
+                    next_idx = 0 if last_frame_idx is None else (last_frame_idx + 1) % num_frames
+                    ignore_slider_update = True
+                    frame_slider.value = next_idx
+                    ignore_slider_update = False
+                    pending_frame_idx = None
+                    pending_since = None
+                    _show_frame(next_idx)
+                    last_play_step = now
+
+            time.sleep(0.01)
     except KeyboardInterrupt:
         print("Shutting down viewer...")
 

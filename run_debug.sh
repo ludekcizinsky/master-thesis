@@ -46,4 +46,4 @@ cd /home/cizinsky/master-thesis
 
 # Visualise posed 3D Gaussians debug
 path_to_posed_3dgs=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v1_reconstruction_debug/epoch_0000/posed_3dgs_per_frame
-python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --scaling-mode auto --max-scale 0.02 --max-gaussians 20000
+python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --scaling-mode auto --max-scale 0.02 --max-gaussians 80000
