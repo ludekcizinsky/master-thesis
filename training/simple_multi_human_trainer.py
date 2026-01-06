@@ -42,7 +42,8 @@ from training.helpers.dataset import (
 )
 from training.helpers.debug import (
     save_depth_comparison, 
-    create_and_save_depth_debug_vis
+    create_and_save_depth_debug_vis,
+    save_gt_image_and_mask_comparison
 )
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
@@ -617,6 +618,15 @@ class MultiHumanTrainer:
                         save_path = debug_save_dir / f"depth_comparison_cam{cam_id}_frame_{frame_name}.png"
                         save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
+                    # - save render and mask comparison images
+                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "gt_input"
+                    debug_save_dir.mkdir(parents=True, exist_ok=True)
+                    for i in range(masks.shape[0]):
+                        frame_name = fnames[i] 
+                        cam_id = cam_ids[i].item()
+                        save_path = debug_save_dir / f"gt_image_and_mask_comparison_cam{cam_id}_frame_{frame_name}.png"
+                        save_gt_image_and_mask_comparison(frames[i], masks[i].squeeze(-1), str(save_path))
+
                 batch_idx += 1
                 pbar.update(1)
 
@@ -701,12 +711,11 @@ class MultiHumanTrainer:
         refined_frames_save_dir = root_dir_to_image_dir(self.trn_data_dir, cam_id)
         if os.path.exists(refined_frames_save_dir):
             return # already done
-        masks_scene_dir = Path(self.cfg.masks_scene_dir) if not self.cfg.use_estimated_masks else Path("/dummy/masks/dir")
         fetch_data_if_available(
             self.trn_data_dir,
             cam_id,
             Path("/dummy/frames/dir"), 
-            masks_scene_dir,   
+            Path("/dummy/masks/dir"),   
             frame_paths=self.curr_trn_frame_paths,
         )
 

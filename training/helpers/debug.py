@@ -295,3 +295,41 @@ def create_and_save_depth_debug_vis(pred_depth_np: np.array, save_path: str):
 
     plt.savefig(save_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def save_gt_image_and_mask_comparison(
+    gt_image: torch.Tensor,
+    mask: torch.Tensor,
+    save_path: str
+) -> None:
+    """
+    Save a side-by-side comparison of the ground image, mask and mask applied to the image.
+
+    Args:
+        gt_image: Tensor of shape (H, W, 3) containing ground truth RGB image.
+        mask: Tensor of shape (H, W) containing binary mask.
+        save_path: Path to save the comparison image.
+    """
+
+    gt_image_np = gt_image.detach().cpu().numpy()
+    mask_np = mask.detach().cpu().numpy()
+
+    save_path = Path(save_path)
+
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+
+    axs[0].imshow(gt_image_np)
+    axs[0].set_title("Ground Truth Image")
+    axs[0].axis("off")
+
+    axs[1].imshow(mask_np, cmap="gray")
+    axs[1].set_title("Mask")
+    axs[1].axis("off")
+
+    masked_image = gt_image_np * mask_np[..., None]
+    axs[2].imshow(masked_image)
+    axs[2].set_title("Masked Image")
+    axs[2].axis("off")
+
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)

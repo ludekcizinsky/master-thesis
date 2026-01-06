@@ -171,7 +171,7 @@ class SceneDataset(Dataset):
     def _load_img(self, path: Path) -> torch.Tensor:
         img = Image.open(path).convert("RGB")
         arr = torch.from_numpy(np.array(img)).float() / 255.0
-        return arr.to(self.device)
+        return arr.to(self.device) # HxWx3, range [0,1]
 
     def _load_mask(self, path: Path, eps: float = 0.05) -> torch.Tensor:
         arr = torch.from_numpy(np.array(Image.open(path))).float()  # HxWxC or HxW
