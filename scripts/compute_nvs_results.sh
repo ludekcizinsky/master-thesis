@@ -5,7 +5,7 @@ source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 module load gcc ffmpeg
 conda activate thesis
 
-exp_name="v1_gt_masks_est_smplx_h1_use_h3r_no_smplx_tune_during_training"
+exp_name="v1_est_masks_est_smplx_h1_use_rgb_render_based_masks_and_h3r_smplx_no_tune"
 epoch_str="0150"
 
 scene_names=(
