@@ -1,0 +1,6 @@
+scene,IoU,Recall,F1
+hi4d_pair15_fight,0.7385,0.9090,0.8487
+hi4d_pair16_jump,0.7630,0.9086,0.8646
+hi4d_pair17_dance,0.8133,0.8947,0.8967
+hi4d_pair19_piggyback,0.6828,0.8606,0.8093
+avg,0.7494,0.8932,0.8548
