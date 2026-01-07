@@ -13,6 +13,11 @@ import wandb
 from tqdm import tqdm
 from omegaconf import DictConfig
 from PIL import Image
+from scipy.spatial import cKDTree
+
+import trimesh
+from trimesh import registration
+
 
 import torch
 import torch.nn.functional as F
@@ -45,7 +50,7 @@ from training.helpers.debug import (
     create_and_save_depth_debug_vis,
     save_gt_image_and_mask_comparison
 )
-from training.helpers.gs_to_mesh import mesh_config_from_cfg, save_meshes_from_state
+from training.helpers.gs_to_mesh import mesh_config_from_cfg, get_meshes_from_3dgs
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
     compute_smpl_mpjpe_per_frame,
@@ -106,6 +111,226 @@ def posed_gs_list_to_serializable_dict(posed_gs_list) -> Dict[str, torch.Tensor]
         "person_gaussian_counts": person_gaussian_counts.detach().cpu(),
         "use_rgb": torch.tensor(bool(posed_gs_list[0].use_rgb), dtype=torch.bool),
     }
+
+
+def gt_meshes_to_person_dict(meshes: Dict[str, torch.Tensor]) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+
+    person_ids = meshes["person_ids"].detach().cpu().numpy().astype(np.int32)
+    num_vertices = meshes["num_vertices"].detach().cpu().numpy().astype(np.int32)
+    num_faces = meshes["num_faces"].detach().cpu().numpy().astype(np.int32)
+    vertices = meshes["vertices"].detach().cpu().numpy()
+    faces = meshes["faces"].detach().cpu().numpy()
+
+    per_person = {}
+    for idx, pid in enumerate(person_ids):
+        v = vertices[idx][: num_vertices[idx]]
+        f = faces[idx][: num_faces[idx]]
+        per_person[int(pid)] = (v, f)
+    return per_person
+
+
+def icp_align_mesh_similarity(
+    pred_mesh: Tuple[np.ndarray, np.ndarray],
+    gt_mesh: Tuple[np.ndarray, np.ndarray],
+    *,
+    n_samples: int = 50000,
+    max_iterations: int = 20,
+    threshold: float = 1e-5,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Align pred mesh to GT mesh with similarity ICP (scale + rigid).
+    Returns transformed vertices, faces, transform matrix, and final cost.
+    """
+
+    pred_v, pred_f = pred_mesh
+    gt_v, gt_f = gt_mesh
+
+    if pred_v.size == 0 or gt_v.size == 0 or pred_f.size == 0 or gt_f.size == 0:
+        return pred_v, pred_f, np.eye(4, dtype=np.float64), float("inf")
+
+    pred_tm = trimesh.Trimesh(vertices=pred_v, faces=pred_f, process=False)
+    gt_tm = trimesh.Trimesh(vertices=gt_v, faces=gt_f, process=False)
+
+    pred_pts = pred_tm.sample(int(n_samples))
+    init = np.eye(4, dtype=np.float64)
+    init[:3, 3] = gt_tm.centroid - pred_tm.centroid
+
+    matrix, _transformed, cost = registration.icp(
+        pred_pts,
+        gt_tm,
+        initial=init,
+        threshold=threshold,
+        max_iterations=max_iterations,
+        scale=True,
+        reflection=False,
+    )
+    aligned_vertices = trimesh.transformations.transform_points(pred_v, matrix)
+    return aligned_vertices.astype(np.float32), pred_f.astype(np.int32), matrix, float(cost)
+
+
+def align_pred_meshes_icp(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    *,
+    n_samples: int = 50000,
+    max_iterations: int = 20,
+    threshold: float = 1e-5,
+) -> List[Dict[int, Tuple[np.ndarray, np.ndarray]]]:
+    """
+    Align each per-person pred mesh to GT mesh using similarity ICP.
+    Returns the same list structure as pred_meshes.
+    """
+    aligned = []
+    for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False):
+        frame_out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        for pid, pred_mesh in pred_frame.items():
+            gt_mesh = gt_frame.get(pid)
+            if gt_mesh is None:
+                frame_out[pid] = pred_mesh
+                continue
+            aligned_v, aligned_f, _matrix, _cost = icp_align_mesh_similarity(
+                pred_mesh,
+                gt_mesh,
+                n_samples=n_samples,
+                max_iterations=max_iterations,
+                threshold=threshold,
+            )
+            frame_out[pid] = (aligned_v, aligned_f)
+        aligned.append(frame_out)
+    return aligned
+
+
+def _nearest_distances(points_a: np.ndarray, points_b: np.ndarray) -> np.ndarray:
+    tree = cKDTree(points_b)
+    distances, _ = tree.query(points_a, k=1)
+    return distances
+
+
+def _sample_mesh_points_and_normals(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    n_samples: int,
+) -> Tuple[np.ndarray, np.ndarray, "trimesh.Trimesh"]:
+
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    points, face_idx = mesh.sample(int(n_samples), return_index=True)
+    normals = mesh.face_normals[face_idx]
+    return points, normals, mesh
+
+
+def _metric_units_scale(units: str) -> float:
+    units_norm = units.strip().lower()
+    if units_norm in ("m", "meter", "meters"):
+        return 1.0
+    if units_norm in ("cm", "centimeter", "centimeters"):
+        return 100.0
+    if units_norm in ("mm", "millimeter", "millimeters"):
+        return 1000.0
+    raise ValueError(f"Unsupported units: {units}")
+
+
+def _format_mesh_frame_name(frame_name: str) -> str:
+    if frame_name.isdigit():
+        return f"{int(frame_name):05d}"
+    return frame_name
+
+
+def save_aligned_meshes(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    output_dir: Path,
+    frame_names: List[str],
+) -> None:
+    import numpy as np
+
+    for frame_idx, mesh_dict in enumerate(pred_meshes):
+        frame_name = _format_mesh_frame_name(str(frame_names[frame_idx]))
+        for pid, (vertices, faces) in mesh_dict.items():
+            if vertices.size == 0 or faces.size == 0:
+                continue
+            out_path = output_dir / "instance" / f"{pid}" / f"mesh-f{frame_name}.npz"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(out_path, vertices=vertices, faces=faces)
+
+
+def compute_chamfer_distance(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    *,
+    n_samples: int = 50000,
+    units: str = "cm",
+) -> torch.Tensor:
+
+    scale = _metric_units_scale(units)
+    per_frame = []
+    for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing Chamfer Distance", total=len(pred_meshes), leave=False):
+        per_person = []
+        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
+        for pid in shared_pids:
+            pred_v, pred_f = pred_frame[pid]
+            gt_v, gt_f = gt_frame[pid]
+            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+                print(f"Warning: skipping chamfer computation for pid {pid} due to empty mesh.")
+                continue
+            pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+            gt_pts, _gt_normals, _ = _sample_mesh_points_and_normals(gt_v, gt_f, n_samples)
+            d_pred = _nearest_distances(pred_pts, gt_pts)
+            d_gt = _nearest_distances(gt_pts, pred_pts)
+            chamfer = 0.5 * (d_pred.mean() + d_gt.mean())
+            per_person.append(chamfer * scale)
+        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+    return torch.tensor(per_frame, dtype=torch.float32)
+
+
+def compute_p2s_distance(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    *,
+    n_samples: int = 50000,
+    units: str = "cm",
+) -> torch.Tensor:
+
+    scale = _metric_units_scale(units)
+    per_frame = []
+    for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing P2S Distance", total=len(pred_meshes), leave=False):
+        per_person = []
+        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
+        for pid in shared_pids:
+            pred_v, pred_f = pred_frame[pid]
+            gt_v, gt_f = gt_frame[pid]
+            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+                continue
+            pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+            _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
+            _closest, distances, _face_idx = gt_mesh.nearest.on_surface(pred_pts)
+            per_person.append(distances.mean() * scale)
+        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+    return torch.tensor(per_frame, dtype=torch.float32)
+
+
+def compute_normal_consistency(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    *,
+    n_samples: int = 50000,
+) -> torch.Tensor:
+
+    per_frame = []
+    for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing Normal Consistency", total=len(pred_meshes), leave=False):
+        per_person = []
+        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
+        for pid in shared_pids:
+            pred_v, pred_f = pred_frame[pid]
+            gt_v, gt_f = gt_frame[pid]
+            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+                continue
+            pred_pts, pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+            _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
+            _closest, _distances, face_idx = gt_mesh.nearest.on_surface(pred_pts)
+            gt_normals = gt_mesh.face_normals[face_idx]
+            dot = np.abs(np.einsum("ij,ij->i", pred_normals, gt_normals))
+            per_person.append(dot.mean())
+        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+    return torch.tensor(per_frame, dtype=torch.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +572,7 @@ class MultiHumanTrainer:
         smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir)
         depths_dir = Path(self.cfg.test_depths_scene_dir) if self.cfg.test_depths_scene_dir is not None else None
         smpl_params_dir = Path(self.cfg.test_smpl_params_scene_dir) if self.cfg.test_smpl_params_scene_dir is not None else None
+        meshes_dir = Path(self.cfg.test_meshes_scene_dir) if self.cfg.test_meshes_scene_dir is not None else None
 
 
         # Fetch testing dataset from the specified directories 
@@ -360,6 +586,7 @@ class MultiHumanTrainer:
                 smplx_params_dir,
                 depths_dir,
                 smpl_params_dir,
+                meshes_dir,
             )
 
     # ---------------- Model  ------------------------------
@@ -1574,15 +1801,29 @@ class MultiHumanTrainer:
         save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
 
+        # - aligned posed mesh save directory (one file per frame, per person)
+        save_dir_aligned_meshes: Path = save_dir_root / "aligned_posed_meshes_per_frame"
+        save_dir_aligned_meshes.mkdir(parents=True, exist_ok=True)
+
         mesh_cfg_node = self.cfg["3dgs_to_mesh"]
         mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
         mesh_overwrite = mesh_cfg_node.get("overwrite", False)
+        icp_cfg = self.cfg["reconstruction_eval"]["icp"]
+        metrics_cfg = self.cfg.get("reconstruction_eval", {}).get("metrics", {})
+        metrics_n_samples = metrics_cfg.get("n_samples", 50000)
+        metrics_units = metrics_cfg.get("units", "cm")
 
         # Init datasets
         skip_frames = load_skip_frames(self.trn_data_dir)
         # - Ground truth dataset
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval human reconstruction in world coords
-        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
+        gt_dataset = SceneDataset(
+            self.test_data_dir,
+            src_cam_id,
+            device=self.tuner_device,
+            skip_frames=skip_frames,
+            use_meshes=True,
+        )
 
         # - Prediction dataset 
         pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
@@ -1590,17 +1831,26 @@ class MultiHumanTrainer:
             pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
-        for batch in tqdm(pred_loader, desc="Evaluating Reconstruction", leave=False):
+        metrics_per_frame = []
+        for pred_batch in tqdm(pred_loader, desc="Evaluating Reconstruction"):
 
             # Parse batch data
-            num_views = batch["K"].shape[0]
-            fnames = batch["frame_name"]      # [B]
+            num_views = pred_batch["K"].shape[0]
+            fnames = pred_batch["frame_name"]      # [B]
             batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
-            batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
-            smplx_params = batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+            pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+            smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
 
-            # For each view, pose 3dgs and save to disk
-            for view_idx in range(num_views):
+            # Fetch GT meshes directly from the GT dataset for matching frame indices.
+            frame_indices = pred_batch["frame_idx"]
+            gt_meshes = []
+            for i in range(frame_indices.shape[0]):
+                sample_dict = gt_dataset[frame_indices[i].item()]
+                gt_meshes.append(gt_meshes_to_person_dict(sample_dict["meshes"]))
+
+            # For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
+            pred_meshes = []
+            for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
 
                 # Pose
                 smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
@@ -1625,14 +1875,93 @@ class MultiHumanTrainer:
                 torch.save(posed_gs_state, out_path)
 
                 # Posed 3dgs -> posed meshes and save to disk
-                save_meshes_from_state(
+                meshes_for_frame = get_meshes_from_3dgs(
                     posed_gs_state,
                     save_dir_posed_meshes,
                     fname_str,
                     mesh_cfg,
                     overwrite=mesh_overwrite,
                 )
+                pred_meshes.append(meshes_for_frame)
 
+
+            # Before metric computation, perform ICP alignment (similarity).
+            pred_meshes_aligned = align_pred_meshes_icp(
+                pred_meshes,
+                gt_meshes,
+                n_samples=icp_cfg.get("n_samples", 50000),
+                max_iterations=icp_cfg.get("max_iterations", 20),
+                threshold=icp_cfg.get("threshold", 1e-5),
+            )
+            save_aligned_meshes(pred_meshes_aligned, save_dir_aligned_meshes, fnames)
+
+            # Compute metrics
+            chamfer = compute_chamfer_distance(
+                pred_meshes_aligned,
+                gt_meshes,
+                n_samples=metrics_n_samples,
+                units=metrics_units,
+            )
+            p2s = compute_p2s_distance(
+                pred_meshes_aligned,
+                gt_meshes,
+                n_samples=metrics_n_samples,
+                units=metrics_units,
+            )
+            normal_consistency = compute_normal_consistency(
+                pred_meshes_aligned, gt_meshes, n_samples=metrics_n_samples
+            )
+
+            # Store per-frame metrics
+            for idx, fname in enumerate(fnames):
+                fid = int(fname)
+                metrics_per_frame.append(
+                    (
+                        fid,
+                        chamfer[idx].item(),
+                        p2s[idx].item(),
+                        normal_consistency[idx].item(),
+                    )
+                )
+
+        # Save the results
+        # - save per-frame metrics
+        df = pd.DataFrame(
+            metrics_per_frame,
+            columns=[
+                "frame_id",
+                f"chamfer_{metrics_units}",
+                f"p2s_{metrics_units}",
+                "normal_consistency",
+            ],
+        )
+        csv_path = save_dir_posed_meshes.parent / "reconstruction_metrics_per_frame.csv"
+        df.to_csv(csv_path, index=False)
+
+        # - save average across frame metrics
+        overall_avg = {
+            f"chamfer_{metrics_units}": df[f"chamfer_{metrics_units}"].mean(),
+            f"p2s_{metrics_units}": df[f"p2s_{metrics_units}"].mean(),
+            "normal_consistency": df["normal_consistency"].mean(),
+        }
+        overall_avg_path = save_dir_posed_meshes.parent / "reconstruction_overall_results.txt"
+        with open(overall_avg_path, "w") as f:
+            for k, v in overall_avg.items():
+                f.write(f"{k}: {v:.4f}\n")
+
+        # - debug (show the overall results)
+        print(
+            "Overall Reconstruction "
+            f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
+            f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
+            f"Normal Consistency: {overall_avg['normal_consistency']:.4f}"
+        )
+
+        # - log the overall average metrics to wandb
+        if self.cfg.wandb.enable:
+            to_log = {f"eval_recon/{metric_name}": v for metric_name, v in overall_avg.items()}
+            to_log["epoch"] = epoch
+            wandb.log(to_log)
 
 
     @torch.no_grad()

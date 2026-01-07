@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import os
 import numpy as np
 from PIL import Image
@@ -36,6 +36,9 @@ def root_dir_to_cameras_path(root_dir: Path) -> Path:
 def root_dir_to_depth_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "depths" / f"{cam_id}"
 
+def root_dir_to_mesh_dir(root_dir: Path) -> Path:
+    return root_dir / "seg" / "instance"
+
 def root_dir_to_skip_frames_path(root_dir: Path) -> Path:
     return root_dir / "skip_frames.csv"
 
@@ -46,6 +49,7 @@ class SceneDataset(Dataset):
                 src_cam_id: int,
                 use_depth: Optional[bool] = False,
                 use_smpl: Optional[bool] = False,
+                use_meshes: Optional[bool] = False,
                 device: Optional[torch.device] = "cuda", 
                 sample_every: Optional[int] = 1,
                 skip_frames: Optional[list] = []):
@@ -54,16 +58,16 @@ class SceneDataset(Dataset):
         self.root_dir = scene_root_dir
         self.src_cam_id = src_cam_id
         self.device = device
-        self.frames_dir = root_dir_to_image_dir(scene_root_dir, src_cam_id)
-        self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
 
         # Load frame paths (with optional subsampling)
         # Important: we use frame path names to match masks, SMPLX, depth, etc.
         # -> therefore also if we apply subsampling here, other modalities will be subsampled accordingly
-        self._load_frame_paths(self.frames_dir, sample_every, skip_frames)
+        self.frames_dir = root_dir_to_image_dir(scene_root_dir, src_cam_id)
+        self._load_frame_paths(sample_every, skip_frames)
 
         # Load mask paths
-        self._load_mask_paths(self.masks_dir)
+        self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
+        self._load_mask_paths()
 
         # Determine training resolution from first image
         first_image = self._load_img(self.frame_paths[0])
@@ -87,13 +91,20 @@ class SceneDataset(Dataset):
             self.smpl_dir: Path = root_dir_to_smpl_dir(scene_root_dir)
             self._load_smpl_paths()
 
+        # (Optional) Check for meshes directory
+        if use_meshes:
+            self.meshes_dir: Path = root_dir_to_mesh_dir(scene_root_dir)
+            person_ids = [d.name for d in self.meshes_dir.iterdir() if d.is_dir() and d.name.isdigit()]
+            person_ids = sorted([int(pid) for pid in person_ids])
+            self._load_mesh_paths(person_ids)
+
     # --------- Path loaders
-    def _load_frame_paths(self, frames_dir: Path, sample_every: int = 1, skip_frames: Optional[list] = []):
+    def _load_frame_paths(self, sample_every: int = 1, skip_frames: Optional[list] = []):
 
         # Collect all frame paths
         frame_candidates = []
         for ext in ("*.png", "*.jpg", "*.jpeg"):
-            frame_candidates.extend(frames_dir.glob(ext))
+            frame_candidates.extend(self.frames_dir.glob(ext))
         self.frame_paths = sorted(set(frame_candidates))
 
         # Apply skip frames
@@ -114,14 +125,14 @@ class SceneDataset(Dataset):
 
         # Check that we have frames
         if not self.frame_paths:
-            raise RuntimeError(f"No frames found in {frames_dir}")
+            raise RuntimeError(f"No frames found in {self.frames_dir}")
 
-    def _load_mask_paths(self, masks_dir: Path):
+    def _load_mask_paths(self):
         self.mask_paths = []
         missing = []
         for p in self.frame_paths:
             base = p.stem
-            candidates = [masks_dir / f"{base}{ext}" for ext in (".png", ".jpg", ".jpeg")]
+            candidates = [self.masks_dir / f"{base}{ext}" for ext in (".png", ".jpg", ".jpeg")]
             mask_path = next((c for c in candidates if c.exists()), None)
             if mask_path is None:
                 missing.append(base)
@@ -165,6 +176,55 @@ class SceneDataset(Dataset):
                 self.smpl_paths.append(smpl_path)
         if missing:
             raise RuntimeError(f"Missing SMPL files for frames (by stem): {missing[:5]}")
+
+    def _load_mesh_paths(self, person_ids: List[int]):
+        """
+        Build per-frame mesh paths for each person and record max sizes for padding.
+
+        Design notes:
+        - We store a list of mesh paths per frame and per person so __getitem__
+          can load meshes on demand.
+        - We precompute global max vertex/face counts across all persons/frames
+          so padding is consistent for stacking and DataLoader collation.
+
+        Args:
+            person_ids: List of integer person IDs, e.g. [0, 1].
+        """
+        self.mesh_paths = []
+        self.mesh_person_ids = person_ids
+        self.mesh_max_verts = {pid: 0 for pid in person_ids}
+        self.mesh_max_faces = {pid: 0 for pid in person_ids}
+        self.mesh_max_verts_all = 0
+        self.mesh_max_faces_all = 0
+        missing = []
+        for p in self.frame_paths:
+            missing_per_frame = []
+            paths_per_frame = []
+            for person_id in person_ids:
+                # example name: mesh-f00001.npz
+                fnumber = int(p.stem)
+                fname = f"mesh-f{fnumber:05d}.npz"
+                person_mesh_path = self.meshes_dir / f"{person_id}" / fname
+                if not person_mesh_path.exists():
+                    missing_per_frame.append(fname)
+                else:
+                    paths_per_frame.append(person_mesh_path)
+                    with np.load(person_mesh_path) as npz:
+                        verts = npz["vertices"]
+                        faces = npz["faces"]
+                    self.mesh_max_verts[person_id] = max(self.mesh_max_verts[person_id], verts.shape[0])
+                    self.mesh_max_faces[person_id] = max(self.mesh_max_faces[person_id], faces.shape[0])
+                    self.mesh_max_verts_all = max(self.mesh_max_verts_all, verts.shape[0])
+                    self.mesh_max_faces_all = max(self.mesh_max_faces_all, faces.shape[0])
+            
+            if missing_per_frame:
+                missing.append(missing_per_frame)
+
+            self.mesh_paths.append(paths_per_frame)
+        if missing:
+            raise RuntimeError(f"Missing mesh files for frames (by stem): {missing[:5]}")
+        if self.mesh_max_verts_all == 0 or self.mesh_max_faces_all == 0:
+            raise RuntimeError("Failed to determine mesh padding sizes; mesh files may be empty.")
 
 
     # -------- Data loaders for camera parameters and SMPLX
@@ -288,6 +348,64 @@ class SceneDataset(Dataset):
         }
 
         return smpl
+    
+    def _load_meshes(self, per_person_path: List[Path]):
+        """
+        Load per-person meshes for a single frame and pad to fixed sizes.
+
+        Design notes:
+        - Meshes are returned as dense, padded tensors so the default PyTorch
+          collate_fn can stack them across the batch.
+        - True sizes are returned separately so metrics can ignore padding.
+
+        Args:
+            per_person_path: List of mesh paths (one per person) for this frame.
+
+        Returns:
+            Dict with:
+              - "vertices": FloatTensor [P, Vmax, 3]
+              - "faces": LongTensor [P, Fmax, 3]
+              - "num_vertices": LongTensor [P]
+              - "num_faces": LongTensor [P]
+              - "person_ids": LongTensor [P]
+        """
+        num_persons = len(per_person_path)
+        if num_persons != len(self.mesh_person_ids):
+            raise RuntimeError(
+                f"Expected {len(self.mesh_person_ids)} mesh paths, got {num_persons}."
+            )
+
+        verts_out = []
+        faces_out = []
+        num_verts = []
+        num_faces = []
+
+        for pid, mesh_path in zip(self.mesh_person_ids, per_person_path):
+            npz = np.load(mesh_path)
+            verts = npz["vertices"].astype(np.float32)
+            faces = npz["faces"].astype(np.int64)
+
+            max_v = self.mesh_max_verts_all
+            max_f = self.mesh_max_faces_all
+
+            verts_pad = np.zeros((max_v, 3), dtype=np.float32)
+            faces_pad = np.zeros((max_f, 3), dtype=np.int64)
+            verts_pad[: verts.shape[0]] = verts
+            faces_pad[: faces.shape[0]] = faces
+
+            verts_out.append(torch.from_numpy(verts_pad))
+            faces_out.append(torch.from_numpy(faces_pad))
+            num_verts.append(verts.shape[0])
+            num_faces.append(faces.shape[0])
+
+        meshes = {
+            "vertices": torch.stack(verts_out, dim=0).to(self.device),
+            "faces": torch.stack(faces_out, dim=0).to(self.device),
+            "num_vertices": torch.tensor(num_verts, device=self.device, dtype=torch.long),
+            "num_faces": torch.tensor(num_faces, device=self.device, dtype=torch.long),
+            "person_ids": torch.tensor(self.mesh_person_ids, device=self.device, dtype=torch.long),
+        }
+        return meshes
 
     # -------- Dataset interface
     def __len__(self):
@@ -326,6 +444,12 @@ class SceneDataset(Dataset):
             smpl_params = self._load_smpl(self.smpl_paths[idx])
             to_return_values["smpl_params"] = smpl_params
 
+        # - (Optional) load meshes
+        if hasattr(self, "mesh_paths"):
+            mesh_paths_per_person = self.mesh_paths[idx]
+            meshes = self._load_meshes(mesh_paths_per_person)
+            to_return_values["meshes"] = meshes
+
         return to_return_values
 
 
@@ -341,7 +465,7 @@ def fetch_masks_if_exist(masks_scene_dir: Path, tgt_scene_dir: Path, camera_id: 
 
 
 def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_dir: Path, masks_scene_dir: Path, cam_scene_dir: Optional[Path] = None,  
-                                smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, smpl_params_scene_dir: Optional[Path] = None,
+                                smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, smpl_params_scene_dir: Optional[Path] = None, meshes_scene_dir: Optional[Path] = None,
                                 resolution_hw: Optional[Tuple[int, int]] = (1280, 940), frame_paths: Optional[list] = None):
     """
     Copy data from the specified scene directories to the tgt scene directory. If the given
@@ -417,6 +541,16 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_smpl_params_dir), str(tgt_smpl_params_dir.parent)])
         else:
             raise ValueError(f"SMPL parameters directory not found: {src_smpl_params_dir}")
+
+    # Meshes
+    if meshes_scene_dir is not None:
+        src_meshes_dir = root_dir_to_mesh_dir(meshes_scene_dir)
+        tgt_meshes_dir = root_dir_to_mesh_dir(tgt_scene_dir)
+        tgt_meshes_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_meshes_dir.exists():
+            subprocess.run(["cp", "-r", str(src_meshes_dir), str(tgt_meshes_dir.parent)])
+        else:
+            raise ValueError(f"Meshes directory not found: {src_meshes_dir}")
 
     # Skip frames
     src_skip_frames_path = root_dir_to_skip_frames_path(frames_scene_dir)

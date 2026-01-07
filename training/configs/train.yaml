@@ -40,6 +40,7 @@ test_masks_scene_dir: ${root_gt_dir_path}
 test_smplx_params_scene_dir: ${root_gt_dir_path}
 test_depths_scene_dir: null  # ${root_gt_dir_path}  # set to null if no depths are used
 test_smpl_params_scene_dir: ${root_gt_dir_path}
+test_meshes_scene_dir: ${root_gt_dir_path}  # for now, this is just here to be able to compute mesh metrics during eval 
 
 difix:
   eval_enable: false
@@ -83,7 +84,16 @@ nvs_eval:
   grid_size: 96
   truncation: 2.0
   sigma_scale: 0.7
-  overwrite: true
+  overwrite: false
+
+reconstruction_eval:
+  icp:
+    n_samples: 1000
+    max_iterations: 10
+    threshold: 1e-4
+  metrics:
+    n_samples: 1000
+    units: cm
 
 torch_home: /scratch/izar/cizinsky/.cache
 hf_home: /scratch/izar/cizinsky/.cache

@@ -214,7 +214,7 @@ def mesh_config_from_cfg(cfg) -> MeshConfig:
     return MeshConfig(**kwargs)
 
 
-def save_meshes_from_state(
+def get_meshes_from_3dgs(
     state: Dict[str, torch.Tensor],
     output_dir: Path,
     frame_name: str,
@@ -230,6 +230,17 @@ def save_meshes_from_state(
     # Convert each person independently to keep per-person mesh outputs.
     unique_persons = np.unique(person_ids)
     for pid in unique_persons:
+        out_path = output_dir / "instance" / f"{pid}" / f"mesh-f{frame_name_fmt}.npz"
+        if out_path.exists() and not overwrite:
+            try:
+                with np.load(out_path) as npz:
+                    vertices = npz["vertices"].astype(np.float32)
+                    faces = npz["faces"].astype(np.int32)
+                results[int(pid)] = (vertices, faces)
+            except Exception:
+                pass
+            continue
+
         mask = person_ids == pid
         centers, sigmas, weights = _prepare_gaussians(
             state,
@@ -267,9 +278,7 @@ def save_meshes_from_state(
         except ValueError:
             continue
 
-        out_path = output_dir / "instance" / f"{pid}" / f"mesh-f{frame_name_fmt}.npz"
-        if out_path.exists() and not overwrite:
-            continue
+
         _write_mesh_npz(out_path, vertices, faces)
         results[int(pid)] = (vertices, faces)
 
@@ -323,7 +332,7 @@ def main(args: Args) -> None:
 
     for frame_path in tqdm(frame_files, desc="3DGS -> mesh"):
         state = _torch_load(frame_path)
-        save_meshes_from_state(
+        get_meshes_from_3dgs(
             state,
             args.output_dir,
             frame_path.stem,
