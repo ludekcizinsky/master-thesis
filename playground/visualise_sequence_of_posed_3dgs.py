@@ -155,18 +155,40 @@ def _load_mesh_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     return verts, faces
 
 
+def _candidate_mesh_filenames(frame_name: str) -> List[str]:
+    candidates = [f"mesh-f{frame_name}.npz"]
+    if frame_name.isdigit():
+        fid = int(frame_name)
+        for width in (4, 5, 6, 7, 8):
+            candidates.append(f"mesh-f{fid:0{width}d}.npz")
+    seen = set()
+    ordered = []
+    for name in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
 def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]:
-    instance_root = mesh_root / "instance"
+    if mesh_root.name == "instance":
+        instance_root = mesh_root
+    else:
+        instance_root = mesh_root / "instance"
     if not instance_root.exists():
         return []
     paths: List[Tuple[int, Path]] = []
+    candidates = _candidate_mesh_filenames(frame_name)
     for inst_dir in sorted(instance_root.iterdir()):
         if not inst_dir.is_dir() or not inst_dir.name.isdigit():
             continue
         pid = int(inst_dir.name)
-        mesh_path = inst_dir / f"mesh-f{frame_name}.npz"
-        if mesh_path.exists():
-            paths.append((pid, mesh_path))
+        for name in candidates:
+            mesh_path = inst_dir / name
+            if mesh_path.exists():
+                paths.append((pid, mesh_path))
+                break
     return paths
 
 
@@ -174,6 +196,7 @@ def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]
 class Args:
     posed_3dgs_dir: Path
     posed_meshes_dir: Optional[Path] = None
+    gt_meshes_dir: Optional[Path] = None
     pattern: str = "*.pt"
     port: int = 8080
     scaling_mode: Literal["auto", "log", "linear"] = "auto"
@@ -187,6 +210,7 @@ class Args:
     init_distance_scale: float = 2.5
     init_fov_deg: float = 55.0
     mesh_opacity: float = 0.5
+    gt_mesh_opacity: float = 0.7
 
 
 def main(args: Args) -> None:
@@ -226,6 +250,7 @@ def main(args: Args) -> None:
     initial_camera["fov"] = np.array([np.deg2rad(float(args.init_fov_deg))], dtype=np.float32)
 
     show_meshes = args.posed_meshes_dir is not None
+    show_gt_meshes = args.gt_meshes_dir is not None
     show_3dgs = True
 
     server = viser.ViserServer(port=args.port)
@@ -244,8 +269,11 @@ def main(args: Args) -> None:
     with server.gui.add_folder("Visibility"):
         show_3dgs_checkbox = server.gui.add_checkbox("Show 3DGS", True)
         show_meshes_checkbox = server.gui.add_checkbox("Show Meshes", show_meshes)
+        show_gt_meshes_checkbox = server.gui.add_checkbox("Show GT Meshes", show_gt_meshes)
         if not show_meshes:
             show_meshes_checkbox.disabled = True
+        if not show_gt_meshes:
+            show_gt_meshes_checkbox.disabled = True
     frame_label = server.gui.add_text("File", frame_files[0].name)
 
     gs_handle: Optional[Any] = None
@@ -256,6 +284,7 @@ def main(args: Args) -> None:
     playing: bool = False
     last_play_step: float = time.monotonic()
     mesh_handles: Dict[int, Any] = {}
+    gt_mesh_handles: Dict[int, Any] = {}
 
     def _set_initial_camera(client: viser.ClientHandle) -> None:
         if not initial_camera:
@@ -285,6 +314,18 @@ def main(args: Args) -> None:
         last_frame_idx = None
         _show_frame(int(frame_slider.value))
 
+    @show_gt_meshes_checkbox.on_update
+    def _(_) -> None:
+        nonlocal last_frame_idx
+        if not show_gt_meshes:
+            return
+        if not show_gt_meshes_checkbox.value:
+            for handle in gt_mesh_handles.values():
+                handle.visible = False
+            return
+        last_frame_idx = None
+        _show_frame(int(frame_slider.value))
+
     @play_button.on_click
     def _(_) -> None:
         nonlocal playing, last_play_step
@@ -301,7 +342,7 @@ def main(args: Args) -> None:
         stop_button.disabled = True
 
     def _show_frame(frame_idx: int) -> None:
-        nonlocal gs_handle, last_frame_idx, mesh_handles
+        nonlocal gs_handle, last_frame_idx, mesh_handles, gt_mesh_handles
         if last_frame_idx == frame_idx:
             return
 
@@ -364,6 +405,34 @@ def main(args: Args) -> None:
                         handle.visible = False
             elif show_meshes:
                 for handle in mesh_handles.values():
+                    handle.visible = False
+
+            if show_gt_meshes and args.gt_meshes_dir is not None and show_gt_meshes_checkbox.value:
+                mesh_paths = _find_mesh_paths(args.gt_meshes_dir, frame_path.stem)
+                active_pids = set()
+                for pid, mesh_path in mesh_paths:
+                    verts, faces = _load_mesh_npz(mesh_path)
+                    active_pids.add(pid)
+                    handle = gt_mesh_handles.get(pid)
+                    if handle is not None and hasattr(handle, "update"):
+                        handle.update(vertices=verts, faces=faces, color=_person_color(pid))
+                    else:
+                        handle = server.scene.add_mesh_simple(
+                            f"/gt_meshes/person_{pid}",
+                            vertices=verts,
+                            faces=faces,
+                            color=_person_color(pid),
+                        )
+                        gt_mesh_handles[pid] = handle
+                    handle.visible = True
+                    if hasattr(handle, "opacity"):
+                        handle.opacity = float(args.gt_mesh_opacity)
+
+                for pid, handle in gt_mesh_handles.items():
+                    if pid not in active_pids:
+                        handle.visible = False
+            elif show_gt_meshes:
+                for handle in gt_mesh_handles.values():
                     handle.visible = False
             last_frame_idx = frame_idx
 

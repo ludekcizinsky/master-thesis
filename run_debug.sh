@@ -54,4 +54,5 @@ path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
   # --grid-size 64 --max-frames 1000 --overwrite
 
 
-python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --scaling-mode auto --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/seg
+python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --scaling-mode auto --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
