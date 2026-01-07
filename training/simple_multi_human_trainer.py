@@ -45,6 +45,7 @@ from training.helpers.debug import (
     create_and_save_depth_debug_vis,
     save_gt_image_and_mask_comparison
 )
+from training.helpers.gs_to_mesh import mesh_config_from_cfg, save_meshes_from_state
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
     compute_smpl_mpjpe_per_frame,
@@ -1569,6 +1570,14 @@ class MultiHumanTrainer:
         save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
         save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
 
+        # - posed mesh save directory (one file per frame, per person)
+        save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
+        save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
+
+        mesh_cfg_node = self.cfg["3dgs_to_mesh"]
+        mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
+        mesh_overwrite = mesh_cfg_node.get("overwrite", False)
+
         # Init datasets
         skip_frames = load_skip_frames(self.trn_data_dir)
         # - Ground truth dataset
@@ -1612,7 +1621,17 @@ class MultiHumanTrainer:
                 fname = fnames[view_idx]
                 fname_str = str(fname)
                 out_path = save_dir_posed_3dgs / f"{fname_str}.pt"
-                torch.save(posed_gs_list_to_serializable_dict(all_posed_gs_list), out_path)
+                posed_gs_state = posed_gs_list_to_serializable_dict(all_posed_gs_list)
+                torch.save(posed_gs_state, out_path)
+
+                # Posed 3dgs -> posed meshes and save to disk
+                save_meshes_from_state(
+                    posed_gs_state,
+                    save_dir_posed_meshes,
+                    fname_str,
+                    mesh_cfg,
+                    overwrite=mesh_overwrite,
+                )
 
 
 

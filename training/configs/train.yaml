@@ -79,6 +79,12 @@ nvs_eval:
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2
 
+3dgs_to_mesh:
+  grid_size: 96
+  truncation: 2.0
+  sigma_scale: 0.7
+  overwrite: true
+
 torch_home: /scratch/izar/cizinsky/.cache
 hf_home: /scratch/izar/cizinsky/.cache
 
