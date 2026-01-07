@@ -245,30 +245,28 @@ class MultiHumanTrainer:
         # Preare model
         self._load_model()
 
-        if False:
+        # Initialize difix
+        self._init_nv_generation()
 
-            # Initialize difix
-            self._init_nv_generation()
+        # Generate novel views 
+        is_nv_gen_done = False
+        n_its_nv_gen = 0
+        while not is_nv_gen_done:
+            is_nv_gen_done = self.novel_view_generation_step()
+            n_its_nv_gen += 1
+            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
 
-            # Generate novel views 
-            is_nv_gen_done = False
-            n_its_nv_gen = 0
-            while not is_nv_gen_done:
-                is_nv_gen_done = self.novel_view_generation_step()
-                n_its_nv_gen += 1
-                print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
-
-            # Prepare training dataset from all the new cameras
-            for cam_id in self.difix_cam_ids_all:
-                scene_ds = SceneDataset(
-                    self.trn_data_dir,
-                    int(cam_id),
-                    use_depth=self.cfg.use_depth,
-                    device=self.tuner_device,
-                    sample_every=1,
-                )
-                self.trn_datasets.append(scene_ds)
-            self.trn_dataset = ConcatDataset(self.trn_datasets)
+        # Prepare training dataset from all the new cameras
+        for cam_id in self.difix_cam_ids_all:
+            scene_ds = SceneDataset(
+                self.trn_data_dir,
+                int(cam_id),
+                use_depth=self.cfg.use_depth,
+                device=self.tuner_device,
+                sample_every=1,
+            )
+            self.trn_datasets.append(scene_ds)
+        self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -1518,6 +1516,13 @@ class MultiHumanTrainer:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
         
+
+        # - log the overall average metrics to wandb
+        if self.cfg.wandb.enable:
+            to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}
+            to_log["epoch"] = epoch
+            wandb.log(to_log)
+
 #        # - debug
         #print(
             #"Overall Pose Estimation "
@@ -1526,11 +1531,6 @@ class MultiHumanTrainer:
             #f"CD (mm): {overall_avg['cd_mm']:.4f}, "
             #f"PCDR: {overall_avg['pcdr']:.2f}"
         #)
-        # - log the overall average metrics to wandb
-        if self.cfg.wandb.enable:
-            to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}
-            to_log["epoch"] = epoch
-            wandb.log(to_log)
 
     @torch.no_grad()
     def eval_loop_reconstruction(self, epoch):
@@ -1727,11 +1727,10 @@ class MultiHumanTrainer:
 
     @torch.no_grad()
     def eval_loop(self, epoch):
-        # self.eval_loop_nvs(epoch)
-        # self.eval_loop_segmentation(epoch)
-        # self.eval_loop_pose_estimation(epoch)
+        self.eval_loop_nvs(epoch)
+        self.eval_loop_segmentation(epoch)
+        self.eval_loop_pose_estimation(epoch)
         self.eval_loop_reconstruction(epoch)
-        quit()
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
