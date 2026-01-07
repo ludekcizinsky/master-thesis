@@ -138,6 +138,18 @@ def main(args: Args) -> None:
                 ("PCDR", "pcdr"),
             ],
         ),
+        TaskSpec(
+            name="reconstruction",
+            title="Reconstruction",
+            kind="kv",
+            filename="reconstruction_overall_results.txt",
+            columns=[
+                ("V_IoU", "v_iou"),
+                ("Chamfer_cm", "chamfer_cm"),
+                ("P2S_cm", "p2s_cm"),
+                ("Normal_Consistency", "normal_consistency"),
+            ],
+        ),
     ]
 
     if args.include_segmentation_novel_cams:
