@@ -155,22 +155,6 @@ def _load_mesh_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     return verts, faces
 
 
-def _candidate_mesh_filenames(frame_name: str) -> List[str]:
-    candidates = [f"mesh-f{frame_name}.npz"]
-    if frame_name.isdigit():
-        fid = int(frame_name)
-        for width in (4, 5, 6, 7, 8):
-            candidates.append(f"mesh-f{fid:0{width}d}.npz")
-    seen = set()
-    ordered = []
-    for name in candidates:
-        if name in seen:
-            continue
-        seen.add(name)
-        ordered.append(name)
-    return ordered
-
-
 def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]:
     if mesh_root.name == "instance":
         instance_root = mesh_root
@@ -179,16 +163,17 @@ def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]
     if not instance_root.exists():
         return []
     paths: List[Tuple[int, Path]] = []
-    candidates = _candidate_mesh_filenames(frame_name)
+    if frame_name.isdigit():
+        mesh_filename = f"mesh-f{int(frame_name):05d}.npz"
+    else:
+        mesh_filename = f"mesh-f{frame_name}.npz"
     for inst_dir in sorted(instance_root.iterdir()):
         if not inst_dir.is_dir() or not inst_dir.name.isdigit():
             continue
         pid = int(inst_dir.name)
-        for name in candidates:
-            mesh_path = inst_dir / name
-            if mesh_path.exists():
-                paths.append((pid, mesh_path))
-                break
+        mesh_path = inst_dir / mesh_filename
+        if mesh_path.exists():
+            paths.append((pid, mesh_path))
     return paths
 
 

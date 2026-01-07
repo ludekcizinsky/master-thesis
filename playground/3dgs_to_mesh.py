@@ -165,6 +165,12 @@ def _write_mesh_npz(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None
     np.savez_compressed(path, vertices=vertices, faces=faces)
 
 
+def _format_frame_name(frame_name: str, width: int = 5) -> str:
+    if frame_name.isdigit():
+        return f"{int(frame_name):0{width}d}"
+    return frame_name
+
+
 @dataclass
 class Args:
     posed_3dgs_dir: Path
@@ -201,7 +207,7 @@ def main(args: Args) -> None:
     for frame_path in tqdm(frame_files, desc="3DGS -> mesh"):
         state = _torch_load(frame_path)
         person_ids = _split_person_ids(state)
-        frame_name = frame_path.stem
+        frame_name = _format_frame_name(frame_path.stem)
 
         unique_persons = np.unique(person_ids)
         for pid in unique_persons:
