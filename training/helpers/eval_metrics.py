@@ -270,6 +270,63 @@ def compute_normal_consistency(
         per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
     return torch.tensor(per_frame, dtype=torch.float32)
 
+
+def compute_volumetric_iou(
+    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    *,
+    voxel_size: float = 0.02,
+    padding: float = 0.05,
+) -> torch.Tensor:
+    """
+    Compute volumetric IoU on a per-frame basis assuming watertight meshes.
+    Uses a shared voxel grid per person defined by the union bounds of pred+gt.
+    """
+
+    def _mesh_occupancy(mesh: trimesh.Trimesh, origin: np.ndarray, dims: Tuple[int, int, int]) -> np.ndarray:
+        vox = mesh.voxelized(pitch=voxel_size).fill()
+        occ = np.zeros(dims, dtype=bool)
+        if vox.points.size == 0:
+            return occ
+        idx = np.floor((vox.points - origin) / voxel_size).astype(np.int32)
+        valid = np.all((idx >= 0) & (idx < np.asarray(dims)), axis=1)
+        idx = idx[valid]
+        if idx.size > 0:
+            occ[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+        return occ
+
+    per_frame = []
+    for pred_frame, gt_frame in tqdm(
+        zip(pred_meshes, gt_meshes),
+        desc="Computing Volumetric IoU",
+        total=len(pred_meshes),
+        leave=False,
+    ):
+        per_person = []
+        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
+        for pid in shared_pids:
+            pred_v, pred_f = pred_frame[pid]
+            gt_v, gt_f = gt_frame[pid]
+            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+                continue
+            all_verts = np.concatenate([pred_v, gt_v], axis=0)
+            min_corner = all_verts.min(axis=0) - padding
+            max_corner = all_verts.max(axis=0) + padding
+            dims = np.maximum(np.ceil((max_corner - min_corner) / voxel_size).astype(np.int32), 1)
+            dims_tuple = (int(dims[0]), int(dims[1]), int(dims[2]))
+
+            pred_tm = trimesh.Trimesh(vertices=pred_v, faces=pred_f, process=False)
+            gt_tm = trimesh.Trimesh(vertices=gt_v, faces=gt_f, process=False)
+            pred_occ = _mesh_occupancy(pred_tm, min_corner, dims_tuple)
+            gt_occ = _mesh_occupancy(gt_tm, min_corner, dims_tuple)
+            union = np.logical_or(pred_occ, gt_occ).sum()
+            if union == 0:
+                continue
+            inter = np.logical_and(pred_occ, gt_occ).sum()
+            per_person.append(float(inter) / float(union))
+        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+    return torch.tensor(per_frame, dtype=torch.float32)
+
 # ---------------------------------------------------------------------------
 # Pose evaluation metrics
 # ---------------------------------------------------------------------------

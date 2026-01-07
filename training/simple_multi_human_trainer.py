@@ -59,7 +59,8 @@ from training.helpers.eval_metrics import (
     save_aligned_meshes,
     compute_chamfer_distance,
     compute_p2s_distance,
-    compute_normal_consistency
+    compute_normal_consistency,
+    compute_volumetric_iou
 )
 from fused_ssim import fused_ssim
 
@@ -1558,6 +1559,9 @@ class MultiHumanTrainer:
         metrics_cfg = self.cfg.get("reconstruction_eval", {}).get("metrics", {})
         metrics_n_samples = metrics_cfg.get("n_samples", 50000)
         metrics_units = metrics_cfg.get("units", "cm")
+        viou_cfg = self.cfg.get("reconstruction_eval", {}).get("viou", {})
+        viou_voxel_size = viou_cfg.get("voxel_size", 0.02)
+        viou_padding = viou_cfg.get("padding", 0.05)
 
         # Init datasets
         skip_frames = load_skip_frames(self.trn_data_dir)
@@ -1643,6 +1647,12 @@ class MultiHumanTrainer:
             save_aligned_meshes(pred_meshes_aligned, save_dir_aligned_meshes, fnames)
 
             # - Compute metrics
+            v_iou = compute_volumetric_iou(
+                pred_meshes_aligned,
+                gt_meshes,
+                voxel_size=viou_voxel_size,
+                padding=viou_padding,
+            )
             chamfer = compute_chamfer_distance(
                 pred_meshes_aligned,
                 gt_meshes,
@@ -1659,12 +1669,14 @@ class MultiHumanTrainer:
                 pred_meshes_aligned, gt_meshes, n_samples=metrics_n_samples
             )
 
+
             # - Store per-frame metrics
             for idx, fname in enumerate(fnames):
                 fid = int(fname)
                 metrics_per_frame.append(
                     (
                         fid,
+                        v_iou[idx].item(),
                         chamfer[idx].item(),
                         p2s[idx].item(),
                         normal_consistency[idx].item(),
@@ -1677,6 +1689,7 @@ class MultiHumanTrainer:
             metrics_per_frame,
             columns=[
                 "frame_id",
+                "v_iou",
                 f"chamfer_{metrics_units}",
                 f"p2s_{metrics_units}",
                 "normal_consistency",
@@ -1687,6 +1700,7 @@ class MultiHumanTrainer:
 
         # - save average across frame metrics
         overall_avg = {
+            "v_iou": df["v_iou"].mean(),
             f"chamfer_{metrics_units}": df[f"chamfer_{metrics_units}"].mean(),
             f"p2s_{metrics_units}": df[f"p2s_{metrics_units}"].mean(),
             "normal_consistency": df["normal_consistency"].mean(),
@@ -1696,20 +1710,20 @@ class MultiHumanTrainer:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
 
-        # - debug (show the overall results)
-        print(
-            "Overall Reconstruction "
-            f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
-            f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
-            f"Normal Consistency: {overall_avg['normal_consistency']:.4f}"
-        )
-
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
             to_log = {f"eval_recon/{metric_name}": v for metric_name, v in overall_avg.items()}
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
+        # - debug (show the overall results)
+        print(
+            "Overall Reconstruction "
+            f"V-IoU: {overall_avg['v_iou']:.4f}, "
+            f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
+            f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
+            f"Normal Consistency: {overall_avg['normal_consistency']:.4f} "
+        )
 
     @torch.no_grad()
     def eval_loop(self, epoch):

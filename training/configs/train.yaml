@@ -91,6 +91,9 @@ reconstruction_eval:
     n_samples: 1000
     max_iterations: 10
     threshold: 1e-4
+  viou:
+    voxel_size: 0.02
+    padding: 0.05
   metrics:
     n_samples: 1000
     units: cm
