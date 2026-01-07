@@ -132,10 +132,48 @@ def _state_to_splat_arrays(
         "covariances": cov.detach().cpu().numpy().astype(np.float32),
     }
 
+def _person_color(pid: int) -> Tuple[int, int, int]:
+    palette = np.array(
+        [
+            [255, 80, 80],
+            [80, 180, 255],
+            [120, 255, 120],
+            [255, 200, 80],
+            [200, 120, 255],
+            [255, 120, 200],
+        ],
+        dtype=np.int32,
+    )
+    c = palette[pid % len(palette)]
+    return int(c[0]), int(c[1]), int(c[2])
+
+
+def _load_mesh_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    npz = np.load(path)
+    verts = npz["vertices"].astype(np.float32)
+    faces = npz["faces"].astype(np.int32)
+    return verts, faces
+
+
+def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]:
+    instance_root = mesh_root / "instance"
+    if not instance_root.exists():
+        return []
+    paths: List[Tuple[int, Path]] = []
+    for inst_dir in sorted(instance_root.iterdir()):
+        if not inst_dir.is_dir() or not inst_dir.name.isdigit():
+            continue
+        pid = int(inst_dir.name)
+        mesh_path = inst_dir / f"mesh-f{frame_name}.npz"
+        if mesh_path.exists():
+            paths.append((pid, mesh_path))
+    return paths
+
 
 @dataclass
 class Args:
     posed_3dgs_dir: Path
+    posed_meshes_dir: Optional[Path] = None
     pattern: str = "*.pt"
     port: int = 8080
     scaling_mode: Literal["auto", "log", "linear"] = "auto"
@@ -143,11 +181,12 @@ class Args:
     max_scale: Optional[float] = None
     max_gaussians: Optional[int] = None
     seed: int = 0
-    debounce_ms: float = 150.0
+    debounce_ms: float = 10.0
     init_view_axis: Literal["x", "y", "z", "-x", "-y", "-z"] = "x"
     init_up_axis: Literal["x", "y", "z", "-x", "-y", "-z"] = "-y"
     init_distance_scale: float = 2.5
     init_fov_deg: float = 55.0
+    mesh_opacity: float = 0.5
 
 
 def main(args: Args) -> None:
@@ -186,6 +225,9 @@ def main(args: Args) -> None:
     initial_camera["wxyz"] = wxyz0.astype(np.float32)
     initial_camera["fov"] = np.array([np.deg2rad(float(args.init_fov_deg))], dtype=np.float32)
 
+    show_meshes = args.posed_meshes_dir is not None
+    show_3dgs = True
+
     server = viser.ViserServer(port=args.port)
 
     with server.gui.add_folder("Playback"):
@@ -199,6 +241,11 @@ def main(args: Args) -> None:
         play_button = server.gui.add_button("Play")
         stop_button = server.gui.add_button("Stop", disabled=True)
         fps_slider = server.gui.add_slider("FPS", min=1, max=60, step=0.5, initial_value=10)
+    with server.gui.add_folder("Visibility"):
+        show_3dgs_checkbox = server.gui.add_checkbox("Show 3DGS", True)
+        show_meshes_checkbox = server.gui.add_checkbox("Show Meshes", show_meshes)
+        if not show_meshes:
+            show_meshes_checkbox.disabled = True
     frame_label = server.gui.add_text("File", frame_files[0].name)
 
     gs_handle: Optional[Any] = None
@@ -208,6 +255,7 @@ def main(args: Args) -> None:
     ignore_slider_update: bool = False
     playing: bool = False
     last_play_step: float = time.monotonic()
+    mesh_handles: Dict[int, Any] = {}
 
     def _set_initial_camera(client: viser.ClientHandle) -> None:
         if not initial_camera:
@@ -217,6 +265,25 @@ def main(args: Args) -> None:
         client.camera.fov = float(initial_camera["fov"][0])
 
     server.on_client_connect(_set_initial_camera)
+
+    @show_3dgs_checkbox.on_update
+    def _(_) -> None:
+        nonlocal show_3dgs
+        show_3dgs = bool(show_3dgs_checkbox.value)
+        if gs_handle is not None:
+            gs_handle.visible = show_3dgs
+
+    @show_meshes_checkbox.on_update
+    def _(_) -> None:
+        nonlocal last_frame_idx
+        if not show_meshes:
+            return
+        if not show_meshes_checkbox.value:
+            for handle in mesh_handles.values():
+                handle.visible = False
+            return
+        last_frame_idx = None
+        _show_frame(int(frame_slider.value))
 
     @play_button.on_click
     def _(_) -> None:
@@ -234,7 +301,7 @@ def main(args: Args) -> None:
         stop_button.disabled = True
 
     def _show_frame(frame_idx: int) -> None:
-        nonlocal gs_handle, last_frame_idx
+        nonlocal gs_handle, last_frame_idx, mesh_handles
         if last_frame_idx == frame_idx:
             return
 
@@ -269,6 +336,35 @@ def main(args: Args) -> None:
                     opacities=splat_data["opacities"],
                     covariances=splat_data["covariances"],
                 )
+            gs_handle.visible = show_3dgs
+
+            if show_meshes and args.posed_meshes_dir is not None and show_meshes_checkbox.value:
+                mesh_paths = _find_mesh_paths(args.posed_meshes_dir, frame_path.stem)
+                active_pids = set()
+                for pid, mesh_path in mesh_paths:
+                    verts, faces = _load_mesh_npz(mesh_path)
+                    active_pids.add(pid)
+                    handle = mesh_handles.get(pid)
+                    if handle is not None and hasattr(handle, "update"):
+                        handle.update(vertices=verts, faces=faces, color=_person_color(pid))
+                    else:
+                        handle = server.scene.add_mesh_simple(
+                            f"/meshes/person_{pid}",
+                            vertices=verts,
+                            faces=faces,
+                            color=_person_color(pid),
+                        )
+                        mesh_handles[pid] = handle
+                    handle.visible = True
+                    if hasattr(handle, "opacity"):
+                        handle.opacity = float(args.mesh_opacity)
+
+                for pid, handle in mesh_handles.items():
+                    if pid not in active_pids:
+                        handle.visible = False
+            elif show_meshes:
+                for handle in mesh_handles.values():
+                    handle.visible = False
             last_frame_idx = frame_idx
 
         server.flush()
