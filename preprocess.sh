@@ -30,11 +30,11 @@ mkdir -p $preprocess_dir
 # echo "--- [2/5] Running Human3R to obtain: smplx parameters and camera poses"
 # bash submodules/human3r/run_inference.sh $seq_name
 
-echo "--- [3/5] Running Depth Anything 3 to generate depth maps"
-bash submodules/da3/run_inference.sh $seq_name
+# echo "--- [3/5] Running Depth Anything 3 to generate depth maps"
+# bash submodules/da3/run_inference.sh $seq_name
 
-# echo "--- [4/5] Running SAM3 to generate masks and masked images"
-# bash submodules/sam3/run_inference.sh $seq_name $sam_frame_idx
+echo "--- [4/5] Running SAM3 to generate masks and masked images"
+bash submodules/sam3/run_inference.sh $seq_name $sam_frame_idx
 
 # echo "--- [5/5] Running inference.sh to obtain canonical 3dgs models for each human"
 # bash submodules/lhm/run_inference.sh $seq_name $lhm_input_frame_idx $gt_root_dir
