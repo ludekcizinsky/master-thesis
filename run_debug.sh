@@ -76,3 +76,6 @@ src_camera_id=0
 gt_root_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
 bash preprocess.sh $seq_name $src_camera_id $gt_root_dir
 
+# # 3. check h3r output
+# preprocess_dir=/scratch/izar/cizinsky/thesis/preprocessing/frank_vs_luka
+# python preprocess/custom/check_h3r_output.py --scene-dir $preprocess_dir --model-folder /home/cizinsky/body_models

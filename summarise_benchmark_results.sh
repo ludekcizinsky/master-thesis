@@ -7,8 +7,8 @@ conda activate thesis
 
 cd /home/cizinsky/master-thesis
 
-exp_name="v1_est_masks_est_smplx_h1_use_rgb_render_based_masks_and_h3r_smplx_no_tune"
-epoch_str="0150"
+exp_name="v3_est_masks_est_smplx_test_recon_eval"
+epoch_str="0015"
 
 scene_names=(
   "hi4d_pair15_fight"
