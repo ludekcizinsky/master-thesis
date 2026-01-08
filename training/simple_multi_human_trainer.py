@@ -1673,15 +1673,23 @@ class MultiHumanTrainer:
             # - Store per-frame metrics
             for idx, fname in enumerate(fnames):
                 fid = int(fname)
-                metrics_per_frame.append(
-                    (
-                        fid,
-                        v_iou[idx].item(),
-                        chamfer[idx].item(),
-                        p2s[idx].item(),
-                        normal_consistency[idx].item(),
-                    )
+                row_to_save = (
+                    fid,
+                    v_iou[idx].item(),
+                    chamfer[idx].item(),
+                    p2s[idx].item(),
+                    normal_consistency[idx].item(),
                 )
+                metrics_per_frame.append(row_to_save)
+
+#                # - Debug: print per-frame metrics
+                #print(
+                    #f"Frame {fname}: "
+                    #f"V-IoU: {v_iou[idx].item():.4f}, "
+                    #f"Chamfer ({metrics_units}): {chamfer[idx].item():.4f}, "
+                    #f"P2S ({metrics_units}): {p2s[idx].item():.4f}, "
+                    #f"Normal Consistency: {normal_consistency[idx].item():.4f} "
+                #)
 
         # Save the results
         # - save per-frame metrics

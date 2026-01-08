@@ -45,7 +45,7 @@ cd /home/cizinsky/master-thesis
 
 
 # # 3DGS to mesh and visualisation debug
-root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v2_est_masks_est_smplx_test_recon_eval/epoch_0015
+root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_reconstruction_debug_with_multiview/epoch_0015
 path_to_posed_3dgs=$root_save_dir/posed_3dgs_per_frame
 path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
 
@@ -58,7 +58,7 @@ path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
   # # --sigma-scale 0.7 \
   # # --max-frames 1000 --overwrite
 
-path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/seg
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/seg
 python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
 # # Visualise MMM mesh
