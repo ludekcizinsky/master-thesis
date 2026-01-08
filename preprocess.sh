@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e # exit on error
 
-# Example usage:
-#   bash preprocess.sh taichi 
-
 # activate conda environment
 source /home/cizinsky/miniconda3/etc/profile.d/conda.sh
 module load gcc ffmpeg

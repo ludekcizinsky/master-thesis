@@ -45,22 +45,31 @@ cd /home/cizinsky/master-thesis
 
 
 # # 3DGS to mesh and visualisation debug
-root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_reconstruction_debug_with_multiview/epoch_0015
-path_to_posed_3dgs=$root_save_dir/posed_3dgs_per_frame
-path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
+# root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_reconstruction_debug_with_multiview/epoch_0015
+# path_to_posed_3dgs=$root_save_dir/posed_3dgs_per_frame
+# path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
 
-# bash train.sh
-# # python playground/3dgs_to_mesh.py \
-  # # --posed-3dgs-dir $path_to_posed_3dgs \
-  # # --output-dir $path_to_posed_meshes \
-  # # --grid-size 96 \
-  # # --truncation 2.0 \
-  # # --sigma-scale 0.7 \
-  # # --max-frames 1000 --overwrite
+# # bash train.sh
+# # # python playground/3dgs_to_mesh.py \
+  # # # --posed-3dgs-dir $path_to_posed_3dgs \
+  # # # --output-dir $path_to_posed_meshes \
+  # # # --grid-size 96 \
+  # # # --truncation 2.0 \
+  # # # --sigma-scale 0.7 \
+  # # # --max-frames 1000 --overwrite
 
-path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/seg
-python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
+# path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/seg
+# python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
 # # Visualise MMM mesh
 # mesh_data_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance/obj
 # python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 8080 
+
+# Running preprocess for MMM
+
+bash preprocess/ait_datasets/mmm/other_reformat.sh
+
+# seq_name=hi4d_pair19_piggyback
+# src_camera_id=4
+# gt_root_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
+# bash preprocess.sh $seq_name $src_camera_id $gt_root_dir
