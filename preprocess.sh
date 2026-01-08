@@ -29,7 +29,6 @@ mkdir -p $preprocess_dir
 
 # echo "--- [2/5] Running Human3R to obtain: smplx parameters and camera poses"
 # bash submodules/human3r/run_inference.sh $seq_name
-# bash preprocess/custom/check_h3r_output.sh $preprocess_dir
  
 # echo "--- [3/5] Running Depth Anything 3 to generate depth maps"
 # bash submodules/da3/run_inference.sh $seq_name

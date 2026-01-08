@@ -71,9 +71,9 @@ cd /home/cizinsky/master-thesis
 # bash preprocess/ait_datasets/mmm/other_reformat.sh
 
 # 2. compute additional data (e.g., smplx params, masks etc.)
-seq_name=mmm_dance
+seq_name=taichi
 src_camera_id=0
-gt_root_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
+gt_root_dir=/scratch/izar/cizinsky/thesis/in_the_wild/scenes/taichi
 bash preprocess.sh $seq_name $src_camera_id $gt_root_dir
 
 # # 3. check h3r output
