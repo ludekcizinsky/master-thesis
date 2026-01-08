@@ -71,12 +71,12 @@ cd /home/cizinsky/master-thesis
 # bash preprocess/ait_datasets/mmm/other_reformat.sh
 
 # 2. compute additional data (e.g., smplx params, masks etc.)
-# seq_name=mmm_dance
-# src_camera_id=0
-# gt_root_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
-# bash preprocess.sh $seq_name $src_camera_id $gt_root_dir
+seq_name=mmm_dance
+src_camera_id=0
+gt_root_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
+bash preprocess.sh $seq_name $src_camera_id $gt_root_dir
 
 
-# Check human3r output
-scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_dance
-python preprocess/custom/check_h3r_output.py --scene-dir $scene_dir --model-folder /home/cizinsky/body_models 
+# # Check human3r output
+# scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_dance
+# python preprocess/custom/check_h3r_output.py --scene-dir $scene_dir --model-folder /home/cizinsky/body_models 

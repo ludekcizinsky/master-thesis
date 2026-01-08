@@ -13,7 +13,7 @@ conda create -n human3r python=3.11
 # Navigate to human3r directory
 cd $root_repo_path/submodules/human3r
 
-# # Activate conda env
+# Activate conda env
 conda activate human3r
 
 # Install dependencies

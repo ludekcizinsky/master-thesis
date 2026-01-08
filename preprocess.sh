@@ -22,16 +22,16 @@ input_frames_path=$gt_root_dir/images/$src_camera_id
 preprocess_dir=/scratch/izar/cizinsky/thesis/preprocessing/$seq_name
 mkdir -p $preprocess_dir
 
-echo "--- [1/5] Preparing frame folder"
-frame_folder=$preprocess_dir/frames
-mkdir -p $frame_folder
-cp -r $input_frames_path/* $frame_folder/
+# echo "--- [1/5] Preparing frame folder"
+# frame_folder=$preprocess_dir/frames
+# mkdir -p $frame_folder
+# cp -r $input_frames_path/* $frame_folder/
 
-echo "--- [2/5] Running Human3R to obtain: smplx parameters and camera poses"
-bash submodules/human3r/run_inference.sh $seq_name
+# echo "--- [2/5] Running Human3R to obtain: smplx parameters and camera poses"
+# bash submodules/human3r/run_inference.sh $seq_name
 
-# echo "--- [3/5] Running Depth Anything 3 to generate depth maps"
-# bash submodules/da3/run_inference.sh $seq_name
+echo "--- [3/5] Running Depth Anything 3 to generate depth maps"
+bash submodules/da3/run_inference.sh $seq_name
 
 # echo "--- [4/5] Running SAM3 to generate masks and masked images"
 # bash submodules/sam3/run_inference.sh $seq_name $sam_frame_idx
