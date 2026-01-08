@@ -45,9 +45,9 @@ cd /home/cizinsky/master-thesis
 
 
 # # 3DGS to mesh and visualisation debug
-# root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v1_reconstruction_debug/epoch_0000
-# path_to_posed_3dgs=$root_save_dir/posed_3dgs_per_frame
-# path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
+root_save_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v2_est_masks_est_smplx_test_recon_eval/epoch_0015
+path_to_posed_3dgs=$root_save_dir/posed_3dgs_per_frame
+path_to_posed_meshes=$root_save_dir/posed_meshes_per_frame
 
 # bash train.sh
 # # python playground/3dgs_to_mesh.py \
@@ -58,9 +58,9 @@ cd /home/cizinsky/master-thesis
   # # --sigma-scale 0.7 \
   # # --max-frames 1000 --overwrite
 
-# path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/seg
-# python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --scaling-mode auto --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/seg
+python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
-# Visualise MMM mesh
-mesh_data_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance/obj
-python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 8080 
+# # Visualise MMM mesh
+# mesh_data_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance/obj
+# python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 8080 

@@ -27,14 +27,6 @@ def _sorted_frame_files(root: Path, pattern: str) -> List[Path]:
     return sorted(paths, key=_key)
 
 
-def _maybe_sigmoid_to_unit(x: torch.Tensor) -> torch.Tensor:
-    if x.numel() == 0:
-        return x
-    if x.min().item() < 0.0 or x.max().item() > 1.0:
-        return torch.sigmoid(x)
-    return x.clamp(0.0, 1.0)
-
-
 def _axis_vector(axis: Literal["x", "y", "z", "-x", "-y", "-z"]) -> np.ndarray:
     base = {"x": 0, "y": 1, "z": 2}[axis.lstrip("-")]
     v = np.zeros(3, dtype=np.float32)
@@ -71,7 +63,6 @@ def _look_at_wxyz(position: np.ndarray, target: np.ndarray, up: np.ndarray) -> n
 def _state_to_splat_arrays(
     state: Dict[str, Any],
     *,
-    scaling_mode: Literal["auto", "log", "linear"],
     center: bool,
     max_scale: Optional[float],
     max_gaussians: Optional[int],
@@ -86,31 +77,18 @@ def _state_to_splat_arrays(
     if center:
         xyz = xyz - xyz.mean(dim=0, keepdim=True)
 
-    if opacity.ndim == 2 and opacity.shape[-1] == 1:
-        opacity = opacity.squeeze(-1)
-    opacity = _maybe_sigmoid_to_unit(opacity)
+    opacity = opacity.squeeze(-1)
+    opacity = opacity.clamp(0.0, 1.0)
     opacity = opacity.unsqueeze(-1)  # [N, 1]
 
-    if shs.ndim == 3:
-        rgb = shs[:, 0, :] if shs.shape[1] > 1 else shs.squeeze(1)
-    else:
-        rgb = shs
-    rgb = _maybe_sigmoid_to_unit(rgb)
+    rgb_coeff = shs.squeeze(1)
+    rgb = rgb_coeff.clamp(0.0, 1.0)
 
-    if rotation.shape[-1] != 4:
-        raise ValueError(f"Expected rotation quaternions of shape [N,4], got {tuple(rotation.shape)}")
     rotation = torch.nn.functional.normalize(rotation, dim=-1)
 
-    if scaling_mode == "auto":
-        scaling_mode = "log" if scaling.min().item() < 0.0 else "linear"
-
-    scales = torch.exp(scaling) if scaling_mode == "log" else scaling
-    if scales.ndim == 2 and scales.shape[-1] == 3:
-        scales = scales.clamp(min=1e-8)
-        if max_scale is not None:
-            scales = scales.clamp(max=max_scale)
-    else:
-        raise ValueError(f"Expected scaling of shape [N,3], got {tuple(scaling.shape)}")
+    scales = scaling.clamp(min=1e-8)
+    if max_scale is not None:
+        scales = scales.clamp(max=max_scale)
 
     if max_gaussians is not None and xyz.shape[0] > max_gaussians:
         g = torch.Generator(device=xyz.device)
@@ -184,7 +162,6 @@ class Args:
     gt_meshes_dir: Optional[Path] = None
     pattern: str = "*.pt"
     port: int = 8080
-    scaling_mode: Literal["auto", "log", "linear"] = "auto"
     center: bool = False
     max_scale: Optional[float] = None
     max_gaussians: Optional[int] = None
@@ -214,7 +191,6 @@ def main(args: Args) -> None:
     first_state = _torch_load(frame_files[0])
     first_splat_data = _state_to_splat_arrays(
         first_state,
-        scaling_mode=args.scaling_mode,
         center=args.center,
         max_scale=args.max_scale,
         max_gaussians=args.max_gaussians,
@@ -335,7 +311,6 @@ def main(args: Args) -> None:
         state = first_state if frame_idx == 0 else _torch_load(frame_path)
         splat_data = _state_to_splat_arrays(
             state,
-            scaling_mode=args.scaling_mode,
             center=args.center,
             max_scale=args.max_scale,
             max_gaussians=args.max_gaussians,
