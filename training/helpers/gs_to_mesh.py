@@ -61,7 +61,6 @@ def _prepare_gaussians(
     state: Dict[str, torch.Tensor],
     mask: np.ndarray,
     *,
-    scaling_mode: Literal["auto", "log", "linear"],
     sigma_scale: float,
     min_sigma: float,
     max_sigma: Optional[float],
@@ -76,7 +75,7 @@ def _prepare_gaussians(
 
     if opacity.ndim == 2 and opacity.shape[-1] == 1:
         opacity = opacity[:, 0]
-    opacity = _maybe_sigmoid_to_unit(opacity)
+    opacity = np.clip(opacity, 0.0, 1.0)
 
     if max_gaussians is not None and xyz.shape[0] > max_gaussians:
         # Uniform downsample to cap density computation cost.
@@ -86,10 +85,8 @@ def _prepare_gaussians(
         scaling = scaling[idx]
         opacity = opacity[idx]
 
-    if scaling_mode == "auto":
-        scaling_mode = "log" if scaling.min() < 0.0 else "linear"
     # Isotropic sigma from per-axis scales (rotation ignored).
-    scales = np.exp(scaling) if scaling_mode == "log" else scaling
+    scales = scaling
     if scales.ndim == 2 and scales.shape[1] == 3:
         sigma = scales.mean(axis=1)
     else:
@@ -186,7 +183,6 @@ class MeshConfig:
     truncation: float = 3.0
     iso_level: float = 0.05
     iso_percentile: Optional[float] = None
-    scaling_mode: Literal["auto", "log", "linear"] = "auto"
     sigma_scale: float = 1.0
     min_sigma: float = 1e-4
     max_sigma: Optional[float] = None
@@ -245,7 +241,6 @@ def get_meshes_from_3dgs(
         centers, sigmas, weights = _prepare_gaussians(
             state,
             mask,
-            scaling_mode=cfg.scaling_mode,
             sigma_scale=cfg.sigma_scale,
             min_sigma=cfg.min_sigma,
             max_sigma=cfg.max_sigma,
@@ -295,7 +290,6 @@ class Args:
     truncation: float = 3.0
     iso_level: float = 0.05
     iso_percentile: Optional[float] = None
-    scaling_mode: Literal["auto", "log", "linear"] = "auto"
     sigma_scale: float = 1.0
     min_sigma: float = 1e-4
     max_sigma: Optional[float] = None
@@ -321,7 +315,6 @@ def main(args: Args) -> None:
         truncation=args.truncation,
         iso_level=args.iso_level,
         iso_percentile=args.iso_percentile,
-        scaling_mode=args.scaling_mode,
         sigma_scale=args.sigma_scale,
         min_sigma=args.min_sigma,
         max_sigma=args.max_sigma,
