@@ -1724,14 +1724,14 @@ class MultiHumanTrainer:
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
-        # - debug (show the overall results)
-        print(
-            "Overall Reconstruction "
-            f"V-IoU: {overall_avg['v_iou']:.4f}, "
-            f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
-            f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
-            f"Normal Consistency: {overall_avg['normal_consistency']:.4f} "
-        )
+#         # - debug (show the overall results)
+        # print(
+            # "Overall Reconstruction "
+            # f"V-IoU: {overall_avg['v_iou']:.4f}, "
+            # f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
+            # f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
+            # f"Normal Consistency: {overall_avg['normal_consistency']:.4f} "
+        # )
 
     @torch.no_grad()
     def eval_loop(self, epoch):
