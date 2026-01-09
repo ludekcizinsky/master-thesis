@@ -8,14 +8,18 @@ conda activate thesis
 
 cd /home/cizinsky/master-thesis
 
+echo "Reformatting hi4d_pair15_fight"
 scene_root_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15
-python preprocess/ait_datasets/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir 
+python preprocess/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir 
 
+echo "Reformatting hi4d_pair16_jump"
 scene_root_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-python preprocess/ait_datasets/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir --first-frame-number 11
+python preprocess/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir --first-frame-number 11
 
+echo "Reformatting hi4d_pair17_dance"
 scene_root_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
-python preprocess/ait_datasets/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir
+python preprocess/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir
 
+echo "Reformatting hi4d_pair19_piggyback"
 scene_root_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
-python preprocess/ait_datasets/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir 
+python preprocess/hi4d/helpers/reformat.py --scene-root-dir $scene_root_dir 

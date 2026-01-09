@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import tqdm
+from tqdm import tqdm
 import tyro
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
