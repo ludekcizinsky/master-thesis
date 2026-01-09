@@ -12,6 +12,7 @@ scene_dir/
 ├── smpl
 ├── smplx
 ├── depths
+├── meshes
 | skip_frames.csv (optional)
 ```
 
@@ -138,3 +139,19 @@ scene_dir/
 
 Depth maps are stored as `float32` arrays with shape `(H, W)`; the spatial
 resolution matches the corresponding RGB images for that camera. Depth values are in meters.
+
+
+### meshes
+---
+
+This folder contains per-frame mesh reconstructions saved as `.obj` files.
+
+```
+scene_dir/
+├── meshes/
+│   ├── 000001.obj
+│   ├── 000002.obj
+```
+
+Each `.obj` stores the reconstructed scene geometry for the corresponding
+frame as standard OBJ data (`v` vertices and `f` faces).

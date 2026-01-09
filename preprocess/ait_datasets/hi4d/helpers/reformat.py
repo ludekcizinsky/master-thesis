@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import tqdm
 import tyro
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -17,6 +18,12 @@ def root_dir_to_target_cameras_dir(root_dir: Path, cam_id: int) -> Path:
 
 def root_dir_to_image_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "images" / f"{cam_id}"
+
+def root_dir_to_source_format_meshes_dir(root_dir: Path) -> Path:
+    return root_dir / "frames" 
+
+def root_dir_to_target_format_meshes_dir(root_dir: Path) -> Path:
+    return root_dir / "meshes"
 
 
 def collect_frame_files(scene_root_dir: Path, cam_id: int) -> list[Path]:
@@ -60,6 +67,7 @@ def main() -> None:
     cfg = tyro.cli(ReformatConfig)
     scene_root_dir = Path(cfg.scene_root_dir)
 
+    # Cameras reformatting
     cameras_file = root_dir_to_source_cameras_file(scene_root_dir)
     cameras_data = np.load(cameras_file, allow_pickle=True)
     cam_ids = cameras_data["ids"]
@@ -85,6 +93,19 @@ def main() -> None:
             np.savez(target_file, intrinsics=intrinsics, extrinsics=extrinsics)
             current_frame_number += 1
 
+
+    # Meshes reformatting
+    src_meshes_dir = root_dir_to_source_format_meshes_dir(scene_root_dir)
+    tgt_meshes_dir = root_dir_to_target_format_meshes_dir(scene_root_dir)
+    tgt_meshes_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_files = sorted(f for f in src_meshes_dir.iterdir() if f.suffix.lower() == ".obj")
+    current_frame_number = cfg.first_frame_number
+
+    for frame_file in tqdm(frame_files):
+        tgt_mesh_file = tgt_meshes_dir / f"{current_frame_number:0{cfg.fname_num_digits}d}.obj"
+        tgt_mesh_file.write_bytes(frame_file.read_bytes())
+        current_frame_number += 1
 
 if __name__ == "__main__":
     main()

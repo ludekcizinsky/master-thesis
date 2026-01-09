@@ -20,6 +20,13 @@ def root_dir_to_source_format_dyn_cam_dir(root_dir: Path) -> Path:
 def root_dir_to_target_format_dyn_cam_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "all_cameras" / f"{cam_id}"
 
+def root_dir_to_source_format_meshes_dir(root_dir: Path) -> Path:
+    return root_dir / "obj" 
+
+def root_dir_to_target_format_meshes_dir(root_dir: Path) -> Path:
+    return root_dir / "meshes"
+
+
 @dataclass
 class ReformatConfig:
     scene_root_dir: str = "/scratch/izar/cizinsky/ait_datasets/full/mmm/dance"
@@ -98,6 +105,20 @@ def main() -> None:
         extrinsics = extrinsics[None, :3, :]
 
         np.savez(dest, intrinsics=intrinsics, extrinsics=extrinsics)
+
+
+    # Meshes
+    src_meshes_dir = root_dir_to_source_format_meshes_dir(scene_root_dir)
+    tgt_meshes_dir = root_dir_to_target_format_meshes_dir(scene_root_dir)
+    tgt_meshes_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_files = sorted(f for f in src_meshes_dir.iterdir() if f.suffix.lower() == ".obj")
+    current_frame_number = cfg.first_frame_number
+
+    for frame_file in tqdm(frame_files):
+        tgt_mesh_file = tgt_meshes_dir / f"{current_frame_number:0{cfg.fname_num_digits}d}.obj"
+        tgt_mesh_file.write_bytes(frame_file.read_bytes())
+        current_frame_number += 1
 
 if __name__ == "__main__":
     main()
