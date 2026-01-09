@@ -4,10 +4,47 @@ During preprocessing, we not only need to extract new features from the monocula
 
 *Note: as of this moment, the preprocessing pipeline is semi-automatic and requires some manual intervention to ensure that the results are correct. This will be hopefully improved in the future.*
 
-### Steps
+### Preparing inputs
 
-Assumptions:
-- input: path to the scene dir which has images / src_cam_id / 0000001.jpg etc. images, src_cam_id and seq_name (so we know how to name the output preprocess dir). This assumption should be automatically met by hi4d dataset, however for mmm, you need to run other_reformat.sh first to get the data into this format. For in the wild videos, we have a separate script that produces this structure as well.
+As already mentioned, the preprocessing pipeline expects monocular video frames as input. Indeed, we might also have access to some other ground truth data against which we would like to compare our results. For this reason, I have developed three types of input scene preparation scripts that will prepare the input data into the expected format.
+
+#### Hi4D dataset
+
+```bash
+bash preprocess/hi4d/reformat.sh
+``` 
+
+This script will:
+1. reformat static cameras into the common format
+2. reformat meshes into the common format
+
+#### MMM
+
+```bash
+bash preprocess/mmm/reformat.sh
+``` 
+
+This script will:
+1. downscale the images to the expected resolution
+2. reformat the dynamic camera into the common format and adjust intrinsics accordingly to the new image resolution
+3. reformat meshes into the common format
+
+#### In-the-wild videos
+
+```bash
+bash preprocess/custom/mp4_to_frames.sh
+```
+
+This script will:
+1. extract frames from the input mp4 videos
+2. create a new scene directory and save the frames into the common format
+
+See the script and add your own videos as needed.
+
+### Infering more features from the monocular frames
+
+After running the above scripts, we should have for each scene a directory with monocular video frames in the expected format. This pipeline copies this data into the preprocessing input directory, and then runs the preprocessing script to infer more features from the monocular frames. These data are then used for training.
+
 
 Given you have these inputs, proceed as follows:
 1. call prerocess.sh with the scene dir, src_cam_id and seq_name, however make sure that the last part (lhm) is commented out for now
