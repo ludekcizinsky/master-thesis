@@ -45,16 +45,46 @@ See the script and add your own videos as needed.
 
 After running the above scripts, we should have for each scene a directory with monocular video frames in the expected format. This pipeline copies this data into the preprocessing input directory, and then runs the preprocessing script to infer more features from the monocular frames. These data are then used for training.
 
+Schedule the first part of the preprocessing as follows:
 
-Given you have these inputs, proceed as follows:
-1. call prerocess.sh with the scene dir, src_cam_id and seq_name, however make sure that the last part (lhm) is commented out for now
-2. once the preprocessing is done, go to the output dir and
-    a. check the human motion dir, and make sure that 1. the number of tracks is correct and delete any unwanted tracks
-    b. run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
-    b. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
-3. once everything is checked, go back to preprocess.sh and uncomment the last part (lhm) and run it again, this will generate canonical 3dgs models for each human
-4. finally, run the reformat script to get the data into the format expected by the trainer
+```bash
+bash preprocess/custom/get_trn_data.sh part1
+```
 
+This script will schedule in parallel the preprocessing for all scenes listed in the configuration file. For each scene, we will then:
+1. estimate the smplx poses along with the camera parameters
+2. estimate the human masks using sam3
+3. estimate the depth maps using depth anything 3
+
+Once the preprocessing is done, then for each scene, do the following manual checks and fixes:
+1. check the human motion dir, and make sure that
+a. the number of tracks is correct and delete any unwanted tracks
+b. if the mask and pose estimation went smoothly, and there are not any mismatches in the number of tracks etc. you can skip this step. Else, after the cleanup, run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
+
+```bash
+python preprocess/custom/helpers/check_h3r_data.py --scene_dir <path_to_scene_dir>
+```
+
+c. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
+
+
+Once everything is checked, we proceed to schedule the second part of the preprocessing:
+
+```bash
+bash preprocess/custom/get_trn_data.sh part2
+```
+
+This will infer for each human in the scene its canonical 3dgs representation. Finally, run the reformat script to get the data into the format expected by the trainer:
+
+```bash
+bash preprocess/custom/reformat.sh
+```
+
+This step does the following:
+1. reformat the images, masks, depth maps and cameras into the expected format
+2. reformat the h3r data into the expected format: merge all human tracks for each frame into a single file, and ensure that smplx translation and global rotation are in canonical to world format
+3. (optional) align the world frames of the estimated smplx poses with the ground truth smplx poses, if available
+4. convert smplx to smpl format (this is important for eval since gt has only smpl)
 
 ### Limitations
 - it can happen that sam3 actually fails to detect any humans in the scene, so here I would also need to check if everything went fine.
