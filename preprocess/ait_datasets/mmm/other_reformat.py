@@ -2,6 +2,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import tyro
@@ -17,7 +18,7 @@ def root_dir_to_source_format_dyn_cam_dir(root_dir: Path) -> Path:
     return root_dir / "opt_cam"
 
 def root_dir_to_target_format_dyn_cam_dir(root_dir: Path, cam_id: int) -> Path:
-    return root_dir / "dynamic_cameras" / f"{cam_id}"
+    return root_dir / "all_cameras" / f"{cam_id}"
 
 @dataclass
 class ReformatConfig:
@@ -64,13 +65,39 @@ def main() -> None:
     dyn_cam_dir = root_dir_to_target_format_dyn_cam_dir(scene_root_dir, cam_id=cfg.src_cam_id)
     dyn_cam_dir.mkdir(parents=True, exist_ok=True)
     # - copy and rename
-    sorted_dyn_cam_files = sorted(current_dyn_cam_dir.iterdir())
+    sorted_dyn_cam_files = sorted(
+        f for f in current_dyn_cam_dir.iterdir() if f.suffix == ".npz"
+    )
     current_frame_number = cfg.first_frame_number
     for item in tqdm(sorted_dyn_cam_files):
         new_name = f"{current_frame_number:0{cfg.fname_num_digits}d}.npz"
         current_frame_number += 1
         dest = dyn_cam_dir / new_name
-        shutil.copy2(item, dest)
+        with np.load(item, allow_pickle=True) as data:
+            intrinsics = data["K"]
+            R_w2c = data["R"]
+            t_w2c = data["T"]
+
+        if intrinsics.shape == (3, 3):
+            intrinsics = intrinsics[None, ...]
+        if R_w2c.shape == (1, 3, 3):
+            R_w2c = R_w2c[0]
+        if t_w2c.shape == (1, 3):
+            t_w2c = t_w2c[0]
+
+        if cfg.downscale_factor != 1:
+            intrinsics = intrinsics.copy()
+            intrinsics[:, 0, 0] /= cfg.downscale_factor
+            intrinsics[:, 1, 1] /= cfg.downscale_factor
+            intrinsics[:, 0, 2] /= cfg.downscale_factor
+            intrinsics[:, 1, 2] /= cfg.downscale_factor
+
+        extrinsics = np.eye(4, dtype=R_w2c.dtype)
+        extrinsics[:3, :3] = R_w2c
+        extrinsics[:3, 3] = t_w2c
+        extrinsics = extrinsics[None, :3, :]
+
+        np.savez(dest, intrinsics=intrinsics, extrinsics=extrinsics)
 
 if __name__ == "__main__":
     main()
