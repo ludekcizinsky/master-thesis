@@ -10,7 +10,7 @@ cd /home/cizinsky/master-thesis
 
 preprocessing_root=/scratch/izar/cizinsky/thesis/preprocessing
 # Hi4D
-python preprocess/custom/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair15_fight --src-cam-id 4 
-python preprocess/custom/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair16_jump --src-cam-id 4 
-python preprocess/custom/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair17_dance --src-cam-id 28 
-python preprocess/custom/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair19_piggyback --src-cam-id 4 
+python preprocess/custom/helpers/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair15_fight --src-cam-id 4 
+python preprocess/custom/helpers/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair16_jump --src-cam-id 4 
+python preprocess/custom/helpers/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair17_dance --src-cam-id 28 
+python preprocess/custom/helpers/cameras_reformat.py --scene-root-dir $preprocessing_root/hi4d_pair19_piggyback --src-cam-id 4 

@@ -69,6 +69,9 @@ def main() -> None:
     # Gather SMPL-X pose data from all tracks, organized by filename
     filename_to_poses = defaultdict(list)
     for track_id in track_ids:
+        # check if track id is numeric if not continue
+        if not track_id.isdigit():
+            continue
         track_smplx_dir = motion_dir / track_id / "smplx_params"
         all_poses_files = sorted(track_smplx_dir.iterdir())
         for pose_estimate_file in all_poses_files:
