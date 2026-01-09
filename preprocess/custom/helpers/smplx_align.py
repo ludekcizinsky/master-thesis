@@ -1,7 +1,7 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,33 +10,40 @@ import tyro
 import cv2
 import torch
 from submodules.smplx import smplx
-from collections import defaultdict
+
+from typing import List
 
 
-def root_dir_to_target_format_cameras_file(root_dir: Path) -> Path:
-    return root_dir / "cameras" / "rgb_cameras.npz"
+def root_dir_to_all_cameras_dir(root_dir: Path) -> Path:
+    return root_dir / "all_cameras"
 
 def root_dir_to_target_format_smplx_dir(root_dir: Path) -> Path:
     return root_dir / "smplx" 
 
-def load_cam_w2c_params(scene_root_dir: Path, src_cam_id: int):
+def load_cam_w2c_params(scene_root_dir: Path, src_cam_id: int, frame_name: str):
     """
     Load the world-to-camera rotation and translation for the specified camera ID.
 
     Args:
         scene_root_dir: Path to the root directory of the scene.
         src_cam_id: Camera ID to load parameters for.
+        frame_name: Frame filename stem, e.g. "000001".
     
     Returns:
         R_w2c: (3, 3) rotation matrix from world to camera coordinates
         t_w2c: (3,) translation vector from world to camera coordinates
     """
-    cameras_file = root_dir_to_target_format_cameras_file(scene_root_dir)
+    cameras_dir = root_dir_to_all_cameras_dir(scene_root_dir) / f"{src_cam_id}"
+    cameras_file = cameras_dir / f"{frame_name}.npz"
+    if not cameras_file.exists():
+        raise FileNotFoundError(f"Missing camera file: {cameras_file}")
     cameras_data = np.load(cameras_file, allow_pickle=True)
-    cam_ids = cameras_data["ids"]  # (N_cams,)
-    extrinsics = cameras_data["extrinsics"]  # (N_cams, 3, 4)
-    cam_id_to_extrinsics = {int(cam_id): extrinsics[i] for i, cam_id in enumerate(cam_ids)}
-    src_cam_extrinsics = cam_id_to_extrinsics[src_cam_id]  # (3, 4)
+    src_cam_extrinsics = cameras_data["extrinsics"]
+    if src_cam_extrinsics.shape == (3, 4):
+        src_cam_extrinsics = src_cam_extrinsics[None, ...]
+    if src_cam_extrinsics.shape != (1, 3, 4):
+        raise ValueError(f"Unexpected extrinsics shape: {src_cam_extrinsics.shape}")
+    src_cam_extrinsics = src_cam_extrinsics[0]
     R_w2c = src_cam_extrinsics[:3, :3]
     t_w2c = src_cam_extrinsics[:3, 3]
 
@@ -51,14 +58,15 @@ def w2c_to_4x4(R_w2c: np.ndarray, t_w2c: np.ndarray) -> np.ndarray:
 
 
 def align_extrinsics(extrinsics: np.ndarray, T_h3r_to_gt: np.ndarray) -> np.ndarray:
-    aligned = np.empty_like(extrinsics)
+    if extrinsics.shape == (3, 4):
+        extrinsics = extrinsics[None, ...]
+    if extrinsics.shape != (1, 3, 4):
+        raise ValueError(f"Unexpected extrinsics shape: {extrinsics.shape}")
+    w2c = np.eye(4, dtype=extrinsics.dtype)
+    w2c[:3, :4] = extrinsics[0]
     T_inv = np.linalg.inv(T_h3r_to_gt)
-    for i in range(extrinsics.shape[0]):
-        w2c = np.eye(4, dtype=extrinsics.dtype)
-        w2c[:3, :4] = extrinsics[i]
-        w2c_aligned = w2c @ T_inv
-        aligned[i] = w2c_aligned[:3, :4]
-    return aligned
+    w2c_aligned = w2c @ T_inv
+    return w2c_aligned[:3, :4][None, ...]
 
 
 def align_root_pose_and_trans(
@@ -148,6 +156,32 @@ def pelvis_positions(layer, params: dict) -> torch.Tensor:
     return out.joints[:, 0]  # [P,3]
 
 
+def root_dir_to_skip_frames_path(root_dir: Path) -> Path:
+    return root_dir / "skip_frames.csv"
+
+def load_skip_frames(scene_dir: Path) -> List[int]:
+    """
+    Load skip frames from skip_frames.csv in the scene directory.
+
+    Note: the frame indicies are actual frame indexes and the frames dir may
+    not always start with frame 0. Therefore, the returnd indices correspond to
+    the actual frame indices to skip. e.g. if we have frames 10, 11, 12, 13 and skip_frames.csv contains "11,13",
+    we will skip frames 11 and 13.
+
+    Args:
+        scene_dir: Path to the scene directory.
+    Returns:
+        List of frame indices to skip.
+    """
+
+    skip_frames_file = root_dir_to_skip_frames_path(scene_dir)
+    if not skip_frames_file.exists():
+        return []
+    with open(skip_frames_file, "r") as f:
+        line = f.readline().strip()
+        skip_frames = [int(idx_str) for idx_str in line.split(",") if idx_str.isdigit()]
+    return skip_frames
+
 @dataclass
 class AlignmentConfig:
     scene_root_dir: Path = Path("/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair17_dance")
@@ -160,25 +194,6 @@ def main() -> None:
     cfg = tyro.cli(AlignmentConfig)
     device = torch.device(cfg.device)
 
-    # Compute the rigid transform from my estimated SMPL-X to the GT SMPL-X
-    # - both in world coordinates of the same camera
-    R_w2c, t_w2c = load_cam_w2c_params(cfg.scene_root_dir, cfg.src_cam_id)
-    gt_R_w2c, gt_t_w2c = load_cam_w2c_params(cfg.gt_scene_root_dir, cfg.src_cam_id)
-    # - compute the transform 
-    w2c_h3r = w2c_to_4x4(R_w2c, t_w2c)
-    w2c_gt = w2c_to_4x4(gt_R_w2c, gt_t_w2c)
-    T_h3r_to_gt = np.linalg.inv(w2c_gt) @ w2c_h3r
-
-    # Load camera extrinsics and align them
-    cameras_file = root_dir_to_target_format_cameras_file(cfg.scene_root_dir)
-    cameras_data = np.load(cameras_file, allow_pickle=True)
-    ids = cameras_data["ids"]
-    intrinsics = cameras_data["intrinsics"]
-    extrinsics = cameras_data["extrinsics"]
-
-    aligned_extrinsics = align_extrinsics(extrinsics, T_h3r_to_gt)
-    np.savez(cameras_file, ids=ids, intrinsics=intrinsics, extrinsics=aligned_extrinsics)
-
     # Align SMPL-X parameters as well
     smplx_dir = root_dir_to_target_format_smplx_dir(cfg.scene_root_dir)
     smplx_files = sorted(smplx_dir.iterdir())
@@ -186,20 +201,8 @@ def main() -> None:
     gt_files = sorted(gt_smplx_dir.iterdir())
 
     # Load frames to skip
-    frames_to_skip_path = cfg.scene_root_dir / "skip_frames.csv"
-    if os.path.exists(frames_to_skip_path):
-        with open(frames_to_skip_path, "r") as f:
-            lines = f.readlines()
-        frames_to_skip = set()
-        for line in lines:
-            line = line.strip()
-            if line == "":
-                continue
-            fidxs = [int(x) for x in line.split(",")]
-            frames_to_skip.update(fidxs)
-
-        print(f"Skipping {len(frames_to_skip)} frames based on {frames_to_skip_path}")
-
+    frames_to_skip = load_skip_frames(cfg.scene_root_dir)
+    print(f"Frames to skip: {frames_to_skip}")
 
     # Build SMPL-X layer for pelvis computations
     sample_h = np.load(smplx_files[0])
@@ -229,6 +232,27 @@ def main() -> None:
         g_npz = np.load(g_path, allow_pickle=True)
         if h_npz["trans"].shape[0] != g_npz["trans"].shape[0]:
             continue
+
+        # Compute per-frame transform from estimated SMPL-X to GT SMPL-X
+        frame_name = fname.split(".")[0]
+        R_w2c, t_w2c = load_cam_w2c_params(cfg.scene_root_dir, cfg.src_cam_id, frame_name)
+        gt_R_w2c, gt_t_w2c = load_cam_w2c_params(cfg.gt_scene_root_dir, cfg.src_cam_id, frame_name)
+        w2c_h3r = w2c_to_4x4(R_w2c, t_w2c)
+        w2c_gt = w2c_to_4x4(gt_R_w2c, gt_t_w2c)
+        T_h3r_to_gt = np.linalg.inv(w2c_gt) @ w2c_h3r
+
+        # Align per-frame camera extrinsics for all cameras
+        cameras_root = root_dir_to_all_cameras_dir(cfg.scene_root_dir)
+        for cam_dir in sorted(d for d in cameras_root.iterdir() if d.is_dir()):
+            cam_file = cam_dir / f"{frame_name}.npz"
+            if not cam_file.exists():
+                print(f"Missing camera file: {cam_file}, skipping alignment for this camera.")
+                continue
+            cam_data = np.load(cam_file, allow_pickle=True)
+            intrinsics = cam_data["intrinsics"]
+            extrinsics = cam_data["extrinsics"]
+            aligned_extrinsics = align_extrinsics(extrinsics, T_h3r_to_gt)
+            np.savez(cam_file, intrinsics=intrinsics, extrinsics=aligned_extrinsics)
 
         # Align Human3R root pose + trans to GT world
         aligned_root_pose, aligned_trans = align_root_pose_and_trans(
