@@ -86,7 +86,12 @@ This step does the following:
 3. (optional) align the world frames of the estimated smplx poses with the ground truth smplx poses, if available
 4. convert smplx to smpl format (this is important for eval since gt has only smpl)
 
-### Limitations
+
+## How to know that everything went fine?
+
+It is very important to ensure that before we start training and evaluation, the preprocessed data is correct and consistent. Below, I therefore list a few checks that need to be done to ensure that everything is fine.
+
+## Limitations
 - it can happen that sam3 actually fails to detect any humans in the scene, so here I would also need to check if everything went fine.
 - it can happen that sam3 will fail to detect certain human for a subset of the frames, so be aware of that
 - manual inspection needed at this point and making sure that mask track ids match motion track ids as well gt track ids

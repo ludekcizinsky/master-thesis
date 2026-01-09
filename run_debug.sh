@@ -62,8 +62,8 @@ cd /home/cizinsky/master-thesis
 # python playground/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
 # # Visualise MMM mesh
-mesh_data_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/meshes
-python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 8080 
+# mesh_data_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/meshes
+# python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 8080 
 
 # Running preprocess for MMM
 
@@ -79,3 +79,8 @@ python playground/visualise_mmm_mesh.py --mmm-data-dir $mesh_data_dir --port 808
 # # 3. check h3r output
 # preprocess_dir=/scratch/izar/cizinsky/thesis/preprocessing/frank_vs_luka
 # python preprocess/custom/check_h3r_output.py --scene-dir $preprocess_dir --model-folder /home/cizinsky/body_models
+
+
+# Checking quality of preprocessing
+# 1. check rendering
+bash preprocess/vis/check_rendering.sh hi4d_pair15_fight 4
