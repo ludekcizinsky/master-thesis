@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import pyrender
 import torch
 from tqdm import tqdm
@@ -272,6 +272,7 @@ def main() -> None:
         raise FileNotFoundError(f"No images found under {images_dir}")
 
     skip_frames = _load_skip_frames(cfg.scene_dir)
+    print(f"Skipping frames: {sorted(skip_frames)}")
 
     smplx_layer = _build_smplx_layer(cfg, device)
 
@@ -296,6 +297,7 @@ def main() -> None:
 
             image = np.array(Image.open(frame_path).convert("RGB"))
             mask = np.array(Image.open(mask_path).convert("L"))
+
             if mask.shape[0] != image.shape[0] or mask.shape[1] != image.shape[1]:
                 raise ValueError(f"Mask size mismatch for frame {stem}")
 

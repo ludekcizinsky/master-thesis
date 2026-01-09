@@ -83,4 +83,4 @@ cd /home/cizinsky/master-thesis
 
 # Checking quality of preprocessing
 # 1. check rendering
-bash preprocess/vis/check_rendering.sh hi4d_pair15_fight 4
+bash preprocess/vis/check_rendering.sh taichi 0
