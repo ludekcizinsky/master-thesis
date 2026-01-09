@@ -21,6 +21,7 @@ Given you have these inputs, proceed as follows:
     b. run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
     b. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
 3. once everything is checked, go back to preprocess.sh and uncomment the last part (lhm) and run it again, this will generate canonical 3dgs models for each human
+4. finally, run the reformat script to get the data into the format expected by the trainer
 
 
 ### Limitations
