@@ -23,7 +23,7 @@ class ScheduleConfig:
     job_name_prefix: str = "difix_v9_baseline"
     exp_name: str = "difix_v8_baseline"
     num_persons: int = 2
-    time: str = "03:00:00"
+    time: str = "05:00:00"
     slurm_script: str = "train.slurm"
     dry_run: bool = False
     scenes: List[Scene] = field(
