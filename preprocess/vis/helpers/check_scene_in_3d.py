@@ -152,6 +152,10 @@ def _smpl_vertices(
         body_pose = body_pose[None, :, :]
     if transl.ndim == 1:
         transl = transl[None, :]
+    if global_orient.ndim == 2 and body_pose.ndim == 3:
+        global_orient = global_orient[:, None, :]
+    if body_pose.ndim == 2 and global_orient.ndim == 3:
+        body_pose = body_pose[:, None, :]
 
     expected_betas = int(getattr(layer, "num_betas", betas.shape[-1]))
     betas = _pad_or_truncate(betas, expected_betas)
@@ -317,6 +321,7 @@ def main() -> None:
             "/scene/smpl", 
             show_axes=False, 
             wxyz=tuple(R_fix.wxyz),
+            position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) 
         if smpl_layer is not None else None
     )
@@ -333,6 +338,7 @@ def main() -> None:
             "/scene/meshes", 
             show_axes=False,
             wxyz=tuple(R_fix.wxyz),
+            position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) 
         if mesh_frames else None
     )
