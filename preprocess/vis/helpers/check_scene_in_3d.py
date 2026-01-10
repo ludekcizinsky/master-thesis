@@ -256,6 +256,7 @@ def _smplx_vertices(
 def main() -> None:
     cfg = tyro.cli(Config)
     device = torch.device(cfg.device if cfg.device == "cpu" or torch.cuda.is_available() else "cpu")
+    seq_name = cfg.scene_dir.name
 
     # Resolve modality directories.
     smpl_dir = cfg.scene_dir / "smpl"
@@ -307,7 +308,8 @@ def main() -> None:
     )
 
     # Compute a fixed rotation to align the scene upright.
-    R_fix = tf.SO3.from_x_radians(-np.pi / 2)
+    is_y_up = 1 if "hi4d" in seq_name.lower() else -1
+    R_fix = tf.SO3.from_x_radians(is_y_up*np.pi / 2)
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
