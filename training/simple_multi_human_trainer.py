@@ -345,7 +345,7 @@ class MultiHumanTrainer:
 
         # Load Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
-        self.gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=self.tuner_device, weights_only=False)
+        self.gs_model_list = torch.load(root_gs_model_dir / "union" / "human3r_gs.pt", map_location=self.tuner_device, weights_only=False)
         
 
     # ---------------- Training utilities ----------------

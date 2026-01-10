@@ -13,6 +13,7 @@ scene_dir/
 ├── smplx
 ├── depths
 ├── meshes
+├—- canon_3dgs_lhm
 | skip_frames.csv (optional)
 ```
 
@@ -91,8 +92,6 @@ Expected keys (shapes are for `P` people):
 - `global_orient`: `(P, 3)` axis-angle root orientation
 - `body_pose`: `(P, 23, 3)` axis-angle body joints
 - `transl`: `(P, 3)` global translation
-- `joints_3d`: `(P, 45, 3)` SMPL joints in 3D
-- `verts`: `(P, 6890, 3)` SMPL mesh vertices
 
 The global orientation and translation define the transformation from the SMPL canonical space to the world space.
 
@@ -155,3 +154,30 @@ scene_dir/
 
 Each `.obj` stores the reconstructed scene geometry for the corresponding
 frame as standard OBJ data (`v` vertices and `f` faces).
+
+### canon_3dgs_lhm
+---
+
+This folder contains canonical 3D Gaussian splat models for each person, as produced by the LHM pipeline.
+
+```
+scene_dir/
+├── canon_3dgs_lhm/
+│   ├── 00/                       # person 0
+│   │   ├── hi4d_gs.pt
+│   │   ├── human3r_gs.pt
+│   │   ├── hi4d_input_image.png
+│   │   ├── hi4d_input_head.png
+│   │   ├── human3r_input_image.png
+│   │   ├── human3r_input_head.png
+│   ├── 01/                       # person 1
+│   │   └── ...
+│   ├── union/                    # combined models across persons
+│   │   ├── human3r_gs.pt
+```
+
+Notes:
+- `00`, `01`, ... are per-person canonical models (one directory per tracked person).
+- `*_gs.pt` are torch checkpoints containing the 3DGS parameters (xyz, scaling, rotation, opacity, SH features) in the canonical pose.
+- `*_input_image.png` / `*_input_head.png` are reference images used to build the canonical model.
+- `union/` stores a combined set of models across all persons 
