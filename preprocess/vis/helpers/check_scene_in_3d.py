@@ -13,6 +13,7 @@ import viser
 import viser.transforms as tf
 from tqdm import tqdm
 import tyro
+from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
@@ -86,6 +87,49 @@ def _load_npz(path: Path) -> Optional[Dict[str, np.ndarray]]:
         if not data.files:
             return None
         return {k: np.asarray(data[k]) for k in data.files}
+
+def _collect_camera_ids(root: Path) -> List[str]:
+    if not root.exists():
+        return []
+    ids = [p.name for p in root.iterdir() if p.is_dir()]
+
+    def _sort_key(val: str):
+        return int(val) if val.isdigit() else val
+
+    return sorted(ids, key=_sort_key)
+
+def _find_image_hw(images_dir: Path, cam_id: str, frame_ids: List[str]) -> Optional[Tuple[int, int]]:
+    cam_dir = images_dir / cam_id
+    if not cam_dir.exists():
+        return None
+    for frame_id in frame_ids:
+        for ext in (".jpg", ".png", ".jpeg"):
+            path = cam_dir / f"{frame_id}{ext}"
+            if path.exists():
+                with Image.open(path) as img:
+                    width, height = img.size
+                return height, width
+    return None
+
+def _fov_aspect_from_intrinsics(
+    intr: np.ndarray, image_hw: Optional[Tuple[int, int]]
+) -> Tuple[float, float]:
+    fy = float(intr[1, 1])
+    if image_hw is not None and fy > 0.0:
+        height, width = image_hw
+        if height > 0 and width > 0:
+            fov = 2.0 * np.arctan2(height / 2.0, fy)
+            return fov, width / float(height)
+
+    cx = float(intr[0, 2])
+    cy = float(intr[1, 2])
+    if fy > 0.0 and cx > 0.0 and cy > 0.0:
+        height = 2.0 * cy
+        width = 2.0 * cx
+        fov = 2.0 * np.arctan2(height / 2.0, fy)
+        return fov, width / height
+
+    return np.pi / 3.0, 1.0
 
 def _center_offset_from_vertices(verts: np.ndarray) -> np.ndarray:
     if verts.ndim == 3:
@@ -262,6 +306,8 @@ def main() -> None:
     smpl_dir = cfg.scene_dir / "smpl"
     smplx_dir = cfg.scene_dir / "smplx"
     mesh_dir = cfg.scene_dir / "meshes"
+    camera_dir = cfg.scene_dir / "all_cameras"
+    images_dir = cfg.scene_dir / "images"
 
     # Collect frames for each modality (if present).
     smpl_frames = _collect_frame_stems(smpl_dir, ".npz") if smpl_dir.exists() else []
@@ -292,6 +338,11 @@ def main() -> None:
     frames = frames[: cfg.max_frames]
     if not frames:
         raise FileNotFoundError("No frames left after applying max_frames.")
+
+    camera_ids = _collect_camera_ids(camera_dir)
+    camera_image_hw = {
+        cam_id: _find_image_hw(images_dir, cam_id, frames) for cam_id in camera_ids
+    }
 
     # Build body model layers (only if the modality exists).
     smpl_layer = _build_layer(cfg.model_folder, "smpl", cfg.gender, cfg.smpl_model_ext, device) if smpl_frames else None
@@ -344,11 +395,22 @@ def main() -> None:
         ) 
         if mesh_frames else None
     )
+    camera_root = (
+        server.scene.add_frame(
+            "/scene/cameras",
+            show_axes=False,
+            wxyz=tuple(R_fix.wxyz),
+            position=tuple((-R_fix.apply(center_offset)).tolist()),
+        )
+        if camera_ids
+        else None
+    )
 
     # GUI controls.
     show_smpl = None
     show_smplx = None
     show_mesh = None
+    show_cameras = None
 
     with server.gui.add_folder("Visibility"):
         if smpl_root is not None:
@@ -357,6 +419,8 @@ def main() -> None:
             show_smplx = server.gui.add_checkbox("Show SMPL-X", True)
         if mesh_root is not None:
             show_mesh = server.gui.add_checkbox("Show Mesh", True)
+        if camera_root is not None:
+            show_cameras = server.gui.add_checkbox("Show Cameras", True)
 
     with server.gui.add_folder("Frames"):
         frame_slider = server.gui.add_slider(
@@ -377,6 +441,7 @@ def main() -> None:
     smpl_nodes: List[viser.FrameHandle] = []
     smplx_nodes: List[viser.FrameHandle] = []
     mesh_nodes: List[viser.FrameHandle] = []
+    camera_nodes: List[viser.FrameHandle] = []
 
     if smpl_root is not None:
         for frame_id in tqdm(frames, desc="Loading SMPL"):
@@ -430,6 +495,39 @@ def main() -> None:
                     )
             node.visible = False
 
+    if camera_root is not None:
+        for frame_id in tqdm(frames, desc="Loading Cameras"):
+            node = server.scene.add_frame(f"/scene/cameras/f_{frame_id}", show_axes=False)
+            camera_nodes.append(node)
+            for cam_id in camera_ids:
+                cam_path = camera_dir / cam_id / f"{frame_id}.npz"
+                cam_data = _load_npz(cam_path)
+                if cam_data is None:
+                    continue
+                intr = cam_data.get("intrinsics")
+                extr = cam_data.get("extrinsics")
+                if intr is None or extr is None:
+                    continue
+                if intr.ndim == 3:
+                    intr = intr[0]
+                if extr.ndim == 3:
+                    extr = extr[0]
+                if intr.shape != (3, 3) or extr.shape != (3, 4):
+                    continue
+                w2c = np.eye(4, dtype=np.float32)
+                w2c[:3, :4] = extr.astype(np.float32)
+                c2w = np.linalg.inv(w2c)
+                fov, aspect = _fov_aspect_from_intrinsics(intr, camera_image_hw.get(cam_id))
+                server.scene.add_camera_frustum(
+                    f"/scene/cameras/f_{frame_id}/{cam_id}",
+                    fov=float(fov),
+                    aspect=float(aspect),
+                    scale=0.2,
+                    wxyz=tuple(tf.SO3.from_matrix(c2w[:3, :3]).wxyz),
+                    position=tuple(c2w[:3, 3].tolist()),
+                )
+            node.visible = False
+
     current_idx = 0
 
     # Update visibility to show only the selected frame.
@@ -443,6 +541,8 @@ def main() -> None:
             smplx_nodes[current_idx].visible = False
         if mesh_nodes:
             mesh_nodes[current_idx].visible = False
+        if camera_nodes:
+            camera_nodes[current_idx].visible = False
 
         current_idx = frame_idx
         frame_label.value = frames[frame_idx]
@@ -453,6 +553,8 @@ def main() -> None:
             smplx_nodes[frame_idx].visible = show_smplx.value
         if mesh_nodes and show_mesh is not None:
             mesh_nodes[frame_idx].visible = show_mesh.value
+        if camera_nodes and show_cameras is not None:
+            camera_nodes[frame_idx].visible = show_cameras.value
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:
@@ -462,6 +564,8 @@ def main() -> None:
             smplx_nodes[current_idx].visible = show_smplx.value
         if mesh_nodes and show_mesh is not None:
             mesh_nodes[current_idx].visible = show_mesh.value
+        if camera_nodes and show_cameras is not None:
+            camera_nodes[current_idx].visible = show_cameras.value
 
     if smpl_nodes:
         smpl_nodes[0].visible = True if show_smpl is None else show_smpl.value
@@ -469,6 +573,8 @@ def main() -> None:
         smplx_nodes[0].visible = True if show_smplx is None else show_smplx.value
     if mesh_nodes:
         mesh_nodes[0].visible = True if show_mesh is None else show_mesh.value
+    if camera_nodes:
+        camera_nodes[0].visible = True if show_cameras is None else show_cameras.value
 
     @frame_slider.on_update
     def _(_) -> None:
@@ -486,6 +592,10 @@ def main() -> None:
 
     if show_mesh is not None:
         @show_mesh.on_update
+        def _(_) -> None:
+            _refresh_current()
+    if show_cameras is not None:
+        @show_cameras.on_update
         def _(_) -> None:
             _refresh_current()
 
