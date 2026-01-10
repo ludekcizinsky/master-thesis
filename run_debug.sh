@@ -83,6 +83,8 @@ cd /home/cizinsky/master-thesis
 
 # Checking quality of preprocessing
 # 1. check rendering
+bash preprocess/vis/check_render.sh mmm_lift 0 
+
 # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 true
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 true

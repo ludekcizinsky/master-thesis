@@ -91,6 +91,27 @@ This step does the following:
 
 It is very important to ensure that before we start training and evaluation, the preprocessed data is correct and consistent. Below, I therefore list a few checks that need to be done to ensure that everything is fine.
 
+### Check that we can render smplx meshes from the estimated smplx parameters and cameras
+
+```bash
+bash preprocess/vis/check_render.sh mmm_lift 0 
+```
+
+This should run for each frame and produce masked images overlaid with the rendered smplx meshes. Check that the smplx meshes align well with the humans in the scene.
+
+### Check the scene in 3D
+
+```bash
+bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
+```
+
+This will open a 3D viewer where you can see visualizations of:
+- the estimated smplx meshes (and smpl if available)
+- the estimated cameras
+- posed 3dgs (you must set the last argument to true to see these - note that this can be slow to load)
+
+Then you can check that everything is aligned well in 3D.
+
 ## Limitations
 - it can happen that sam3 actually fails to detect any humans in the scene, so here I would also need to check if everything went fine.
 - it can happen that sam3 will fail to detect certain human for a subset of the frames, so be aware of that
