@@ -86,4 +86,5 @@ cd /home/cizinsky/master-thesis
 # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 true
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 true
-bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
+# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
+bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
