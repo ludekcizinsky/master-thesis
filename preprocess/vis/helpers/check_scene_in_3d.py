@@ -30,6 +30,7 @@ class Config:
     gender: str = "neutral"
     port: int = 8080
     center_scene: bool = True
+    max_frames: int = 10
 
 def _load_skip_frames(scene_dir: Path) -> set[int]:
     skip_path = scene_dir / "skip_frames.csv"
@@ -283,6 +284,10 @@ def main() -> None:
     if not frames:
         raise FileNotFoundError("No frames left after applying skip_frames.csv.")
 
+    frames = frames[: cfg.max_frames]
+    if not frames:
+        raise FileNotFoundError("No frames left after applying max_frames.")
+
     # Build body model layers (only if the modality exists).
     smpl_layer = _build_layer(cfg.model_folder, "smpl", cfg.gender, cfg.smpl_model_ext, device) if smpl_frames else None
     smplx_layer = _build_layer(cfg.model_folder, "smplx", cfg.gender, cfg.smplx_model_ext, device) if smplx_frames else None
@@ -297,23 +302,39 @@ def main() -> None:
         else np.zeros(3, dtype=np.float32)
     )
 
+    # Compute a fixed rotation to align the scene upright.
+    R_fix = tf.SO3.from_x_radians(-np.pi / 2)
+
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
 
-    scene_root = server.scene.add_frame(
+    server.scene.add_frame(
         "/scene",
-        show_axes=False,
-        position=tuple((-center_offset).tolist()),
-        #wxyz=tf.SO3.from_x_radians(np.pi / 2).wxyz,
+        show_axes=True,
     )
     smpl_root = (
-        server.scene.add_frame("/scene/smpl", show_axes=False) if smpl_layer is not None else None
+        server.scene.add_frame(
+            "/scene/smpl", 
+            show_axes=False, 
+            wxyz=tuple(R_fix.wxyz),
+        ) 
+        if smpl_layer is not None else None
     )
     smplx_root = (
-        server.scene.add_frame("/scene/smplx", show_axes=False) if smplx_layer is not None else None
+        server.scene.add_frame(
+            "/scene/smplx", 
+            show_axes=False, 
+            wxyz=tuple(R_fix.wxyz),
+            position=tuple((-R_fix.apply(center_offset)).tolist()),
+        ) if smplx_layer is not None else None
     )
     mesh_root = (
-        server.scene.add_frame("/scene/meshes", show_axes=False) if mesh_frames else None
+        server.scene.add_frame(
+            "/scene/meshes", 
+            show_axes=False,
+            wxyz=tuple(R_fix.wxyz),
+        ) 
+        if mesh_frames else None
     )
 
     # GUI controls.
