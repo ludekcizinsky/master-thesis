@@ -217,7 +217,11 @@ def get_meshes_from_3dgs(
     cfg: MeshConfig,
     *,
     overwrite: bool = False,
+    write_meshes: bool = True,
 ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+    """
+    Convert posed 3DGS to per-person meshes. Optionally write mesh npz files.
+    """
     frame_name_fmt = _format_frame_name(frame_name)
     person_ids = _split_person_ids(state)
     grid_size = (int(cfg.grid_size), int(cfg.grid_size), int(cfg.grid_size))
@@ -226,8 +230,8 @@ def get_meshes_from_3dgs(
     # Convert each person independently to keep per-person mesh outputs.
     unique_persons = np.unique(person_ids)
     for pid in unique_persons:
-        out_path = output_dir / "instance" / f"{pid}" / f"mesh-f{frame_name_fmt}.npz"
-        if out_path.exists() and not overwrite:
+        out_path = output_dir / f"mesh-f{frame_name_fmt}-p{int(pid)}.npz"
+        if write_meshes and out_path.exists() and not overwrite:
             try:
                 with np.load(out_path) as npz:
                     vertices = npz["vertices"].astype(np.float32)
@@ -274,7 +278,8 @@ def get_meshes_from_3dgs(
             continue
 
 
-        _write_mesh_npz(out_path, vertices, faces)
+        if write_meshes:
+            _write_mesh_npz(out_path, vertices, faces)
         results[int(pid)] = (vertices, faces)
 
     return results

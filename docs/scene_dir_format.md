@@ -164,10 +164,7 @@ This folder contains canonical 3D Gaussian splat models for each person, as prod
 scene_dir/
 ├── canon_3dgs_lhm/
 │   ├── 00/                       # person 0
-│   │   ├── hi4d_gs.pt
 │   │   ├── human3r_gs.pt
-│   │   ├── hi4d_input_image.png
-│   │   ├── hi4d_input_head.png
 │   │   ├── human3r_input_image.png
 │   │   ├── human3r_input_head.png
 │   ├── 01/                       # person 1

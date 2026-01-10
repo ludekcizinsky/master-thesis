@@ -51,20 +51,29 @@ def posed_gs_list_to_serializable_dict(posed_gs_list) -> Dict[str, torch.Tensor]
     }
 
 
-def gt_meshes_to_person_dict(meshes: Dict[str, torch.Tensor]) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
-
-    person_ids = meshes["person_ids"].detach().cpu().numpy().astype(np.int32)
-    num_vertices = meshes["num_vertices"].detach().cpu().numpy().astype(np.int32)
-    num_faces = meshes["num_faces"].detach().cpu().numpy().astype(np.int32)
+def gt_mesh_from_sample(meshes: Dict[str, torch.Tensor]) -> Tuple[np.ndarray, np.ndarray]:
+    num_vertices = int(meshes["num_vertices"].detach().cpu().item())
+    num_faces = int(meshes["num_faces"].detach().cpu().item())
     vertices = meshes["vertices"].detach().cpu().numpy()
     faces = meshes["faces"].detach().cpu().numpy()
+    return vertices[:num_vertices].astype(np.float32), faces[:num_faces].astype(np.int32)
 
-    per_person = {}
-    for idx, pid in enumerate(person_ids):
-        v = vertices[idx][: num_vertices[idx]]
-        f = faces[idx][: num_faces[idx]]
-        per_person[int(pid)] = (v, f)
-    return per_person
+
+def merge_mesh_dict(meshes: Dict[int, Tuple[np.ndarray, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
+    if not meshes:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
+    vertices_out = []
+    faces_out = []
+    vert_offset = 0
+    for _pid, (verts, faces) in meshes.items():
+        if verts.size == 0 or faces.size == 0:
+            continue
+        vertices_out.append(verts.astype(np.float32))
+        faces_out.append((faces + vert_offset).astype(np.int32))
+        vert_offset += verts.shape[0]
+    if not vertices_out:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
+    return np.concatenate(vertices_out, axis=0), np.concatenate(faces_out, axis=0)
 
 
 def icp_align_mesh_similarity(
@@ -107,34 +116,32 @@ def icp_align_mesh_similarity(
 
 
 def align_pred_meshes_icp(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
-    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
+    gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
     n_samples: int = 50000,
     max_iterations: int = 20,
     threshold: float = 1e-5,
-) -> List[Dict[int, Tuple[np.ndarray, np.ndarray]]]:
+) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Align each per-person pred mesh to GT mesh using similarity ICP.
-    Returns the same list structure as pred_meshes.
+    Align each predicted mesh to GT mesh using similarity ICP.
+    Returns the same list structure as pred_meshes (per-frame meshes).
     """
     aligned = []
     for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False):
-        frame_out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        for pid, pred_mesh in pred_frame.items():
-            gt_mesh = gt_frame.get(pid)
-            if gt_mesh is None:
-                frame_out[pid] = pred_mesh
-                continue
-            aligned_v, aligned_f, _matrix, _cost = icp_align_mesh_similarity(
-                pred_mesh,
-                gt_mesh,
-                n_samples=n_samples,
-                max_iterations=max_iterations,
-                threshold=threshold,
-            )
-            frame_out[pid] = (aligned_v, aligned_f)
-        aligned.append(frame_out)
+        pred_v, pred_f = pred_frame
+        gt_v, gt_f = gt_frame
+        if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+            aligned.append(pred_frame)
+            continue
+        aligned_v, aligned_f, _matrix, _cost = icp_align_mesh_similarity(
+            pred_frame,
+            gt_frame,
+            n_samples=n_samples,
+            max_iterations=max_iterations,
+            threshold=threshold,
+        )
+        aligned.append((aligned_v, aligned_f))
     return aligned
 
 
@@ -174,25 +181,23 @@ def _format_mesh_frame_name(frame_name: str) -> str:
 
 
 def save_aligned_meshes(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
     output_dir: Path,
     frame_names: List[str],
 ) -> None:
-    import numpy as np
-
-    for frame_idx, mesh_dict in enumerate(pred_meshes):
+    for frame_idx, mesh in enumerate(pred_meshes):
         frame_name = _format_mesh_frame_name(str(frame_names[frame_idx]))
-        for pid, (vertices, faces) in mesh_dict.items():
-            if vertices.size == 0 or faces.size == 0:
-                continue
-            out_path = output_dir / "instance" / f"{pid}" / f"mesh-f{frame_name}.npz"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(out_path, vertices=vertices, faces=faces)
+        vertices, faces = mesh
+        if vertices.size == 0 or faces.size == 0:
+            continue
+        out_path = output_dir / f"{frame_name}.obj"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
 
 
 def compute_chamfer_distance(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
-    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
+    gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
     n_samples: int = 50000,
     units: str = "cm",
@@ -201,27 +206,23 @@ def compute_chamfer_distance(
     scale = _metric_units_scale(units)
     per_frame = []
     for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing Chamfer Distance", total=len(pred_meshes), leave=False):
-        per_person = []
-        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
-        for pid in shared_pids:
-            pred_v, pred_f = pred_frame[pid]
-            gt_v, gt_f = gt_frame[pid]
-            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
-                print(f"Warning: skipping chamfer computation for pid {pid} due to empty mesh.")
-                continue
-            pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
-            gt_pts, _gt_normals, _ = _sample_mesh_points_and_normals(gt_v, gt_f, n_samples)
-            d_pred = _nearest_distances(pred_pts, gt_pts)
-            d_gt = _nearest_distances(gt_pts, pred_pts)
-            chamfer = 0.5 * (d_pred.mean() + d_gt.mean())
-            per_person.append(chamfer * scale)
-        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+        pred_v, pred_f = pred_frame
+        gt_v, gt_f = gt_frame
+        if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+            per_frame.append(float("nan"))
+            continue
+        pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+        gt_pts, _gt_normals, _ = _sample_mesh_points_and_normals(gt_v, gt_f, n_samples)
+        d_pred = _nearest_distances(pred_pts, gt_pts)
+        d_gt = _nearest_distances(gt_pts, pred_pts)
+        chamfer = 0.5 * (d_pred.mean() + d_gt.mean())
+        per_frame.append(float(chamfer * scale))
     return torch.tensor(per_frame, dtype=torch.float32)
 
 
 def compute_p2s_distance(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
-    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
+    gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
     n_samples: int = 50000,
     units: str = "cm",
@@ -230,57 +231,51 @@ def compute_p2s_distance(
     scale = _metric_units_scale(units)
     per_frame = []
     for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing P2S Distance", total=len(pred_meshes), leave=False):
-        per_person = []
-        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
-        for pid in shared_pids:
-            pred_v, pred_f = pred_frame[pid]
-            gt_v, gt_f = gt_frame[pid]
-            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
-                continue
-            pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
-            _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
-            _closest, distances, _face_idx = gt_mesh.nearest.on_surface(pred_pts)
-            per_person.append(distances.mean() * scale)
-        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+        pred_v, pred_f = pred_frame
+        gt_v, gt_f = gt_frame
+        if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+            per_frame.append(float("nan"))
+            continue
+        pred_pts, _pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+        _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
+        _closest, distances, _face_idx = gt_mesh.nearest.on_surface(pred_pts)
+        per_frame.append(float(distances.mean() * scale))
     return torch.tensor(per_frame, dtype=torch.float32)
 
 
 def compute_normal_consistency(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
-    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
+    gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
     n_samples: int = 50000,
 ) -> torch.Tensor:
 
     per_frame = []
     for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Computing Normal Consistency", total=len(pred_meshes), leave=False):
-        per_person = []
-        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
-        for pid in shared_pids:
-            pred_v, pred_f = pred_frame[pid]
-            gt_v, gt_f = gt_frame[pid]
-            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
-                continue
-            pred_pts, pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
-            _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
-            _closest, _distances, face_idx = gt_mesh.nearest.on_surface(pred_pts)
-            gt_normals = gt_mesh.face_normals[face_idx]
-            dot = np.abs(np.einsum("ij,ij->i", pred_normals, gt_normals))
-            per_person.append(dot.mean())
-        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+        pred_v, pred_f = pred_frame
+        gt_v, gt_f = gt_frame
+        if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+            per_frame.append(float("nan"))
+            continue
+        pred_pts, pred_normals, _ = _sample_mesh_points_and_normals(pred_v, pred_f, n_samples)
+        _gt_pts, _gt_normals, gt_mesh = _sample_mesh_points_and_normals(gt_v, gt_f, 1)
+        _closest, _distances, face_idx = gt_mesh.nearest.on_surface(pred_pts)
+        gt_normals = gt_mesh.face_normals[face_idx]
+        dot = np.abs(np.einsum("ij,ij->i", pred_normals, gt_normals))
+        per_frame.append(float(dot.mean()))
     return torch.tensor(per_frame, dtype=torch.float32)
 
 
 def compute_volumetric_iou(
-    pred_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
-    gt_meshes: List[Dict[int, Tuple[np.ndarray, np.ndarray]]],
+    pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
+    gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
     voxel_size: float = 0.02,
     padding: float = 0.05,
 ) -> torch.Tensor:
     """
     Compute volumetric IoU on a per-frame basis assuming watertight meshes.
-    Uses a shared voxel grid per person defined by the union bounds of pred+gt.
+    Uses a shared voxel grid defined by the union bounds of pred+gt.
     """
 
     def _mesh_occupancy(mesh: trimesh.Trimesh, origin: np.ndarray, dims: Tuple[int, int, int]) -> np.ndarray:
@@ -302,29 +297,27 @@ def compute_volumetric_iou(
         total=len(pred_meshes),
         leave=False,
     ):
-        per_person = []
-        shared_pids = set(pred_frame.keys()) & set(gt_frame.keys())
-        for pid in shared_pids:
-            pred_v, pred_f = pred_frame[pid]
-            gt_v, gt_f = gt_frame[pid]
-            if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
-                continue
-            all_verts = np.concatenate([pred_v, gt_v], axis=0)
-            min_corner = all_verts.min(axis=0) - padding
-            max_corner = all_verts.max(axis=0) + padding
-            dims = np.maximum(np.ceil((max_corner - min_corner) / voxel_size).astype(np.int32), 1)
-            dims_tuple = (int(dims[0]), int(dims[1]), int(dims[2]))
+        pred_v, pred_f = pred_frame
+        gt_v, gt_f = gt_frame
+        if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
+            per_frame.append(float("nan"))
+            continue
+        all_verts = np.concatenate([pred_v, gt_v], axis=0)
+        min_corner = all_verts.min(axis=0) - padding
+        max_corner = all_verts.max(axis=0) + padding
+        dims = np.maximum(np.ceil((max_corner - min_corner) / voxel_size).astype(np.int32), 1)
+        dims_tuple = (int(dims[0]), int(dims[1]), int(dims[2]))
 
-            pred_tm = trimesh.Trimesh(vertices=pred_v, faces=pred_f, process=False)
-            gt_tm = trimesh.Trimesh(vertices=gt_v, faces=gt_f, process=False)
-            pred_occ = _mesh_occupancy(pred_tm, min_corner, dims_tuple)
-            gt_occ = _mesh_occupancy(gt_tm, min_corner, dims_tuple)
-            union = np.logical_or(pred_occ, gt_occ).sum()
-            if union == 0:
-                continue
-            inter = np.logical_and(pred_occ, gt_occ).sum()
-            per_person.append(float(inter) / float(union))
-        per_frame.append(float(np.mean(per_person)) if per_person else float("nan"))
+        pred_tm = trimesh.Trimesh(vertices=pred_v, faces=pred_f, process=False)
+        gt_tm = trimesh.Trimesh(vertices=gt_v, faces=gt_f, process=False)
+        pred_occ = _mesh_occupancy(pred_tm, min_corner, dims_tuple)
+        gt_occ = _mesh_occupancy(gt_tm, min_corner, dims_tuple)
+        union = np.logical_or(pred_occ, gt_occ).sum()
+        if union == 0:
+            per_frame.append(float("nan"))
+            continue
+        inter = np.logical_and(pred_occ, gt_occ).sum()
+        per_frame.append(float(inter) / float(union))
     return torch.tensor(per_frame, dtype=torch.float32)
 
 # ---------------------------------------------------------------------------

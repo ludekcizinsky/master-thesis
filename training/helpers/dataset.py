@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.nn.functional as F
+import trimesh
 from torch.utils.data import Dataset
 
 def extr_to_w2c_4x4(extr: torch.Tensor, device) -> torch.Tensor:
@@ -33,11 +34,14 @@ def root_dir_to_smpl_dir(root_dir: Path) -> Path:
 def root_dir_to_cameras_path(root_dir: Path) -> Path:
     return root_dir / "cameras" / "rgb_cameras.npz"
 
+def root_dir_to_all_cameras_dir(root_dir: Path) -> Path:
+    return root_dir / "all_cameras"
+
 def root_dir_to_depth_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "depths" / f"{cam_id}"
 
 def root_dir_to_mesh_dir(root_dir: Path) -> Path:
-    return root_dir / "seg" / "instance"
+    return root_dir / "meshes"
 
 def root_dir_to_skip_frames_path(root_dir: Path) -> Path:
     return root_dir / "skip_frames.csv"
@@ -79,8 +83,8 @@ class SceneDataset(Dataset):
             self._load_depth_paths()
 
         # Load camera parameters
-        self.camera_params_path = root_dir_to_cameras_path(scene_root_dir)
-        self._load_cameras()
+        self.cameras_dir = root_dir_to_all_cameras_dir(scene_root_dir) / f"{src_cam_id}"
+        self._load_camera_paths()
 
         # Load SMPLX parameters
         self.smplx_dir: Path = root_dir_to_smplx_dir(scene_root_dir)
@@ -94,9 +98,7 @@ class SceneDataset(Dataset):
         # (Optional) Check for meshes directory
         if use_meshes:
             self.meshes_dir: Path = root_dir_to_mesh_dir(scene_root_dir)
-            person_ids = [d.name for d in self.meshes_dir.iterdir() if d.is_dir() and d.name.isdigit()]
-            person_ids = sorted([int(pid) for pid in person_ids])
-            self._load_mesh_paths(person_ids)
+            self._load_mesh_paths()
 
     # --------- Path loaders
     def _load_frame_paths(self, sample_every: int = 1, skip_frames: Optional[list] = []):
@@ -164,6 +166,18 @@ class SceneDataset(Dataset):
                 self.depth_paths.append(depth_path)
         if missing:
             raise RuntimeError(f"Missing depth files for frames (by stem): {missing[:5]}")
+
+    def _load_camera_paths(self):
+        self.camera_paths = []
+        missing = []
+        for p in self.frame_paths:
+            cam_path = self.cameras_dir / f"{p.stem}.npz"
+            if not cam_path.exists():
+                missing.append(p.stem)
+            else:
+                self.camera_paths.append(cam_path)
+        if missing:
+            raise RuntimeError(f"Missing camera files for frames (by stem): {missing[:5]}")
         
     def _load_smpl_paths(self):
         self.smpl_paths = []
@@ -177,53 +191,39 @@ class SceneDataset(Dataset):
         if missing:
             raise RuntimeError(f"Missing SMPL files for frames (by stem): {missing[:5]}")
 
-    def _load_mesh_paths(self, person_ids: List[int]):
+    def _load_mesh_paths(self):
         """
-        Build per-frame mesh paths for each person and record max sizes for padding.
+        Build per-frame mesh paths and record max sizes for padding.
 
         Design notes:
-        - We store a list of mesh paths per frame and per person so __getitem__
+        - We store a list of mesh paths per frame so __getitem__
           can load meshes on demand.
-        - We precompute global max vertex/face counts across all persons/frames
+        - We precompute global max vertex/face counts across all frames
           so padding is consistent for stacking and DataLoader collation.
-
-        Args:
-            person_ids: List of integer person IDs, e.g. [0, 1].
         """
         self.mesh_paths = []
-        self.mesh_person_ids = person_ids
-        self.mesh_max_verts = {pid: 0 for pid in person_ids}
-        self.mesh_max_faces = {pid: 0 for pid in person_ids}
-        self.mesh_max_verts_all = 0
-        self.mesh_max_faces_all = 0
+        self.mesh_max_verts = 0
+        self.mesh_max_faces = 0
         missing = []
         for p in self.frame_paths:
-            missing_per_frame = []
-            paths_per_frame = []
-            for person_id in person_ids:
-                # example name: mesh-f00001.npz
-                fnumber = int(p.stem)
-                fname = f"mesh-f{fnumber:05d}.npz"
-                person_mesh_path = self.meshes_dir / f"{person_id}" / fname
-                if not person_mesh_path.exists():
-                    missing_per_frame.append(fname)
-                else:
-                    paths_per_frame.append(person_mesh_path)
-                    with np.load(person_mesh_path) as npz:
-                        verts = npz["vertices"]
-                        faces = npz["faces"]
-                    self.mesh_max_verts[person_id] = max(self.mesh_max_verts[person_id], verts.shape[0])
-                    self.mesh_max_faces[person_id] = max(self.mesh_max_faces[person_id], faces.shape[0])
-                    self.mesh_max_verts_all = max(self.mesh_max_verts_all, verts.shape[0])
-                    self.mesh_max_faces_all = max(self.mesh_max_faces_all, faces.shape[0])
-            
-            if missing_per_frame:
-                missing.append(missing_per_frame)
-
-            self.mesh_paths.append(paths_per_frame)
+            mesh_path = self.meshes_dir / f"{p.stem}.obj"
+            if not mesh_path.exists():
+                missing.append(p.stem)
+                continue
+            mesh = trimesh.load_mesh(mesh_path, process=False)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+            if not isinstance(mesh, trimesh.Trimesh):
+                missing.append(p.stem)
+                continue
+            verts = np.asarray(mesh.vertices)
+            faces = np.asarray(mesh.faces)
+            self.mesh_max_verts = max(self.mesh_max_verts, verts.shape[0])
+            self.mesh_max_faces = max(self.mesh_max_faces, faces.shape[0])
+            self.mesh_paths.append(mesh_path)
         if missing:
             raise RuntimeError(f"Missing mesh files for frames (by stem): {missing[:5]}")
-        if self.mesh_max_verts_all == 0 or self.mesh_max_faces_all == 0:
+        if self.mesh_max_verts == 0 or self.mesh_max_faces == 0:
             raise RuntimeError("Failed to determine mesh padding sizes; mesh files may be empty.")
 
 
@@ -262,40 +262,38 @@ class SceneDataset(Dataset):
         return upsampled.squeeze(0).squeeze(0).to(self.device).unsqueeze(-1)  # HxWx1
 
 
-    def _load_camera_from_npz(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _load_camera_from_frame(self, path: Path) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Load intrinsics and extrinsics for a specific camera ID from a .npz file.
+        Load intrinsics and extrinsics from a per-frame camera file.
 
-        Expects keys "ids", "intrinsics" [N,3,3], and "extrinsics" [N,3,4] in the file.
-        Returns float tensors (intrinsics, extrinsics) optionally moved to `device`.
+        Expects keys "intrinsics" [1,3,3] or [3,3] and "extrinsics" [1,3,4] or [3,4].
+        Returns float tensors (intrinsics, extrinsics) moved to `device`.
         """
-        
-        camera_npz_path = Path(self.camera_params_path)
-        with np.load(camera_npz_path) as cams:
-            missing = [k for k in ("ids", "intrinsics", "extrinsics") if k not in cams.files]
+
+        with np.load(path) as cams:
+            missing = [k for k in ("intrinsics", "extrinsics") if k not in cams.files]
             if missing:
-                raise KeyError(f"Missing keys {missing} in camera file {camera_npz_path}")
+                raise KeyError(f"Missing keys {missing} in camera file {path}")
 
-            ids = cams["ids"]
-            matches = np.nonzero(ids == self.src_cam_id)[0]
-            if len(matches) == 0:
-                raise ValueError(f"Camera id {self.src_cam_id} not found in {camera_npz_path}")
-            idx = int(matches[0])
+            intrinsics = cams["intrinsics"]
+            extrinsics = cams["extrinsics"]
 
-            intrinsics = torch.from_numpy(cams["intrinsics"][idx]).float()
-            extrinsics = torch.from_numpy(cams["extrinsics"][idx]).float()
+        if intrinsics.ndim == 3:
+            intrinsics = intrinsics[0]
+        if extrinsics.ndim == 3:
+            extrinsics = extrinsics[0]
 
-            device = torch.device(self.device)
-            intrinsics = intrinsics.to(device)
-            extrinsics = extrinsics.to(device)
+        if intrinsics.shape != (3, 3) or extrinsics.shape != (3, 4):
+            raise ValueError(
+                f"Unexpected camera shapes in {path}: "
+                f"intrinsics={intrinsics.shape}, extrinsics={extrinsics.shape}"
+            )
+
+        device = torch.device(self.device)
+        intrinsics = torch.from_numpy(intrinsics).float().to(device)
+        extrinsics = torch.from_numpy(extrinsics).float().to(device)
 
         return intrinsics, extrinsics
-
-    def _load_cameras(self):
-        intr, extr = self._load_camera_from_npz()
-        w2c = extr_to_w2c_4x4(extr, self.device)
-        self.c2w = torch.inverse(w2c) # shape is [4, 4]
-        self.K = intr_to_4x4(intr, self.device) # shape is [4,4]
 
     def _load_smplx(self, path: Path):
 
@@ -349,61 +347,43 @@ class SceneDataset(Dataset):
 
         return smpl
     
-    def _load_meshes(self, per_person_path: List[Path]):
+    def _load_mesh(self, mesh_path: Path):
         """
-        Load per-person meshes for a single frame and pad to fixed sizes.
+        Load a single mesh for a frame and pad to fixed sizes.
 
         Design notes:
         - Meshes are returned as dense, padded tensors so the default PyTorch
           collate_fn can stack them across the batch.
         - True sizes are returned separately so metrics can ignore padding.
 
-        Args:
-            per_person_path: List of mesh paths (one per person) for this frame.
-
         Returns:
             Dict with:
-              - "vertices": FloatTensor [P, Vmax, 3]
-              - "faces": LongTensor [P, Fmax, 3]
-              - "num_vertices": LongTensor [P]
-              - "num_faces": LongTensor [P]
-              - "person_ids": LongTensor [P]
+              - "vertices": FloatTensor [Vmax, 3]
+              - "faces": LongTensor [Fmax, 3]
+              - "num_vertices": LongTensor []
+              - "num_faces": LongTensor []
         """
-        num_persons = len(per_person_path)
-        if num_persons != len(self.mesh_person_ids):
-            raise RuntimeError(
-                f"Expected {len(self.mesh_person_ids)} mesh paths, got {num_persons}."
-            )
+        mesh = trimesh.load_mesh(mesh_path, process=False)
+        if isinstance(mesh, trimesh.Scene):
+            mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+        if not isinstance(mesh, trimesh.Trimesh):
+            raise RuntimeError(f"Failed to load mesh at {mesh_path}")
+        verts = np.asarray(mesh.vertices, dtype=np.float32)
+        faces = np.asarray(mesh.faces, dtype=np.int64)
 
-        verts_out = []
-        faces_out = []
-        num_verts = []
-        num_faces = []
+        max_v = self.mesh_max_verts
+        max_f = self.mesh_max_faces
 
-        for pid, mesh_path in zip(self.mesh_person_ids, per_person_path):
-            npz = np.load(mesh_path)
-            verts = npz["vertices"].astype(np.float32)
-            faces = npz["faces"].astype(np.int64)
-
-            max_v = self.mesh_max_verts_all
-            max_f = self.mesh_max_faces_all
-
-            verts_pad = np.zeros((max_v, 3), dtype=np.float32)
-            faces_pad = np.zeros((max_f, 3), dtype=np.int64)
-            verts_pad[: verts.shape[0]] = verts
-            faces_pad[: faces.shape[0]] = faces
-
-            verts_out.append(torch.from_numpy(verts_pad))
-            faces_out.append(torch.from_numpy(faces_pad))
-            num_verts.append(verts.shape[0])
-            num_faces.append(faces.shape[0])
+        verts_pad = np.zeros((max_v, 3), dtype=np.float32)
+        faces_pad = np.zeros((max_f, 3), dtype=np.int64)
+        verts_pad[: verts.shape[0]] = verts
+        faces_pad[: faces.shape[0]] = faces
 
         meshes = {
-            "vertices": torch.stack(verts_out, dim=0).to(self.device),
-            "faces": torch.stack(faces_out, dim=0).to(self.device),
-            "num_vertices": torch.tensor(num_verts, device=self.device, dtype=torch.long),
-            "num_faces": torch.tensor(num_faces, device=self.device, dtype=torch.long),
-            "person_ids": torch.tensor(self.mesh_person_ids, device=self.device, dtype=torch.long),
+            "vertices": torch.from_numpy(verts_pad).to(self.device),
+            "faces": torch.from_numpy(faces_pad).to(self.device),
+            "num_vertices": torch.tensor(verts.shape[0], device=self.device, dtype=torch.long),
+            "num_faces": torch.tensor(faces.shape[0], device=self.device, dtype=torch.long),
         }
         return meshes
 
@@ -416,8 +396,10 @@ class SceneDataset(Dataset):
         frame_name = Path(self.frame_paths[idx]).stem
         mask = self._load_mask(self.mask_paths[idx])
         smplx_params = self._load_smplx(self.smplx_paths[idx])
-        K = self.K
-        c2w = self.c2w
+        intr, extr = self._load_camera_from_frame(self.camera_paths[idx])
+        w2c = extr_to_w2c_4x4(extr, self.device)
+        c2w = torch.inverse(w2c)
+        K = intr_to_4x4(intr, self.device)
         cam_id = self.src_cam_id
 
         # Prepare return values
@@ -446,8 +428,8 @@ class SceneDataset(Dataset):
 
         # - (Optional) load meshes
         if hasattr(self, "mesh_paths"):
-            mesh_paths_per_person = self.mesh_paths[idx]
-            meshes = self._load_meshes(mesh_paths_per_person)
+            mesh_path = self.mesh_paths[idx]
+            meshes = self._load_mesh(mesh_path)
             to_return_values["meshes"] = meshes
 
         return to_return_values
@@ -506,11 +488,11 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
 
     # Camera parameters
     if cam_scene_dir is not None:
-        src_cameras_path = root_dir_to_cameras_path(cam_scene_dir)
-        tgt_cameras_path = root_dir_to_cameras_path(tgt_scene_dir)
-        tgt_cameras_path.parent.mkdir(parents=True, exist_ok=True)
-        if src_cameras_path.exists():
-            subprocess.run(["cp", str(src_cameras_path), str(tgt_cameras_path)])
+        src_cameras_dir = root_dir_to_all_cameras_dir(cam_scene_dir) / f"{camera_id}"
+        tgt_cameras_dir = root_dir_to_all_cameras_dir(tgt_scene_dir) / f"{camera_id}"
+        tgt_cameras_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_cameras_dir.exists():
+            subprocess.run(["cp", "-r", str(src_cameras_dir), str(tgt_cameras_dir.parent)])
 
     # SMPLX parameters
     if smplx_params_scene_dir is not None:

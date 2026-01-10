@@ -81,12 +81,19 @@ cd /home/cizinsky/master-thesis
 # python preprocess/custom/check_h3r_output.py --scene-dir $preprocess_dir --model-folder /home/cizinsky/body_models
 
 
-# Checking quality of preprocessing
-# 1. check rendering
-bash preprocess/vis/check_render.sh mmm_lift 0 
+# # Checking quality of preprocessing
+# # 1. check rendering
+# bash preprocess/vis/check_render.sh mmm_lift 0 
 
-# 2. check in 3D
-# bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 true
-# bash preprocess/vis/check_scene_in_3d.sh taichi 0 true
-# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
-bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
+# # 2. check in 3D
+# # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 true
+# # bash preprocess/vis/check_scene_in_3d.sh taichi 0 true
+# # bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
+# bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
+
+# Check inputs to the evaluation script
+root_pred_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v1_large_refactor_check/epoch_0000
+path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
+path_to_posed_meshes=$root_pred_dir/posed_meshes_per_frame
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16/meshes
+python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5

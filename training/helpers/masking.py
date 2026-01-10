@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import pyrender
 import trimesh
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 
 
@@ -161,8 +161,8 @@ def estimate_masks_from_rgb_and_smplx_batch(
 def estimate_masks_from_src_reprojection_batch(
     batch: Dict[str, Any],
     src_masks_by_name: Dict[str, torch.Tensor],
-    src_K: torch.Tensor,
-    src_c2w: torch.Tensor,
+    src_K: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    src_c2w: Union[torch.Tensor, Dict[str, torch.Tensor]],
     seed_masks: Optional[torch.Tensor] = None,
     depth_min: float = 1e-6,
 ) -> torch.Tensor:
@@ -178,8 +178,8 @@ def estimate_masks_from_src_reprojection_batch(
 
     Args:
         src_masks_by_name: dict mapping `frame_name` -> source mask `[H, W, 1]`.
-        src_K: `[4, 4]` intrinsics for the source camera.
-        src_c2w: `[4, 4]` camera-to-world for the source camera.
+        src_K: `[4, 4]` intrinsics for the source camera or per-frame dict.
+        src_c2w: `[4, 4]` camera-to-world for the source camera or per-frame dict.
         seed_masks: optional `[B, H, W, 1]` high-confidence masks (e.g., SMPL-X).
         depth_min: minimum valid depth threshold.
 
@@ -198,16 +198,22 @@ def estimate_masks_from_src_reprojection_batch(
     device = depth.device
     bsize, H, W = int(depth.shape[0]), int(depth.shape[1]), int(depth.shape[2])
 
-    # Cache source camera projection parameters.
-    src_K = src_K.to(device=device, dtype=depth.dtype)
-    src_c2w = src_c2w.to(device=device, dtype=depth.dtype)
-    w2c_src = torch.inverse(src_c2w)
-    fx_src, fy_src, cx_src, cy_src = (
-        float(src_K[0, 0]),
-        float(src_K[1, 1]),
-        float(src_K[0, 2]),
-        float(src_K[1, 2]),
-    )
+    def _get_src_camera(frame_name: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(src_K, dict) or isinstance(src_c2w, dict):
+            if not isinstance(src_K, dict) or not isinstance(src_c2w, dict):
+                raise TypeError("src_K and src_c2w must both be dicts when using per-frame cameras.")
+            if frame_name not in src_K or frame_name not in src_c2w:
+                raise KeyError(f"Missing source camera for frame '{frame_name}'.")
+            K_src = src_K[frame_name]
+            c2w_src = src_c2w[frame_name]
+        else:
+            K_src = src_K
+            c2w_src = src_c2w
+
+        K_src = K_src.to(device=device, dtype=depth.dtype)
+        c2w_src = c2w_src.to(device=device, dtype=depth.dtype)
+        w2c_src = torch.inverse(c2w_src)
+        return K_src, w2c_src
 
     # Build a target-view pixel grid (H,W) once; reuse per batch item.
     xs = torch.arange(W, device=device, dtype=depth.dtype)
@@ -216,6 +222,7 @@ def estimate_masks_from_src_reprojection_batch(
 
     out_masks: List[torch.Tensor] = []
     for bi in range(bsize):
+        frame_name = frame_names[bi]
         depth_hw = depth[bi, :, :, 0]
         valid_depth = depth_hw > depth_min
 
@@ -237,6 +244,13 @@ def estimate_masks_from_src_reprojection_batch(
         ones = torch.ones_like(z_cam)
         pts_cam = torch.stack([x_cam, y_cam, z_cam, ones], dim=-1).reshape(-1, 4)  # [N, 4]
         world = (c2ws[bi] @ pts_cam.t()).t()
+        K_src, w2c_src = _get_src_camera(frame_name)
+        fx_src, fy_src, cx_src, cy_src = (
+            float(K_src[0, 0]),
+            float(K_src[1, 1]),
+            float(K_src[0, 2]),
+            float(K_src[1, 2]),
+        )
         cam_src = (w2c_src @ world.t()).t() # [N, 4]
 
         # Project to source pixel coordinates.
@@ -278,7 +292,7 @@ def estimate_masks_from_src_reprojection_batch(
 
         out_masks.append(mask_hw)
 
-        return torch.stack(out_masks, dim=0)
+    return torch.stack(out_masks, dim=0)
 
 def overlay_mask_on_image(
     image: torch.Tensor,

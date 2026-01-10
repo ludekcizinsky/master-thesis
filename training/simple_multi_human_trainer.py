@@ -13,6 +13,7 @@ import wandb
 from tqdm import tqdm
 from omegaconf import DictConfig
 from PIL import Image
+import trimesh
 
 
 import torch
@@ -53,7 +54,8 @@ from training.helpers.eval_metrics import (
     compute_smpl_mve_per_frame,
     compute_smpl_contact_distance_per_frame,
     compute_smpl_pcdr_per_frame,
-    gt_meshes_to_person_dict,
+    gt_mesh_from_sample,
+    merge_mesh_dict,
     posed_gs_list_to_serializable_dict,
     align_pred_meshes_icp,
     save_aligned_meshes,
@@ -245,28 +247,30 @@ class MultiHumanTrainer:
         # Preare model
         self._load_model()
 
-        # Initialize difix
-        self._init_nv_generation()
+        if False:
 
-        # Generate novel views 
-        is_nv_gen_done = False
-        n_its_nv_gen = 0
-        while not is_nv_gen_done:
-            is_nv_gen_done = self.novel_view_generation_step()
-            n_its_nv_gen += 1
-            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+            # Initialize difix
+            self._init_nv_generation()
 
-        # Prepare training dataset from all the new cameras
-        for cam_id in self.difix_cam_ids_all:
-            scene_ds = SceneDataset(
-                self.trn_data_dir,
-                int(cam_id),
-                use_depth=self.cfg.use_depth,
-                device=self.tuner_device,
-                sample_every=1,
-            )
-            self.trn_datasets.append(scene_ds)
-        self.trn_dataset = ConcatDataset(self.trn_datasets)
+            # Generate novel views 
+            is_nv_gen_done = False
+            n_its_nv_gen = 0
+            while not is_nv_gen_done:
+                is_nv_gen_done = self.novel_view_generation_step()
+                n_its_nv_gen += 1
+                print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+
+            # Prepare training dataset from all the new cameras
+            for cam_id in self.difix_cam_ids_all:
+                scene_ds = SceneDataset(
+                    self.trn_data_dir,
+                    int(cam_id),
+                    use_depth=self.cfg.use_depth,
+                    device=self.tuner_device,
+                    sample_every=1,
+                )
+                self.trn_datasets.append(scene_ds)
+            self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -873,11 +877,14 @@ class MultiHumanTrainer:
                 skip_frames=skip_frames,
             )
             src_masks_by_name = {}
+            src_K = {}
+            src_c2w = {}
             for idx in range(len(src_dataset)):
                 sample = src_dataset[idx]
-                src_masks_by_name[sample["frame_name"]] = sample["mask"]
-            src_K = src_dataset.K
-            src_c2w = src_dataset.c2w
+                frame_name = sample["frame_name"]
+                src_masks_by_name[frame_name] = sample["mask"]
+                src_K[frame_name] = sample["K"]
+                src_c2w[frame_name] = sample["c2w"]
 
 
         # Compute masks for the nv dataset
@@ -1260,6 +1267,10 @@ class MultiHumanTrainer:
         metrics_per_frame = []
         for tgt_cam_id in tgt_cam_ids:
 
+            if tgt_cam_id != src_cam_id:
+                print(f"Skipping segmentation evaluation for novel camera {tgt_cam_id}")
+                continue
+
             # Init save directory for this cam
             cam_save_dir : Path = save_dir / f"{tgt_cam_id}"
             cam_save_dir.mkdir(parents=True, exist_ok=True)
@@ -1544,11 +1555,11 @@ class MultiHumanTrainer:
         save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
         save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
 
-        # - posed mesh save directory (one file per frame, per person)
+        # - posed mesh save directory (one merged mesh per frame)
         save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
 
-        # - aligned posed mesh save directory (one file per frame, per person)
+        # - aligned posed mesh save directory (one merged mesh per frame)
         save_dir_aligned_meshes: Path = save_dir_root / "aligned_posed_meshes_per_frame"
         save_dir_aligned_meshes.mkdir(parents=True, exist_ok=True)
 
@@ -1597,7 +1608,7 @@ class MultiHumanTrainer:
             gt_meshes = []
             for i in range(frame_indices.shape[0]):
                 sample_dict = gt_dataset[frame_indices[i].item()]
-                gt_meshes.append(gt_meshes_to_person_dict(sample_dict["meshes"]))
+                gt_meshes.append(gt_mesh_from_sample(sample_dict["meshes"]))
 
             # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
             pred_meshes = []
@@ -1632,8 +1643,13 @@ class MultiHumanTrainer:
                     fname_str,
                     mesh_cfg,
                     overwrite=mesh_overwrite,
+                    write_meshes=False,
                 )
-                pred_meshes.append(meshes_for_frame)
+                merged_mesh = merge_mesh_dict(meshes_for_frame)
+                pred_meshes.append(merged_mesh)
+                merged_path = save_dir_posed_meshes / f"{fname_str}.obj"
+                if merged_mesh[0].size and merged_mesh[1].size:
+                    trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
 
 
             # - Before metric computation, perform ICP alignment (similarity).
@@ -1682,14 +1698,14 @@ class MultiHumanTrainer:
                 )
                 metrics_per_frame.append(row_to_save)
 
-#                # - Debug: print per-frame metrics
-                #print(
-                    #f"Frame {fname}: "
-                    #f"V-IoU: {v_iou[idx].item():.4f}, "
-                    #f"Chamfer ({metrics_units}): {chamfer[idx].item():.4f}, "
-                    #f"P2S ({metrics_units}): {p2s[idx].item():.4f}, "
-                    #f"Normal Consistency: {normal_consistency[idx].item():.4f} "
-                #)
+                # - Debug: print per-frame metrics
+                print(
+                    f"Frame {fname}: "
+                    f"V-IoU: {v_iou[idx].item():.4f}, "
+                    f"Chamfer ({metrics_units}): {chamfer[idx].item():.4f}, "
+                    f"P2S ({metrics_units}): {p2s[idx].item():.4f}, "
+                    f"Normal Consistency: {normal_consistency[idx].item():.4f} "
+                )
 
         # Save the results
         # - save per-frame metrics
@@ -1739,6 +1755,7 @@ class MultiHumanTrainer:
         self.eval_loop_segmentation(epoch)
         self.eval_loop_pose_estimation(epoch)
         self.eval_loop_reconstruction(epoch)
+        quit()
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):

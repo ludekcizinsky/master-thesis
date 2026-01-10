@@ -12,6 +12,7 @@ from pytorch3d.transforms import quaternion_to_matrix
 
 import viser
 import viser.transforms as tf
+import trimesh
 
 def _sorted_frame_files(root: Path, pattern: str) -> List[Path]:
     paths = list(root.glob(pattern))
@@ -110,49 +111,21 @@ def _state_to_splat_arrays(
         "covariances": cov.detach().cpu().numpy().astype(np.float32),
     }
 
-def _person_color(pid: int) -> Tuple[int, int, int]:
-    palette = np.array(
-        [
-            [255, 80, 80],
-            [80, 180, 255],
-            [120, 255, 120],
-            [255, 200, 80],
-            [200, 120, 255],
-            [255, 120, 200],
-        ],
-        dtype=np.int32,
-    )
-    c = palette[pid % len(palette)]
-    return int(c[0]), int(c[1]), int(c[2])
-
-
-def _load_mesh_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
-    npz = np.load(path)
-    verts = npz["vertices"].astype(np.float32)
-    faces = npz["faces"].astype(np.int32)
-    return verts, faces
-
-
-def _find_mesh_paths(mesh_root: Path, frame_name: str) -> List[Tuple[int, Path]]:
-    if mesh_root.name == "instance":
-        instance_root = mesh_root
-    else:
-        instance_root = mesh_root / "instance"
-    if not instance_root.exists():
-        return []
-    paths: List[Tuple[int, Path]] = []
+def _load_mesh_obj(mesh_root: Path, frame_name: str) -> Tuple[np.ndarray, np.ndarray]:
     if frame_name.isdigit():
-        mesh_filename = f"mesh-f{int(frame_name):05d}.npz"
+        mesh_path = mesh_root / f"{int(frame_name):06d}.obj"
     else:
-        mesh_filename = f"mesh-f{frame_name}.npz"
-    for inst_dir in sorted(instance_root.iterdir()):
-        if not inst_dir.is_dir() or not inst_dir.name.isdigit():
-            continue
-        pid = int(inst_dir.name)
-        mesh_path = inst_dir / mesh_filename
-        if mesh_path.exists():
-            paths.append((pid, mesh_path))
-    return paths
+        mesh_path = mesh_root / f"{frame_name}.obj"
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Missing mesh file: {mesh_path}")
+    mesh = trimesh.load_mesh(mesh_path, process=False)
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise RuntimeError(f"Failed to load mesh at {mesh_path}")
+    verts = np.asarray(mesh.vertices, dtype=np.float32)
+    faces = np.asarray(mesh.faces, dtype=np.int32)
+    return verts, faces
 
 
 @dataclass
@@ -244,8 +217,8 @@ def main(args: Args) -> None:
     ignore_slider_update: bool = False
     playing: bool = False
     last_play_step: float = time.monotonic()
-    mesh_handles: Dict[int, Any] = {}
-    gt_mesh_handles: Dict[int, Any] = {}
+    mesh_handle: Optional[Any] = None
+    gt_mesh_handle: Optional[Any] = None
 
     def _set_initial_camera(client: viser.ClientHandle) -> None:
         if not initial_camera:
@@ -269,8 +242,8 @@ def main(args: Args) -> None:
         if not show_meshes:
             return
         if not show_meshes_checkbox.value:
-            for handle in mesh_handles.values():
-                handle.visible = False
+            if mesh_handle is not None:
+                mesh_handle.visible = False
             return
         last_frame_idx = None
         _show_frame(int(frame_slider.value))
@@ -281,8 +254,8 @@ def main(args: Args) -> None:
         if not show_gt_meshes:
             return
         if not show_gt_meshes_checkbox.value:
-            for handle in gt_mesh_handles.values():
-                handle.visible = False
+            if gt_mesh_handle is not None:
+                gt_mesh_handle.visible = False
             return
         last_frame_idx = None
         _show_frame(int(frame_slider.value))
@@ -303,7 +276,7 @@ def main(args: Args) -> None:
         stop_button.disabled = True
 
     def _show_frame(frame_idx: int) -> None:
-        nonlocal gs_handle, last_frame_idx, mesh_handles, gt_mesh_handles
+        nonlocal gs_handle, last_frame_idx, mesh_handle, gt_mesh_handle
         if last_frame_idx == frame_idx:
             return
 
@@ -340,60 +313,44 @@ def main(args: Args) -> None:
             gs_handle.visible = show_3dgs
 
             if show_meshes and args.posed_meshes_dir is not None and show_meshes_checkbox.value:
-                mesh_paths = _find_mesh_paths(args.posed_meshes_dir, frame_path.stem)
-                active_pids = set()
-                for pid, mesh_path in mesh_paths:
-                    verts, faces = _load_mesh_npz(mesh_path)
-                    active_pids.add(pid)
-                    handle = mesh_handles.get(pid)
-                    if handle is not None and hasattr(handle, "update"):
-                        handle.update(vertices=verts, faces=faces, color=_person_color(pid))
-                    else:
-                        handle = server.scene.add_mesh_simple(
-                            f"/meshes/person_{pid}",
-                            vertices=verts,
-                            faces=faces,
-                            color=_person_color(pid),
-                        )
-                        mesh_handles[pid] = handle
-                    handle.visible = True
-                    if hasattr(handle, "opacity"):
-                        handle.opacity = float(args.mesh_opacity)
-
-                for pid, handle in mesh_handles.items():
-                    if pid not in active_pids:
-                        handle.visible = False
+                verts, faces = _load_mesh_obj(args.posed_meshes_dir, frame_path.stem)
+                if mesh_handle is not None and hasattr(mesh_handle, "update"):
+                    mesh_handle.update(vertices=verts, faces=faces, color=(200, 200, 200))
+                else:
+                    if mesh_handle is not None and hasattr(mesh_handle, "remove"):
+                        mesh_handle.remove()
+                    mesh_handle = server.scene.add_mesh_simple(
+                        "/meshes/pred",
+                        vertices=verts,
+                        faces=faces,
+                        color=(200, 200, 200),
+                    )
+                mesh_handle.visible = True
+                if hasattr(mesh_handle, "opacity"):
+                    mesh_handle.opacity = float(args.mesh_opacity)
             elif show_meshes:
-                for handle in mesh_handles.values():
-                    handle.visible = False
+                if mesh_handle is not None:
+                    mesh_handle.visible = False
 
             if show_gt_meshes and args.gt_meshes_dir is not None and show_gt_meshes_checkbox.value:
-                mesh_paths = _find_mesh_paths(args.gt_meshes_dir, frame_path.stem)
-                active_pids = set()
-                for pid, mesh_path in mesh_paths:
-                    verts, faces = _load_mesh_npz(mesh_path)
-                    active_pids.add(pid)
-                    handle = gt_mesh_handles.get(pid)
-                    if handle is not None and hasattr(handle, "update"):
-                        handle.update(vertices=verts, faces=faces, color=_person_color(pid))
-                    else:
-                        handle = server.scene.add_mesh_simple(
-                            f"/gt_meshes/person_{pid}",
-                            vertices=verts,
-                            faces=faces,
-                            color=_person_color(pid),
-                        )
-                        gt_mesh_handles[pid] = handle
-                    handle.visible = True
-                    if hasattr(handle, "opacity"):
-                        handle.opacity = float(args.gt_mesh_opacity)
-
-                for pid, handle in gt_mesh_handles.items():
-                    if pid not in active_pids:
-                        handle.visible = False
+                verts, faces = _load_mesh_obj(args.gt_meshes_dir, frame_path.stem)
+                if gt_mesh_handle is not None and hasattr(gt_mesh_handle, "update"):
+                    gt_mesh_handle.update(vertices=verts, faces=faces, color=(80, 180, 255))
+                else:
+                    if gt_mesh_handle is not None and hasattr(gt_mesh_handle, "remove"):
+                        gt_mesh_handle.remove()
+                    gt_mesh_handle = server.scene.add_mesh_simple(
+                        "/meshes/gt",
+                        vertices=verts,
+                        faces=faces,
+                        color=(80, 180, 255),
+                    )
+                gt_mesh_handle.visible = True
+                if hasattr(gt_mesh_handle, "opacity"):
+                    gt_mesh_handle.opacity = float(args.gt_mesh_opacity)
             elif show_gt_meshes:
-                for handle in gt_mesh_handles.values():
-                    handle.visible = False
+                if gt_mesh_handle is not None:
+                    gt_mesh_handle.visible = False
             last_frame_idx = frame_idx
 
         server.flush()
