@@ -6,9 +6,12 @@ from dataclasses import dataclass
 import torch
 import tyro
 
+from tqdm import tqdm
+import numpy as np
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
-from training.simple_multi_human_trainer import build_renderer, load_skip_frames
-from training.helpers.dataset import SceneDataset
+from training.simple_multi_human_trainer import build_renderer
+from training.helpers.dataset import root_dir_to_smplx_dir
 from training.helpers.eval_metrics import posed_gs_list_to_serializable_dict
 
 @dataclass
@@ -16,7 +19,32 @@ class Poser3DGSConfig:
     scene_dir: Path = Path("/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair15_fight")
     cam_id: int = 4
 
-def get_posed_3dgs_single_view_and_person(cano_gs_model_list, query_points, smplx_single_view, animate_func):
+def _load_smplx(path: Path, device: torch.device):
+
+    npz = np.load(path)
+
+    def add_key(key):
+        arrs = torch.from_numpy(npz[key]).float()
+        return arrs.to(device)  # [P, ...]
+
+    smplx = {
+        "betas": add_key("betas"),
+        "root_pose": add_key("root_pose"),   # [P,3] world axis-angle
+        "body_pose": add_key("body_pose"),
+        "jaw_pose": add_key("jaw_pose"),
+        "leye_pose": add_key("leye_pose"),
+        "reye_pose": add_key("reye_pose"),
+        "lhand_pose": add_key("lhand_pose"),
+        "rhand_pose": add_key("rhand_pose"),
+        "trans": add_key("trans"),           # [P,3] world translation
+        "expr": add_key("expression"),
+    }
+
+    smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=device)
+
+    return smplx
+
+def _get_posed_3dgs_single_view_and_person(cano_gs_model_list, query_points, smplx_single_view, animate_func):
 
     # Pose 3dgs
     n_persons = len(cano_gs_model_list)
@@ -38,40 +66,39 @@ def get_posed_3dgs_single_view_and_person(cano_gs_model_list, query_points, smpl
 
     return merged_posed_3dgs
 
-def get_posed_3dgs(scene_dir: Path, cam_id: int):
+def get_posed_3dgs(scene_dir: Path, frames: list[str]):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # build dataset
-    skip_frames = load_skip_frames(scene_dir)
-    ds = SceneDataset(
-        scene_root_dir=scene_dir,
-        src_cam_id=cam_id,
-        skip_frames=skip_frames,
-    )
+    # load smplx params
+    smplx_dir = root_dir_to_smplx_dir(scene_dir)
+    ds = list()
+    for fname in frames:
+        smplx_path = smplx_dir / f"{fname}.npz"
+        smplx_params = _load_smplx(smplx_path, device)
+        ds.append(smplx_params)
 
     # build renderer to get query points
     renderer = build_renderer().to(device)
 
     
-    smplx_params = ds[0]["smplx_params"]
+    smplx_params = ds[0]
     query_points, transform_mat_neutral_pose = renderer.get_query_points(smplx_params, device)
 
     # Load Canonical 3DGS
     root_gs_model_dir = scene_dir / "canon_3dgs_lhm"
-    gs_model_list = torch.load(root_gs_model_dir / "union" / "hi4d_gs.pt", map_location=device, weights_only=False)
+    gs_model_list = torch.load(root_gs_model_dir / "union" / "human3r_gs.pt", map_location=device, weights_only=False)
 
     # Get single view SMPLX data
     total_n_frames = len(ds)
     all_view_posed_3dgs = []
-    for i in range(total_n_frames):
+    for i in tqdm(range(total_n_frames), desc="Posing 3DGS for all views", total=total_n_frames):
         # - Get SMPLX params for this view
-        data = ds[i]
-        smplx_single_view = data["smplx_params"]
+        smplx_single_view = ds[i]
         smplx_single_view["transform_mat_neutral_pose"] = transform_mat_neutral_pose
 
         # - Get posed 3dgs for this view
-        posed_3dgs_per_view = get_posed_3dgs_single_view_and_person(
+        posed_3dgs_per_view = _get_posed_3dgs_single_view_and_person(
             gs_model_list,
             query_points,
             smplx_single_view,

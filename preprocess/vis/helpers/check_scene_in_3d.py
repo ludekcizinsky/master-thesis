@@ -14,24 +14,29 @@ import viser.transforms as tf
 from tqdm import tqdm
 import tyro
 from PIL import Image
+from pytorch3d.transforms import quaternion_to_matrix
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from submodules.smplx import smplx
+from preprocess.vis.helpers.cano_3dgs_to_posed import get_posed_3dgs
 
 
 @dataclass
 class Config:
     scene_dir: Annotated[Path, tyro.conf.arg(aliases=["--scenes-dir"])]
+    src_cam_id: int = 0
     device: str = "cuda"
     model_folder: Path = Path("/home/cizinsky/body_models")
     smpl_model_ext: str = "pkl"
     smplx_model_ext: str = "npz"
     gender: str = "neutral"
+    max_3dgs_scale: float = 0.02
     port: int = 8080
     center_scene: bool = True
     max_frames: int = 10
+    vis_3dgs: bool = False
 
 def _load_skip_frames(scene_dir: Path) -> set[int]:
     skip_path = scene_dir / "skip_frames.csv"
@@ -174,6 +179,32 @@ def _compute_center_offset(
 
     return np.zeros(3, dtype=np.float32)
 
+
+def _prepare_posed_3dgs(posed_3dgs, max_scale: Optional[float]) -> Dict[str, np.ndarray]:
+    xyz = posed_3dgs["xyz"].float()
+    opacity = posed_3dgs["opacity"].float()
+    rotation = posed_3dgs["rotation"].float()
+    scaling = posed_3dgs["scaling"].float()
+    shs = posed_3dgs["shs"].float()
+
+    opacity = opacity.clamp(0.0, 1.0)
+    rgb_coeff = shs.squeeze(1)
+    rgb = rgb_coeff.clamp(0.0, 1.0)
+    rotation = torch.nn.functional.normalize(rotation, dim=-1)
+    R = quaternion_to_matrix(rotation)  # [N, 3, 3]
+    scales = scaling.clamp(min=1e-8)
+    if max_scale is not None:
+        scales = scales.clamp(max=max_scale)
+
+
+    cov = R @ torch.diag_embed(scales**2) @ R.transpose(-1, -2)  # [N, 3, 3]
+
+    return {
+        "centers": xyz.detach().cpu().numpy(),
+        "opacities": opacity.detach().cpu().numpy(),
+        "rgbs": rgb.detach().cpu().numpy(),
+        "covariances": cov.detach().cpu().numpy(),
+    }
 
 def _smpl_vertices(
     layer,
@@ -339,6 +370,15 @@ def main() -> None:
     if not frames:
         raise FileNotFoundError("No frames left after applying max_frames.")
 
+    # Load and prepare posed 3D Gaussians (optional; can be heavy).
+    all_posed_3dgs: List[Dict[str, np.ndarray]] = []
+    if cfg.vis_3dgs:
+        all_posed_3dgs_raw = get_posed_3dgs(cfg.scene_dir, frames=frames)
+        all_posed_3dgs = [
+            _prepare_posed_3dgs(p, max_scale=cfg.max_3dgs_scale) for p in all_posed_3dgs_raw
+        ]
+    has_3dgs = len(all_posed_3dgs) > 0
+
     camera_ids = _collect_camera_ids(camera_dir)
     camera_image_hw = {
         cam_id: _find_image_hw(images_dir, cam_id, frames) for cam_id in camera_ids
@@ -405,12 +445,23 @@ def main() -> None:
         if camera_ids
         else None
     )
+    gs_root = (
+        server.scene.add_frame(
+            "/scene/3dgs",
+            show_axes=False,
+            wxyz=tuple(R_fix.wxyz),
+            position=tuple((-R_fix.apply(center_offset)).tolist()),
+        )
+        if has_3dgs
+        else None
+    )
 
     # GUI controls.
     show_smpl = None
     show_smplx = None
     show_mesh = None
     show_cameras = None
+    show_3dgs = None
 
     with server.gui.add_folder("Visibility"):
         if smpl_root is not None:
@@ -421,6 +472,8 @@ def main() -> None:
             show_mesh = server.gui.add_checkbox("Show Mesh", True)
         if camera_root is not None:
             show_cameras = server.gui.add_checkbox("Show Cameras", True)
+        if gs_root is not None:
+            show_3dgs = server.gui.add_checkbox("Show 3DGS", True)
 
     with server.gui.add_folder("Frames"):
         frame_slider = server.gui.add_slider(
@@ -442,6 +495,7 @@ def main() -> None:
     smplx_nodes: List[viser.FrameHandle] = []
     mesh_nodes: List[viser.FrameHandle] = []
     camera_nodes: List[viser.FrameHandle] = []
+    gs_nodes: List[viser.FrameHandle] = []
 
     if smpl_root is not None:
         for frame_id in tqdm(frames, desc="Loading SMPL"):
@@ -527,6 +581,21 @@ def main() -> None:
                     position=tuple(c2w[:3, 3].tolist()),
                 )
             node.visible = False
+    if gs_root is not None:
+        for frame_idx, frame_id in enumerate(tqdm(frames, desc="Loading 3DGS")):
+            node = server.scene.add_frame(f"/scene/3dgs/f_{frame_id}", show_axes=False)
+            gs_nodes.append(node)
+            splat = all_posed_3dgs[frame_idx]
+            centers = splat["centers"]
+            if centers.size:
+                server.scene.add_gaussian_splats(
+                    f"/scene/3dgs/f_{frame_id}/splats",
+                    centers=centers,
+                    rgbs=splat["rgbs"],
+                    opacities=splat["opacities"],
+                    covariances=splat["covariances"],
+                )
+            node.visible = False
 
     current_idx = 0
 
@@ -543,6 +612,8 @@ def main() -> None:
             mesh_nodes[current_idx].visible = False
         if camera_nodes:
             camera_nodes[current_idx].visible = False
+        if gs_nodes:
+            gs_nodes[current_idx].visible = False
 
         current_idx = frame_idx
         frame_label.value = frames[frame_idx]
@@ -555,6 +626,8 @@ def main() -> None:
             mesh_nodes[frame_idx].visible = show_mesh.value
         if camera_nodes and show_cameras is not None:
             camera_nodes[frame_idx].visible = show_cameras.value
+        if gs_nodes and show_3dgs is not None:
+            gs_nodes[frame_idx].visible = show_3dgs.value
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:
@@ -566,6 +639,8 @@ def main() -> None:
             mesh_nodes[current_idx].visible = show_mesh.value
         if camera_nodes and show_cameras is not None:
             camera_nodes[current_idx].visible = show_cameras.value
+        if gs_nodes and show_3dgs is not None:
+            gs_nodes[current_idx].visible = show_3dgs.value
 
     if smpl_nodes:
         smpl_nodes[0].visible = True if show_smpl is None else show_smpl.value
@@ -575,6 +650,8 @@ def main() -> None:
         mesh_nodes[0].visible = True if show_mesh is None else show_mesh.value
     if camera_nodes:
         camera_nodes[0].visible = True if show_cameras is None else show_cameras.value
+    if gs_nodes:
+        gs_nodes[0].visible = True if show_3dgs is None else show_3dgs.value
 
     @frame_slider.on_update
     def _(_) -> None:
@@ -596,6 +673,10 @@ def main() -> None:
             _refresh_current()
     if show_cameras is not None:
         @show_cameras.on_update
+        def _(_) -> None:
+            _refresh_current()
+    if show_3dgs is not None:
+        @show_3dgs.on_update
         def _(_) -> None:
             _refresh_current()
 
