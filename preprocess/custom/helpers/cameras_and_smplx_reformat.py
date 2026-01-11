@@ -17,6 +17,12 @@ def root_dir_to_src_format_smplx_dir(root_dir: Path) -> Path:
 def root_dir_to_target_format_cameras_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "all_cameras" / f"{cam_id}"
 
+def root_dir_to_source_format_cameras_file(root_dir: Path) -> Path:
+    return root_dir / "motion_human3r" / "cameras.npz"
+
+def root_dir_to_target_format_cameras_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "all_cameras" / f"{cam_id}"
+
 def cam_to_world_translation(transl_cam, R_c2w, t_c2w):
     """
     transl_cam: (N, 3) in camera coords
@@ -68,7 +74,7 @@ def load_skip_frames(scene_dir: Path) -> List[int]:
         skip_frames = [int(idx_str) for idx_str in line.split(",") if idx_str.isdigit()]
     return skip_frames
 
-def load_frame_extrinsics(
+def load_frame_extrinsics_from_new_format(
     scene_root_dir: Path,
     cam_id: int,
     frame_number: int,
@@ -92,6 +98,44 @@ def load_frame_extrinsics(
     t_w2c = extrinsics[:3, 3]
     return R_w2c, t_w2c
 
+
+def reformat_cameras(scene_root_dir: Path, src_cam_id: int, first_frame_number: int, fname_num_digits: int) -> None:
+
+    current_cameras_file = root_dir_to_source_format_cameras_file(scene_root_dir)
+    tgt_cameras_dir = root_dir_to_target_format_cameras_dir(scene_root_dir, src_cam_id)
+    tgt_cameras_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load source cameras data
+    src_cameras_data = np.load(current_cameras_file, allow_pickle=True)
+    n_frames = len(src_cameras_data["frame_idx"])
+
+    # Save the camera data in the target format
+    current_frame_number = first_frame_number
+    for frame_idx in range(n_frames):
+
+        # - intrinsics
+        intrinsics = src_cameras_data["K"][frame_idx][None, ...]  # (1, 3, 3)
+        # - extrinsics
+        R_w2c = src_cameras_data["R_world2cam"][frame_idx] # (3, 3)
+        t_w2c = src_cameras_data["t_world2cam"][frame_idx] # (3,)
+        # R_up = np.diag([1.0, -1.0, -1.0])  # -y up -> +y up, keep right-handed
+        # R_w2c = R_w2c @ R_up.T
+        extrinsics = np.eye(4)
+        extrinsics[:3, :3] = R_w2c
+        extrinsics[:3, 3] = t_w2c
+        extrinsics = extrinsics[None, :3, :]  # (1, 3, 4)
+
+        # Save with the keys expected by the target format
+        dict_to_save = {
+            "intrinsics": intrinsics, 
+            "extrinsics": extrinsics 
+
+        }
+        tgt_cameras_file = tgt_cameras_dir / f"{current_frame_number:0{fname_num_digits}d}.npz"
+        np.savez(tgt_cameras_file, **dict_to_save)
+        current_frame_number += 1
+
+
 @dataclass
 class ReformatConfig:
     scene_root_dir: str = "/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair17_dance"
@@ -101,14 +145,20 @@ class ReformatConfig:
 
 def main() -> None:
     cfg = tyro.cli(ReformatConfig)
-    print(f"Reformatting SMPL-X data in scene root dir: {cfg.scene_root_dir}")
     scene_root_dir = Path(cfg.scene_root_dir)
     motion_dir = root_dir_to_src_format_smplx_dir(scene_root_dir)
     track_ids = sorted([d.name for d in motion_dir.iterdir() if d.is_dir() and d.name.isdigit()])
 
+    # First, reformat cameras and save them to disk with the expected structure]
+    reformat_cameras(
+        scene_root_dir,
+        src_cam_id=cfg.src_cam_id,
+        first_frame_number=cfg.first_frame_number,
+        fname_num_digits=cfg.fname_num_digits,
+    )
+
     # Load which frames to skip across all tracks
     frames_to_skip = load_skip_frames(scene_root_dir)
-    print(f"Frames to skip: {frames_to_skip}")
 
     # Gather SMPL-X pose data from all tracks, organized by filename
     filename_to_poses = defaultdict(list)
@@ -120,6 +170,7 @@ def main() -> None:
             with open(pose_estimate_file, "r") as f:
                 pose_data = json.load(f)
             filename_to_poses[file_name].append(pose_data)
+
 
     # Now, for each frame filename, merge the pose data from all tracks and save to target format 
     current_frame_number = cfg.first_frame_number
@@ -136,7 +187,7 @@ def main() -> None:
         # If not skipping, perform quality checks and add the data to merged_pose_data
         if not skip_this_frame:
             # Load per-frame camera extrinsics (world-to-camera)
-            R_w2c, t_w2c = load_frame_extrinsics(
+            R_w2c, t_w2c = load_frame_extrinsics_from_new_format(
                 scene_root_dir,
                 cam_id=cfg.src_cam_id,
                 frame_number=current_frame_number,

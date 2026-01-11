@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import trimesh
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 def extr_to_w2c_4x4(extr: torch.Tensor, device) -> torch.Tensor:
     w2c = torch.eye(4, device=device, dtype=torch.float32)
@@ -51,6 +52,9 @@ class SceneDataset(Dataset):
     def __init__(self, 
                 scene_root_dir: Path,
                 src_cam_id: int,
+                use_masks: Optional[bool] = True,
+                use_cameras: Optional[bool] = True,
+                use_smplx: Optional[bool] = True,
                 use_depth: Optional[bool] = False,
                 use_smpl: Optional[bool] = False,
                 use_meshes: Optional[bool] = False,
@@ -62,6 +66,9 @@ class SceneDataset(Dataset):
         self.root_dir = scene_root_dir
         self.src_cam_id = src_cam_id
         self.device = device
+        self.use_masks = bool(use_masks)
+        self.use_cameras = bool(use_cameras)
+        self.use_smplx = bool(use_smplx)
 
         # Load frame paths (with optional subsampling)
         # Important: we use frame path names to match masks, SMPLX, depth, etc.
@@ -69,13 +76,14 @@ class SceneDataset(Dataset):
         self.frames_dir = root_dir_to_image_dir(scene_root_dir, src_cam_id)
         self._load_frame_paths(sample_every, skip_frames)
 
-        # Load mask paths
-        self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
-        self._load_mask_paths()
-
         # Determine training resolution from first image
         first_image = self._load_img(self.frame_paths[0])
         self.trn_render_hw = (first_image.shape[0], first_image.shape[1])  # (H, W)
+
+        # Load mask paths
+        if self.use_masks:
+            self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
+            self._load_mask_paths()
 
         # Load depth paths (if provided)
         if use_depth:
@@ -83,12 +91,14 @@ class SceneDataset(Dataset):
             self._load_depth_paths()
 
         # Load camera parameters
-        self.cameras_dir = root_dir_to_all_cameras_dir(scene_root_dir) / f"{src_cam_id}"
-        self._load_camera_paths()
+        if self.use_cameras:
+            self.cameras_dir = root_dir_to_all_cameras_dir(scene_root_dir) / f"{src_cam_id}"
+            self._load_camera_paths()
 
         # Load SMPLX parameters
-        self.smplx_dir: Path = root_dir_to_smplx_dir(scene_root_dir)
-        self._load_smplx_paths()
+        if self.use_smplx:
+            self.smplx_dir: Path = root_dir_to_smplx_dir(scene_root_dir)
+            self._load_smplx_paths()
 
         # (Optional) Load SMPL parameters
         if use_smpl:
@@ -205,7 +215,7 @@ class SceneDataset(Dataset):
         self.mesh_max_verts = 0
         self.mesh_max_faces = 0
         missing = []
-        for p in self.frame_paths:
+        for p in tqdm(self.frame_paths, desc="Loading mesh paths and computing max sizes"):
             mesh_path = self.meshes_dir / f"{p.stem}.obj"
             if not mesh_path.exists():
                 missing.append(p.stem)
@@ -394,14 +404,6 @@ class SceneDataset(Dataset):
     def __getitem__(self, idx: int):
         frame = self._load_img(self.frame_paths[idx])
         frame_name = Path(self.frame_paths[idx]).stem
-        mask = self._load_mask(self.mask_paths[idx])
-        smplx_params = self._load_smplx(self.smplx_paths[idx])
-        intr, extr = self._load_camera_from_frame(self.camera_paths[idx])
-        w2c = extr_to_w2c_4x4(extr, self.device)
-        c2w = torch.inverse(w2c)
-        K = intr_to_4x4(intr, self.device)
-        cam_id = self.src_cam_id
-
         # Prepare return values
         # - Mandatory
         to_return_values = {
@@ -409,12 +411,17 @@ class SceneDataset(Dataset):
             "frame_path": str(self.frame_paths[idx]),
             "frame_name": frame_name,
             "image": frame,
-            "mask": mask,
-            "K": K,
-            "c2w": c2w,
-            "smplx_params": smplx_params,
-            "cam_id": cam_id,
         }
+        if self.use_masks:
+            to_return_values["mask"] = self._load_mask(self.mask_paths[idx])
+        if self.use_cameras:
+            intr, extr = self._load_camera_from_frame(self.camera_paths[idx])
+            w2c = extr_to_w2c_4x4(extr, self.device)
+            to_return_values["c2w"] = torch.inverse(w2c)
+            to_return_values["K"] = intr_to_4x4(intr, self.device)
+            to_return_values["cam_id"] = self.src_cam_id
+        if self.use_smplx:
+            to_return_values["smplx_params"] = self._load_smplx(self.smplx_paths[idx])
 
         # - (Optional) load depth map
         if hasattr(self, "depth_paths"):
@@ -436,6 +443,8 @@ class SceneDataset(Dataset):
 
 
 def fetch_masks_if_exist(masks_scene_dir: Path, tgt_scene_dir: Path, camera_id: int):
+    if masks_scene_dir is None:
+        return False
     src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
     tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
     tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -454,6 +463,8 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
     source directory is None, skip copying that data type. If the source directory does not exist,
     fill it with empty (dummy) data.
     """
+
+    was_it_fetched = dict()
     
     tgt_scene_dir.mkdir(parents=True, exist_ok=True)
 
@@ -472,12 +483,12 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             dummy_frame_path = tgt_frames_dir / f"{frame_name}{frame_ext}"
             dummy_frame_path.parent.mkdir(parents=True, exist_ok=True)
             dummy_frame.save(dummy_frame_path)
+    was_it_fetched["frames"] = True
 
     # Masks
     masks_were_fetched = fetch_masks_if_exist(masks_scene_dir, tgt_scene_dir, camera_id)
-    if not masks_were_fetched:
+    if not masks_were_fetched and frame_paths is not None:
         tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
-        assert frame_paths is not None, "Source masks directory does not exist; frame_paths must be provided to create dummy masks."
         mask_ext = ".png"
         frame_names = [Path(fp).stem for fp in frame_paths]
         for frame_name in frame_names:
@@ -485,6 +496,7 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             dummy_mask_path = tgt_masks_dir / f"{frame_name}{mask_ext}"
             dummy_mask_path.parent.mkdir(parents=True, exist_ok=True)
             dummy_mask.save(dummy_mask_path)
+    was_it_fetched["masks"] = masks_were_fetched
 
     # Camera parameters
     if cam_scene_dir is not None:
@@ -493,6 +505,9 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
         tgt_cameras_dir.parent.mkdir(parents=True, exist_ok=True)
         if src_cameras_dir.exists():
             subprocess.run(["cp", "-r", str(src_cameras_dir), str(tgt_cameras_dir.parent)])
+        was_it_fetched["cameras"] = True
+    else:
+        was_it_fetched["cameras"] = False 
 
     # SMPLX parameters
     if smplx_params_scene_dir is not None:
@@ -503,6 +518,10 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_smplx_dir), str(tgt_smplx_dir.parent)])
         else:
             raise ValueError(f"SMPLX parameters directory not found: {src_smplx_dir}")
+        
+        was_it_fetched["smplx"] = True
+    else:
+        was_it_fetched["smplx"] = False
 
     # Depths
     if depths_scene_dir is not None:
@@ -513,6 +532,9 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_depths_dir), str(tgt_depths_dir)])
         else:
             raise NotImplementedError(f"Depth directory not found: {src_depths_dir}")
+        was_it_fetched["depths"] = True
+    else:
+        was_it_fetched["depths"] = False
 
     # SMPL parameters
     if smpl_params_scene_dir is not None:
@@ -523,6 +545,9 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_smpl_params_dir), str(tgt_smpl_params_dir.parent)])
         else:
             raise ValueError(f"SMPL parameters directory not found: {src_smpl_params_dir}")
+        was_it_fetched["smpl"] = True
+    else:
+        was_it_fetched["smpl"] = False
 
     # Meshes
     if meshes_scene_dir is not None:
@@ -533,9 +558,17 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
             subprocess.run(["cp", "-r", str(src_meshes_dir), str(tgt_meshes_dir.parent)])
         else:
             raise ValueError(f"Meshes directory not found: {src_meshes_dir}")
+        was_it_fetched["meshes"] = True
+    else:
+        was_it_fetched["meshes"] = False
 
     # Skip frames
     src_skip_frames_path = root_dir_to_skip_frames_path(frames_scene_dir)
     tgt_skip_frames_path = root_dir_to_skip_frames_path(tgt_scene_dir)
     if src_skip_frames_path.exists():
         subprocess.run(["cp", str(src_skip_frames_path), str(tgt_skip_frames_path)])
+        was_it_fetched["skip_frames"] = True
+    else:
+        was_it_fetched["skip_frames"] = False
+    
+    return was_it_fetched

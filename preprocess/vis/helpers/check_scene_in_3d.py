@@ -214,23 +214,15 @@ def _smpl_vertices(
     required = {"betas", "global_orient", "body_pose", "transl"}
     if not required.issubset(params.keys()):
         return None
-    betas = torch.tensor(params["betas"], dtype=torch.float32, device=device)
-    global_orient = torch.tensor(params["global_orient"], dtype=torch.float32, device=device)
-    body_pose = torch.tensor(params["body_pose"], dtype=torch.float32, device=device)
-    transl = torch.tensor(params["transl"], dtype=torch.float32, device=device)
+    betas = torch.tensor(params["betas"], dtype=torch.float32, device=device) # [P, 10]
+    global_orient = torch.tensor(params["global_orient"], dtype=torch.float32, device=device) # [P, 3]
+    body_pose = torch.tensor(params["body_pose"], dtype=torch.float32, device=device) # [P, 69]
+    transl = torch.tensor(params["transl"], dtype=torch.float32, device=device) # [P, 3]
 
-    if betas.ndim == 1:
-        betas = betas[None, :]
-    if global_orient.ndim == 1:
-        global_orient = global_orient[None, :]
-    if body_pose.ndim == 2:
-        body_pose = body_pose[None, :, :]
-    if transl.ndim == 1:
-        transl = transl[None, :]
-    if global_orient.ndim == 2 and body_pose.ndim == 3:
-        global_orient = global_orient[:, None, :]
-    if body_pose.ndim == 2 and global_orient.ndim == 3:
-        body_pose = body_pose[:, None, :]
+    betas = betas.reshape(-1, betas.shape[-1])
+    global_orient = global_orient.reshape(-1, 3)
+    body_pose = body_pose.reshape(-1, 69)
+    transl = transl.reshape(-1, 3)
 
     expected_betas = int(getattr(layer, "num_betas", betas.shape[-1]))
     betas = _pad_or_truncate(betas, expected_betas)
@@ -399,15 +391,15 @@ def main() -> None:
     )
 
     # Compute a fixed rotation to align the scene upright.
-    is_y_up = 1 if "hi4d" in seq_name.lower() else -1
-    R_fix = tf.SO3.from_x_radians(is_y_up*np.pi / 2)
+    # +y is up to +z is up (viser's default).
+    R_fix = tf.SO3.from_x_radians(-np.pi / 2)
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
 
     server.scene.add_frame(
         "/scene",
-        show_axes=True,
+        show_axes=False,
     )
     smpl_root = (
         server.scene.add_frame(
@@ -421,7 +413,7 @@ def main() -> None:
     smplx_root = (
         server.scene.add_frame(
             "/scene/smplx", 
-            show_axes=False, 
+            show_axes=True, 
             wxyz=tuple(R_fix.wxyz),
             position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) if smplx_layer is not None else None
@@ -531,6 +523,8 @@ def main() -> None:
                             faces=smplx_faces,
                             color=color,
                         )
+                        # debug - compute min of y axis for given person
+                        print(f"SMPL-X Frame {frame_id} Person {pid} min y: {verts[pid][:,1].min()}, max y: {verts[pid][:,1].max()}, delta y: {verts[pid][:,1].max() - verts[pid][:,1].min()}")
             node.visible = False
 
     if mesh_root is not None:

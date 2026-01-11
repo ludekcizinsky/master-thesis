@@ -176,7 +176,7 @@ def _metric_units_scale(units: str) -> float:
 
 def _format_mesh_frame_name(frame_name: str) -> str:
     if frame_name.isdigit():
-        return f"{int(frame_name):05d}"
+        return f"{int(frame_name):06d}"
     return frame_name
 
 

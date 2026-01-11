@@ -287,7 +287,7 @@ class MultiHumanTrainer:
             Path(self.cfg.cameras_scene_dir),
             Path(self.cfg.smplx_params_scene_dir),
             Path(self.cfg.depths_scene_dir) if self.cfg.use_depth else None,
-            Path(self.cfg.smpl_params_scene_dir),
+            Path(self.cfg.smpl_params_scene_dir) if self.cfg.smpl_params_scene_dir is not None else None,
         )
 
         # Load skip frames if needed
@@ -316,9 +316,9 @@ class MultiHumanTrainer:
         tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
         all_cam_ids = [src_cam_id] + tgt_cam_ids
         frames_dir = Path(self.cfg.test_frames_scene_dir)
-        masks_dir = Path(self.cfg.test_masks_scene_dir)
-        cameras_dir = Path(self.cfg.test_cameras_scene_dir)
-        smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir)
+        masks_dir = Path(self.cfg.test_masks_scene_dir) if self.cfg.test_masks_scene_dir is not None else None
+        cameras_dir = Path(self.cfg.test_cameras_scene_dir) if self.cfg.test_cameras_scene_dir is not None else None
+        smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir) if self.cfg.test_smplx_params_scene_dir is not None else None
         depths_dir = Path(self.cfg.test_depths_scene_dir) if self.cfg.test_depths_scene_dir is not None else None
         smpl_params_dir = Path(self.cfg.test_smpl_params_scene_dir) if self.cfg.test_smpl_params_scene_dir is not None else None
         meshes_dir = Path(self.cfg.test_meshes_scene_dir) if self.cfg.test_meshes_scene_dir is not None else None
@@ -1584,6 +1584,9 @@ class MultiHumanTrainer:
             device=self.tuner_device,
             skip_frames=skip_frames,
             use_meshes=True,
+            use_masks=False,
+            use_cameras=False,
+            use_smplx=False,
         )
 
         # - Prediction dataset 
@@ -1751,10 +1754,22 @@ class MultiHumanTrainer:
 
     @torch.no_grad()
     def eval_loop(self, epoch):
-        self.eval_loop_nvs(epoch)
-        self.eval_loop_segmentation(epoch)
-        self.eval_loop_pose_estimation(epoch)
-        self.eval_loop_reconstruction(epoch)
+        if len(self.cfg.nvs_eval.target_camera_ids) == 0:
+            print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
+        else:
+            self.eval_loop_nvs(epoch)
+        if self.cfg.test_masks_scene_dir is None:
+            print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
+        else:
+            self.eval_loop_segmentation(epoch)
+        if self.cfg.test_smpl_params_scene_dir is None:
+            print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
+        else:
+            self.eval_loop_pose_estimation(epoch)
+        if self.cfg.test_meshes_scene_dir is None:
+            print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
+        else:
+            self.eval_loop_reconstruction(epoch)
         quit()
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
