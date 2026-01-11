@@ -24,7 +24,7 @@ cd /home/cizinsky/master-thesis
 # source_cam_id=4
 # target_cam_ids="[76,4,28]"
 # root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=false
+# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false
 
 #seq_name="hi4d_pair17_dance"
 #num_persons=2
@@ -38,18 +38,28 @@ cd /home/cizinsky/master-thesis
 # ------- MMM
 # seq_name="mmm_dance"
 # num_persons=4
-# exp_name="v2_large_refactor_check"
+# exp_name="v3_large_refactor_check"
 # source_cam_id=0
 # target_cam_ids="[]"
 # root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
-# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null
+# preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_dance
+# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir
 
 
-seq_name="mmm_lift"
+# seq_name="mmm_lift"
+# num_persons=3
+# exp_name="v3_large_refactor_check"
+# source_cam_id=0
+# target_cam_ids="[]"
+# root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift
+# preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_lift
+# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir
+
+seq_name="mmm_walkdance"
 num_persons=3
 exp_name="v3_large_refactor_check"
 source_cam_id=0
 target_cam_ids="[]"
-root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift
-preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_lift
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir
+root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance
+preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_walkdance
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir

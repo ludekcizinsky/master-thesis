@@ -18,6 +18,67 @@ import pyiqa
 # ---------------------------------------------------------------------------
 # Reconstruction evaluation metrics
 # ---------------------------------------------------------------------------
+def invert_se3(T: np.ndarray) -> np.ndarray:
+    """
+    Invert an SE(3) transform (4x4) assuming last row is [0,0,0,1].
+    """
+    assert T.shape == (4, 4)
+    R = T[:3, :3]
+    t = T[:3, 3]
+    T_inv = np.eye(4, dtype=T.dtype)
+    T_inv[:3, :3] = R.T
+    T_inv[:3, 3] = -R.T @ t
+    return T_inv
+
+def compose(T_a: np.ndarray, T_b: np.ndarray) -> np.ndarray:
+    """
+    Compose two SE(3) transforms: T_ab = T_a @ T_b
+    """
+    assert T_a.shape == (4, 4) and T_b.shape == (4, 4)
+    return T_a @ T_b
+
+def apply_se3_to_points(T: np.ndarray, P: np.ndarray) -> np.ndarray:
+    """
+    Apply SE(3) transform T to 3D points P.
+
+    P: (N, 3) row-vector points.
+    Returns: (N, 3)
+    """
+    assert T.shape == (4, 4)
+    assert P.ndim == 2 and P.shape[1] == 3
+    R = T[:3, :3]
+    t = T[:3, 3]
+    return (P @ R.T) + t  # row vectors
+
+def compute_world_align_from_gt_c2w_and_pred_c2w(
+    T_gt_c2w: np.ndarray,
+    T_pred_c2w: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Given:
+      - GT camera-to-world (c2w):  T_gt_c2w  = T_{gt_world <- cam}
+      - Pred camera-to-world (c2w): T_pred_c2w = T_{pred_world <- cam}
+
+    Compute:
+      - T_align = T_{gt_world <- pred_world}
+      - R_align (3x3), t_align (3,)
+    such that: X_gt_world = R_align * X_pred_world + t_align
+    """
+    assert T_gt_c2w.shape == (4, 4)
+    assert T_pred_c2w.shape == (4, 4)
+
+    # We want T_{gt_world <- pred_world}.
+    # Using c2w poses:
+    #   X_gt_world = T_gt_c2w * X_cam
+    #   X_pred_world = T_pred_c2w * X_cam
+    # So:
+    #   X_gt_world = T_gt_c2w * (T_pred_c2w)^{-1} * X_pred_world
+    T_align = compose(T_gt_c2w, invert_se3(T_pred_c2w))
+
+    R_align = T_align[:3, :3]
+    t_align = T_align[:3, 3]
+    return T_align, R_align, t_align
+
 def posed_gs_list_to_serializable_dict(posed_gs_list) -> Dict[str, torch.Tensor]:
     if len(posed_gs_list) == 0:
         raise ValueError("posed_gs_list is empty; expected at least one person.")
@@ -85,7 +146,7 @@ def icp_align_mesh_similarity(
     threshold: float = 1e-5,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     """
-    Align pred mesh to GT mesh with similarity ICP (scale + rigid).
+    Align pred mesh to GT mesh with rigid ICP (no scale).
     Returns transformed vertices, faces, transform matrix, and final cost.
     """
 
@@ -108,7 +169,7 @@ def icp_align_mesh_similarity(
         initial=init,
         threshold=threshold,
         max_iterations=max_iterations,
-        scale=True,
+        scale=False,
         reflection=False,
     )
     aligned_vertices = trimesh.transformations.transform_points(pred_v, matrix)
@@ -118,79 +179,47 @@ def icp_align_mesh_similarity(
 def align_pred_meshes_icp(
     pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
     gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
-    *,
-    cameras: Optional[Tuple[torch.Tensor, List[torch.Tensor]]] = None,
-    cameras_cv_to_gl: bool = False,
+    cameras: Optional[Tuple[List[np.ndarray], List[np.ndarray]]] = None,
     n_samples: int = 50000,
     max_iterations: int = 20,
     threshold: float = 1e-5,
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Align each predicted mesh to GT mesh using similarity ICP.
+    Align each predicted mesh to GT mesh using rigid ICP.
     Returns the same list structure as pred_meshes (per-frame meshes).
-    If cameras are provided, rotate pred meshes into GT world using c2w rotations.
-    Optionally apply a CV<->GL flip (Y/Z) to pred camera rotations before computing the relative rotation.
     """
     aligned = []
 
-    def _orthonormalize_rotation(rot: np.ndarray) -> np.ndarray:
-        u, _, vt = np.linalg.svd(rot)
-        ortho = u @ vt
-        if np.linalg.det(ortho) < 0:
-            u[:, -1] *= -1
-            ortho = u @ vt
-        return ortho
-
-    pred_c2ws = None
-    gt_c2ws = None
     if cameras is not None:
         pred_c2ws, gt_c2ws = cameras
-        if len(pred_c2ws) != len(pred_meshes) or len(gt_c2ws) != len(gt_meshes):
-            raise ValueError("Camera list length does not match mesh list length.")
-    cv_to_gl = np.array(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, -1.0],
-        ],
-        dtype=np.float32,
-    )
 
-    for frame_idx, (pred_frame, gt_frame) in enumerate(
-        tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False)
-    ):
+    i = 0
+    for (pred_frame, gt_frame) in tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False):
         pred_v, pred_f = pred_frame
         gt_v, gt_f = gt_frame
         if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
             aligned.append(pred_frame)
             continue
-        if pred_c2ws is not None and gt_c2ws is not None:
-            print("-- Adjusting pred mesh orientation using cameras for frame", frame_idx)
-            pred_c2w = pred_c2ws[frame_idx]
-            gt_c2w = gt_c2ws[frame_idx]
-            if torch.is_tensor(pred_c2w):
-                pred_c2w = pred_c2w.detach().cpu().numpy()
-            else:
-                pred_c2w = np.asarray(pred_c2w)
-            if torch.is_tensor(gt_c2w):
-                gt_c2w = gt_c2w.detach().cpu().numpy()
-            else:
-                gt_c2w = np.asarray(gt_c2w)
-            pred_rot = _orthonormalize_rotation(pred_c2w[:3, :3])
-            gt_rot = _orthonormalize_rotation(gt_c2w[:3, :3])
-            if cameras_cv_to_gl:
-                pred_rot = pred_rot @ cv_to_gl
-            rel_rot = gt_rot @ pred_rot.T
-            print("-- Relative rotation matrix:\n", rel_rot)
-            pred_v = pred_v @ rel_rot.T
+
+
+        pred_v_init = pred_v.astype(np.float64)
+        if cameras is not None:
+            print(f"Aligning frame {i} with camera-based initialization.")
+            T_align, R_align, t_align = compute_world_align_from_gt_c2w_and_pred_c2w(
+                T_gt_c2w=gt_c2ws[i],
+                T_pred_c2w=pred_c2ws[i],
+            )
+            pred_v_init = (pred_v_init @ R_align.T) + t_align
+
         aligned_v, aligned_f, _matrix, _cost = icp_align_mesh_similarity(
-            (pred_v, pred_f),
+            (pred_v_init, pred_f),
             gt_frame,
             n_samples=n_samples,
             max_iterations=max_iterations,
             threshold=threshold,
         )
         aligned.append((aligned_v, aligned_f))
+        i += 1
     return aligned
 
 
