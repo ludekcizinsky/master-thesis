@@ -51,6 +51,7 @@ class ScheduleConfig:
     exp_name: str = "difix_v8_baseline"
     time: str = "05:00:00"
     slurm_script: str = "train.slurm"
+    scene_name_includes: str | None = None
     dry_run: bool = False
     scenes: List[Scene] = field(
         default_factory=lambda: [
@@ -163,6 +164,14 @@ def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
 
 def main() -> None:
     cfg = tyro.cli(ScheduleConfig)
+    scenes = cfg.scenes
+    if cfg.scene_name_includes:
+        scenes = [
+            scene
+            for scene in scenes
+            if cfg.scene_name_includes in scene.seq_name
+        ]
+
     # print the config for verification
     print("Scheduling with the following configuration:")
     for field_name, value in vars(cfg).items():
@@ -170,15 +179,15 @@ def main() -> None:
             print(f"  {field_name}: {value}")
         else:
             print(f"  {field_name}:")
-            for scene in value:
+            for scene in scenes:
                 for scene_field, scene_value in vars(scene).items():
                     print(f"    {scene_field}: {scene_value}")
                 print("\n---\n")
 
-    if not cfg.scenes:
+    if not scenes:
         print("No scenes provided.")
         sys.exit(1)
-    for scene in cfg.scenes:
+    for scene in scenes:
         submit_scene(cfg, scene)
 
 
