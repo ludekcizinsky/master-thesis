@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List
+import os
 import subprocess
 import sys
 
 import tyro
+
+
+HI4D_TARGET_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
+PREPROCESSING_DIR = "/scratch/izar/cizinsky/thesis/preprocessing"
 
 
 
@@ -16,13 +21,34 @@ class Scene:
     seq_name: str
     source_cam_id: int
     root_gt_dir_path: str
+    num_persons: int
+    target_camera_ids: List[int]
+    preprocessing_dir_path: str | None = None
+    test_masks_scene_dir: str | None = None
+    test_smpl_params_scene_dir: str | None = None
+    smpl_params_scene_dir: str | None = None
+    test_smplx_params_scene_dir: str | None = None
+    cameras_scene_dir: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.preprocessing_dir_path is None:
+            self.preprocessing_dir_path = os.path.join(PREPROCESSING_DIR, self.seq_name)
+        if self.test_masks_scene_dir is None:
+            self.test_masks_scene_dir = self.root_gt_dir_path
+        if self.test_smpl_params_scene_dir is None:
+            self.test_smpl_params_scene_dir = self.root_gt_dir_path
+        if self.smpl_params_scene_dir is None:
+            self.smpl_params_scene_dir = self.preprocessing_dir_path
+        if self.test_smplx_params_scene_dir is None:
+            self.test_smplx_params_scene_dir = self.root_gt_dir_path
+        if self.cameras_scene_dir is None:
+            self.cameras_scene_dir = self.root_gt_dir_path
 
 
 @dataclass
 class ScheduleConfig:
     job_name_prefix: str = "difix_v9_baseline"
     exp_name: str = "difix_v8_baseline"
-    num_persons: int = 2
     time: str = "05:00:00"
     slurm_script: str = "train.slurm"
     dry_run: bool = False
@@ -32,21 +58,65 @@ class ScheduleConfig:
                 "hi4d_pair15_fight",
                 4,
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15",
+                2,
+                list(HI4D_TARGET_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair16_jump",
                 4,
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16",
+                2,
+                list(HI4D_TARGET_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair17_dance",
                 28,
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17",
+                2,
+                list(HI4D_TARGET_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair19_piggyback",
                 4,
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19",
+                2,
+                list(HI4D_TARGET_CAM_IDS),
+            ),
+            Scene(
+                "mmm_dance",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/dance",
+                4,
+                [],
+                test_masks_scene_dir="null",
+                test_smpl_params_scene_dir="null",
+                smpl_params_scene_dir="null",
+                test_smplx_params_scene_dir="null",
+                cameras_scene_dir=os.path.join(PREPROCESSING_DIR, "mmm_dance"),
+            ),
+            Scene(
+                "mmm_lift",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/lift",
+                3,
+                [],
+                test_masks_scene_dir="null",
+                test_smpl_params_scene_dir="null",
+                smpl_params_scene_dir="null",
+                test_smplx_params_scene_dir="null",
+                cameras_scene_dir=os.path.join(PREPROCESSING_DIR, "mmm_lift"),
+            ),
+            Scene(
+                "mmm_walkdance",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance",
+                3,
+                [],
+                test_masks_scene_dir="null",
+                test_smpl_params_scene_dir="null",
+                smpl_params_scene_dir="null",
+                test_smplx_params_scene_dir="null",
+                cameras_scene_dir=os.path.join(PREPROCESSING_DIR, "mmm_walkdance"),
             ),
         ]
     )
@@ -54,13 +124,24 @@ class ScheduleConfig:
 
 def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
     job_name = f"{cfg.job_name_prefix}_{scene.seq_name}"
+    if scene.target_camera_ids:
+        target_camera_ids = ":".join(str(cam_id) for cam_id in scene.target_camera_ids)
+    else:
+        target_camera_ids = "[]"
     export_env = (
         "ALL,"
         f"EXP_NAME={cfg.exp_name},"
-        f"NUM_PERSONS={cfg.num_persons},"
+        f"NUM_PERSONS={scene.num_persons},"
         f"SEQ_NAME={scene.seq_name},"
         f"SOURCE_CAM_ID={scene.source_cam_id},"
-        f"ROOT_GT_DIR_PATH={scene.root_gt_dir_path}"
+        f"ROOT_GT_DIR_PATH={scene.root_gt_dir_path},"
+        f"TARGET_CAMERA_IDS={target_camera_ids},"
+        f"PREPROCESSING_DIR_PATH={scene.preprocessing_dir_path},"
+        f"TEST_MASKS_SCENE_DIR={scene.test_masks_scene_dir},"
+        f"TEST_SMPL_PARAMS_SCENE_DIR={scene.test_smpl_params_scene_dir},"
+        f"SMPL_PARAMS_SCENE_DIR={scene.smpl_params_scene_dir},"
+        f"TEST_SMPLX_PARAMS_SCENE_DIR={scene.test_smplx_params_scene_dir},"
+        f"CAMERAS_SCENE_DIR={scene.cameras_scene_dir}"
     )
     cmd = [
         "sbatch",
@@ -82,6 +163,18 @@ def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
 
 def main() -> None:
     cfg = tyro.cli(ScheduleConfig)
+    # print the config for verification
+    print("Scheduling with the following configuration:")
+    for field_name, value in vars(cfg).items():
+        if field_name != "scenes":
+            print(f"  {field_name}: {value}")
+        else:
+            print(f"  {field_name}:")
+            for scene in value:
+                for scene_field, scene_value in vars(scene).items():
+                    print(f"    {scene_field}: {scene_value}")
+                print("\n---\n")
+
     if not cfg.scenes:
         print("No scenes provided.")
         sys.exit(1)
