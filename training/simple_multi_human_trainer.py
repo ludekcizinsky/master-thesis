@@ -1585,7 +1585,7 @@ class MultiHumanTrainer:
             skip_frames=skip_frames,
             use_meshes=True,
             use_masks=False,
-            use_cameras=False,
+            use_cameras=True,
             use_smplx=False,
         )
 
@@ -1605,13 +1605,16 @@ class MultiHumanTrainer:
             batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
             pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
             smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+            batch_pred_c2w = pred_batch["c2w"]  # [B, 4, 4]
 
             # - Fetch GT meshes directly from the GT dataset for matching frame indices.
             frame_indices = pred_batch["frame_idx"]
             gt_meshes = []
+            gt_c2ws = []
             for i in range(frame_indices.shape[0]):
                 sample_dict = gt_dataset[frame_indices[i].item()]
                 gt_meshes.append(gt_mesh_from_sample(sample_dict["meshes"]))
+                gt_c2ws.append(sample_dict["c2w"])
 
             # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
             pred_meshes = []
@@ -1659,6 +1662,8 @@ class MultiHumanTrainer:
             pred_meshes_aligned = align_pred_meshes_icp(
                 pred_meshes,
                 gt_meshes,
+                cameras=(batch_pred_c2w, gt_c2ws) if "mmm" in self.cfg.scene_name.lower() else None,
+                cameras_cv_to_gl=icp_cfg.get("cameras_cv_to_gl", True),
                 n_samples=icp_cfg.get("n_samples", 50000),
                 max_iterations=icp_cfg.get("max_iterations", 20),
                 threshold=icp_cfg.get("threshold", 1e-5),

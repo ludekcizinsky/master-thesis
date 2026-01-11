@@ -119,6 +119,8 @@ def align_pred_meshes_icp(
     pred_meshes: List[Tuple[np.ndarray, np.ndarray]],
     gt_meshes: List[Tuple[np.ndarray, np.ndarray]],
     *,
+    cameras: Optional[Tuple[torch.Tensor, List[torch.Tensor]]] = None,
+    cameras_cv_to_gl: bool = False,
     n_samples: int = 50000,
     max_iterations: int = 20,
     threshold: float = 1e-5,
@@ -126,16 +128,63 @@ def align_pred_meshes_icp(
     """
     Align each predicted mesh to GT mesh using similarity ICP.
     Returns the same list structure as pred_meshes (per-frame meshes).
+    If cameras are provided, rotate pred meshes into GT world using c2w rotations.
+    Optionally apply a CV<->GL flip (Y/Z) to pred camera rotations before computing the relative rotation.
     """
     aligned = []
-    for pred_frame, gt_frame in tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False):
+
+    def _orthonormalize_rotation(rot: np.ndarray) -> np.ndarray:
+        u, _, vt = np.linalg.svd(rot)
+        ortho = u @ vt
+        if np.linalg.det(ortho) < 0:
+            u[:, -1] *= -1
+            ortho = u @ vt
+        return ortho
+
+    pred_c2ws = None
+    gt_c2ws = None
+    if cameras is not None:
+        pred_c2ws, gt_c2ws = cameras
+        if len(pred_c2ws) != len(pred_meshes) or len(gt_c2ws) != len(gt_meshes):
+            raise ValueError("Camera list length does not match mesh list length.")
+    cv_to_gl = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    for frame_idx, (pred_frame, gt_frame) in enumerate(
+        tqdm(zip(pred_meshes, gt_meshes), desc="Aligning Pred Meshes ICP", total=len(pred_meshes), leave=False)
+    ):
         pred_v, pred_f = pred_frame
         gt_v, gt_f = gt_frame
         if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
             aligned.append(pred_frame)
             continue
+        if pred_c2ws is not None and gt_c2ws is not None:
+            print("-- Adjusting pred mesh orientation using cameras for frame", frame_idx)
+            pred_c2w = pred_c2ws[frame_idx]
+            gt_c2w = gt_c2ws[frame_idx]
+            if torch.is_tensor(pred_c2w):
+                pred_c2w = pred_c2w.detach().cpu().numpy()
+            else:
+                pred_c2w = np.asarray(pred_c2w)
+            if torch.is_tensor(gt_c2w):
+                gt_c2w = gt_c2w.detach().cpu().numpy()
+            else:
+                gt_c2w = np.asarray(gt_c2w)
+            pred_rot = _orthonormalize_rotation(pred_c2w[:3, :3])
+            gt_rot = _orthonormalize_rotation(gt_c2w[:3, :3])
+            if cameras_cv_to_gl:
+                pred_rot = pred_rot @ cv_to_gl
+            rel_rot = gt_rot @ pred_rot.T
+            print("-- Relative rotation matrix:\n", rel_rot)
+            pred_v = pred_v @ rel_rot.T
         aligned_v, aligned_f, _matrix, _cost = icp_align_mesh_similarity(
-            pred_frame,
+            (pred_v, pred_f),
             gt_frame,
             n_samples=n_samples,
             max_iterations=max_iterations,

@@ -212,29 +212,31 @@ class SceneDataset(Dataset):
           so padding is consistent for stacking and DataLoader collation.
         """
         self.mesh_paths = []
-        self.mesh_max_verts = 0
-        self.mesh_max_faces = 0
+        self.mesh_max_verts = 100000
+        self.mesh_max_faces = 200000
         missing = []
         for p in tqdm(self.frame_paths, desc="Loading mesh paths and computing max sizes"):
             mesh_path = self.meshes_dir / f"{p.stem}.obj"
             if not mesh_path.exists():
                 missing.append(p.stem)
                 continue
-            mesh = trimesh.load_mesh(mesh_path, process=False)
-            if isinstance(mesh, trimesh.Scene):
-                mesh = trimesh.util.concatenate(tuple(mesh.dump()))
-            if not isinstance(mesh, trimesh.Trimesh):
-                missing.append(p.stem)
-                continue
-            verts = np.asarray(mesh.vertices)
-            faces = np.asarray(mesh.faces)
-            self.mesh_max_verts = max(self.mesh_max_verts, verts.shape[0])
-            self.mesh_max_faces = max(self.mesh_max_faces, faces.shape[0])
+#            mesh = trimesh.load_mesh(mesh_path, process=False)
+            #if isinstance(mesh, trimesh.Scene):
+                #mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+            #if not isinstance(mesh, trimesh.Trimesh):
+                #missing.append(p.stem)
+                #continue
+            #verts = np.asarray(mesh.vertices)
+            #faces = np.asarray(mesh.faces)
+            #self.mesh_max_verts = max(self.mesh_max_verts, verts.shape[0])
+            #self.mesh_max_faces = max(self.mesh_max_faces, faces.shape[0])
             self.mesh_paths.append(mesh_path)
         if missing:
             raise RuntimeError(f"Missing mesh files for frames (by stem): {missing[:5]}")
         if self.mesh_max_verts == 0 or self.mesh_max_faces == 0:
             raise RuntimeError("Failed to determine mesh padding sizes; mesh files may be empty.")
+        
+        print(f"-- Max mesh vertices: {self.mesh_max_verts}, faces: {self.mesh_max_faces}")
 
 
     # -------- Data loaders for camera parameters and SMPLX

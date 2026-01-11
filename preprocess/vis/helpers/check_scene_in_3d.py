@@ -392,7 +392,7 @@ def main() -> None:
 
     # Compute a fixed rotation to align the scene upright.
     # +y is up to +z is up (viser's default).
-    R_fix = tf.SO3.from_x_radians(-np.pi / 2)
+    R_fix = tf.SO3.from_x_radians(np.pi / 2)
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
