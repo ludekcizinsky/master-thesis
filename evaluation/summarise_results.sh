@@ -7,19 +7,22 @@ conda activate thesis
 
 cd /home/cizinsky/master-thesis
 
-exp_name="v3_est_masks_est_smplx_test_recon_eval"
-epoch_str="0015"
+exp_name="v1_pretrain_all_scenes_eval"
+epoch_str="0000"
 
 scene_names=(
   "hi4d_pair15_fight"
   "hi4d_pair16_jump"
   "hi4d_pair17_dance"
   "hi4d_pair19_piggyback"
+  "mmm_dance"
+  "mmm_lift"
+  "mmm_walkdance"
 )
 
-src_cam_ids=(4 4 28 4)
+src_cam_ids=(4 4 28 4 0 0 0)
 
-python scripts/summarise_benchmark_results.py \
+python evaluation/helpers/summarise_benchmark_results.py \
   --exp-name "$exp_name" \
   --epoch-str "$epoch_str" \
   --scene-names "${scene_names[@]}" \

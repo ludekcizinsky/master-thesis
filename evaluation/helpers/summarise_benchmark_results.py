@@ -67,32 +67,36 @@ def _to_markdown_table(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def _collect_task_results(args: Args, task: TaskSpec) -> pd.DataFrame:
-    if task.kind == "csv_camera":
-        if not args.src_cam_ids:
-            raise ValueError(
-                f"Task '{task.name}' requires --src-cam-ids (one per scene)."
-            )
-        if len(args.src_cam_ids) != len(args.scene_names):
-            raise ValueError(
-                f"--src-cam-ids must have the same length as --scene-names "
-                f"({len(args.src_cam_ids)} vs {len(args.scene_names)})."
-            )
+def _results_path(args: Args, scene: str, task: TaskSpec) -> Path:
+    return (
+        args.results_root
+        / scene
+        / "evaluation"
+        / args.exp_name
+        / f"epoch_{args.epoch_str}"
+        / task.filename
+    )
+
+
+def _collect_task_results(
+    args: Args,
+    task: TaskSpec,
+    scene_names: Sequence[str],
+    src_cam_ids: Sequence[int],
+) -> pd.DataFrame:
+    if task.kind == "csv_camera" and len(src_cam_ids) != len(scene_names):
+        raise ValueError(
+            f"--src-cam-ids must have the same length as --scene-names "
+            f"({len(src_cam_ids)} vs {len(scene_names)})."
+        )
 
     rows = []
-    for idx, scene in enumerate(args.scene_names):
-        results_path = (
-            args.results_root
-            / scene
-            / "evaluation"
-            / args.exp_name
-            / f"epoch_{args.epoch_str}"
-            / task.filename
-        )
+    for idx, scene in enumerate(scene_names):
+        results_path = _results_path(args, scene, task)
         if task.kind == "kv":
             metrics = _parse_metrics(results_path)
         else:
-            src_cam_id = int(args.src_cam_ids[idx])
+            src_cam_id = int(src_cam_ids[idx])
             df = pd.read_csv(results_path)
             if "camera_id" not in df.columns:
                 raise ValueError(
@@ -114,6 +118,10 @@ def _collect_task_results(args: Args, task: TaskSpec) -> pd.DataFrame:
     df = pd.DataFrame(rows).set_index("scene")[column_names]
     df.loc["avg"] = df.mean(numeric_only=True)
     return _format_table(df, avg_formats=task.avg_formats)
+
+
+def _scene_dataset(scene: str) -> str:
+    return scene.split("_", 1)[0]
 
 
 def main(args: Args) -> None:
@@ -174,18 +182,54 @@ def main(args: Args) -> None:
             )
         )
 
+    if any(task.kind == "csv_camera" for task in tasks):
+        if not args.src_cam_ids:
+            raise ValueError(
+                "CSV camera tasks require --src-cam-ids (one per scene)."
+            )
+        if len(args.src_cam_ids) != len(args.scene_names):
+            raise ValueError(
+                f"--src-cam-ids must have the same length as --scene-names "
+                f"({len(args.src_cam_ids)} vs {len(args.scene_names)})."
+            )
+
+    scene_indices_by_ds: Dict[str, List[int]] = {}
+    for idx, scene in enumerate(args.scene_names):
+        ds_name = _scene_dataset(scene)
+        scene_indices_by_ds.setdefault(ds_name, []).append(idx)
+
     out_dir = args.output_dir / args.exp_name
     out_dir.mkdir(parents=True, exist_ok=True)
     combined_sections = []
     for task in tasks:
-        formatted_df = _collect_task_results(args, task)
-        csv_path = out_dir / f"{task.name}.csv"
-        formatted_df.to_csv(csv_path)
-        md_path = out_dir / f"{task.name}.md"
-        md_path.write_text(_to_markdown_table(formatted_df), encoding="utf-8")
-        combined_sections.append(f"### {task.title}\n{_to_markdown_table(formatted_df)}")
-        print(f"Wrote {csv_path}")
-        print(f"Wrote {md_path}")
+        task_sections = []
+        for ds_name, indices in scene_indices_by_ds.items():
+            dataset_scenes = [args.scene_names[i] for i in indices]
+            dataset_src_cam_ids = (
+                [args.src_cam_ids[i] for i in indices] if args.src_cam_ids else []
+            )
+            missing = [
+                scene
+                for scene in dataset_scenes
+                if not _results_path(args, scene, task).is_file()
+            ]
+            if missing:
+                print(f"Skipping task {task.name} for dataset {ds_name}")
+                continue
+            formatted_df = _collect_task_results(
+                args, task, dataset_scenes, dataset_src_cam_ids
+            )
+            csv_path = out_dir / f"{ds_name}_{task.name}.csv"
+            formatted_df.to_csv(csv_path)
+            md_path = out_dir / f"{ds_name}_{task.name}.md"
+            md_path.write_text(_to_markdown_table(formatted_df), encoding="utf-8")
+            task_sections.append(
+                f"#### {ds_name}\n{_to_markdown_table(formatted_df)}"
+            )
+            print(f"Wrote {csv_path}")
+            print(f"Wrote {md_path}")
+        if task_sections:
+            combined_sections.append(f"### {task.title}\n" + "\n\n".join(task_sections))
 
     combined_path = out_dir / "all_results.md"
     combined_path.write_text("\n\n".join(combined_sections), encoding="utf-8")
