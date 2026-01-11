@@ -247,30 +247,28 @@ class MultiHumanTrainer:
         # Preare model
         self._load_model()
 
-        if False:
+        # Initialize difix
+        self._init_nv_generation()
 
-            # Initialize difix
-            self._init_nv_generation()
+        # Generate novel views 
+        is_nv_gen_done = False
+        n_its_nv_gen = 0
+        while not is_nv_gen_done:
+            is_nv_gen_done = self.novel_view_generation_step()
+            n_its_nv_gen += 1
+            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
 
-            # Generate novel views 
-            is_nv_gen_done = False
-            n_its_nv_gen = 0
-            while not is_nv_gen_done:
-                is_nv_gen_done = self.novel_view_generation_step()
-                n_its_nv_gen += 1
-                print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
-
-            # Prepare training dataset from all the new cameras
-            for cam_id in self.difix_cam_ids_all:
-                scene_ds = SceneDataset(
-                    self.trn_data_dir,
-                    int(cam_id),
-                    use_depth=self.cfg.use_depth,
-                    device=self.tuner_device,
-                    sample_every=1,
-                )
-                self.trn_datasets.append(scene_ds)
-            self.trn_dataset = ConcatDataset(self.trn_datasets)
+        # Prepare training dataset from all the new cameras
+        for cam_id in self.difix_cam_ids_all:
+            scene_ds = SceneDataset(
+                self.trn_data_dir,
+                int(cam_id),
+                use_depth=self.cfg.use_depth,
+                device=self.tuner_device,
+                sample_every=1,
+            )
+            self.trn_datasets.append(scene_ds)
+        self.trn_dataset = ConcatDataset(self.trn_datasets)
 
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -695,11 +693,6 @@ class MultiHumanTrainer:
             difix_pipe: DifixPipeline instance for refinement.
             cam_id: Target camera ID for which to create the new dataset.
             prev_cam_id: Previous camera ID to use as reference for Difix.
-
-        Notes:
-        1. render the new camera views (out: render_frames)
-        2. refine the rendered frames using Difix with reference to previous camera views
-        3. create new dataset from the refined frames copy other data from gt dataset
         """
 
         # Load dataset for the previous camera (will use only images + masks as reference for Difix)
@@ -732,7 +725,8 @@ class MultiHumanTrainer:
             self.trn_data_dir,
             cam_id,
             Path("/dummy/frames/dir"), 
-            Path("/dummy/masks/dir"),   
+            Path("/dummy/masks/dir"),
+            cam_scene_dir=Path(self.cfg.cameras_scene_dir),   
             frame_paths=self.curr_trn_frame_paths,
         )
 
@@ -1267,10 +1261,6 @@ class MultiHumanTrainer:
         metrics_per_frame = []
         for tgt_cam_id in tgt_cam_ids:
 
-            if tgt_cam_id != src_cam_id:
-                print(f"Skipping segmentation evaluation for novel camera {tgt_cam_id}")
-                continue
-
             # Init save directory for this cam
             cam_save_dir : Path = save_dir / f"{tgt_cam_id}"
             cam_save_dir.mkdir(parents=True, exist_ok=True)
@@ -1774,7 +1764,6 @@ class MultiHumanTrainer:
             print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
         else:
             self.eval_loop_reconstruction(epoch)
-        quit()
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
