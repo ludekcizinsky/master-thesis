@@ -1,0 +1,3 @@
+dataset,method,ssim,psnr,lpips
+Hi4D,Shuai et al.,0.898,19.6,0.1099
+Hi4D,MultiPly,0.915,20.7,0.0798

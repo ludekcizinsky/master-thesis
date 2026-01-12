@@ -1,8 +1,5 @@
 ### Reconstruction (Baselines + Ours)
-We consider the following metrics for human
-mesh reconstruction evaluation: volumetric IoU (V-IoU),
-Chamfer distance (C−l2) [cm], point-to-surface dis-
-tance (P2S) [cm], and normal consistency (NC).
+We consider the following metrics for human mesh reconstruction evaluation: volumetric IoU (V-IoU), Chamfer distance (C−l2) [cm], point-to-surface distance (P2S) [cm], and normal consistency (NC). We highlight the best results for each dataset and metric in **bold**.
 
 #### Hi4D
 | Method | V-IoU ↑ | C-l2 ↓ | P2S ↓ | NC ↑ |

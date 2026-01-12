@@ -1,0 +1,4 @@
+dataset,method,mpjpe,mve,cd,pcdr
+Hi4D,CLIFF,85.7,102.1,351.7,0.606
+Hi4D,TRACE,95.6,115.7,249.4,0.603
+Hi4D,MultiPly,69.4,83.6,218.4,0.709

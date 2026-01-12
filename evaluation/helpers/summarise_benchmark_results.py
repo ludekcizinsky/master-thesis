@@ -25,16 +25,19 @@ class TaskSpec:
     columns: Sequence[Tuple[str, str]]
     avg_formats: Dict[str, str] = field(default_factory=dict)
 
-RECON_BASELINE_COLUMNS = ("dataset", "method", "v-iou", "c-l2", "p2s", "nc")
-RECON_METRIC_MAP = {
-    "v-iou": "V_IoU",
-    "c-l2": "Chamfer_cm",
-    "p2s": "P2S_cm",
-    "nc": "Normal_Consistency",
-}
-RECON_METRIC_ORDER = ["v-iou", "c-l2", "p2s", "nc"]
-RECON_BEST_DIRECTIONS = {"v-iou": "max", "c-l2": "min", "p2s": "min", "nc": "max"}
-RECON_FORMATS = {"v-iou": ".3f", "c-l2": ".2f", "p2s": ".2f", "nc": ".3f"}
+@dataclass
+class BaselineSpec:
+    name: str
+    title: str
+    description: str
+    baseline_filename: str
+    task: TaskSpec
+    metric_order: Sequence[str]
+    metric_headers: Dict[str, str]
+    best_directions: Dict[str, Literal["min", "max"]]
+    formats: Dict[str, str]
+    task_metric_map: Dict[str, str]
+
 DATASET_LABELS = {"hi4d": "Hi4D", "mmm": "MMM"}
 
 
@@ -148,35 +151,37 @@ def _scene_dataset(scene: str) -> str:
 def _dataset_label(ds_name: str) -> str:
     return DATASET_LABELS.get(ds_name, ds_name)
 
-def _load_reconstruction_baselines(path: Path) -> pd.DataFrame:
-    if not path.is_file():
-        print(f"Warning: reconstruction baseline file not found at {path}")
-        return pd.DataFrame(columns=RECON_BASELINE_COLUMNS)
-    df = pd.read_csv(path)
-    missing = [col for col in RECON_BASELINE_COLUMNS if col not in df.columns]
+def _load_baseline_table(
+    baseline_path: Path, required_columns: Sequence[str], name: str
+) -> pd.DataFrame:
+    if not baseline_path.is_file():
+        print(f"Warning: {name} baseline file not found at {baseline_path}")
+        return pd.DataFrame(columns=required_columns)
+    df = pd.read_csv(baseline_path)
+    missing = [col for col in required_columns if col not in df.columns]
     if missing:
         raise ValueError(
-            f"Reconstruction baseline file is missing columns: {', '.join(missing)}"
+            f"{name} baseline file is missing columns: {', '.join(missing)}"
         )
-    return df[list(RECON_BASELINE_COLUMNS)]
+    return df[list(required_columns)]
 
 
-def _format_reconstruction_value(value: float, metric: str) -> str:
+def _format_baseline_value(value: float, fmt: str) -> str:
     if pd.isna(value):
         return "N/A"
-    return f"{value:{RECON_FORMATS[metric]}}"
+    return f"{value:{fmt}}"
 
 
-def _reconstruction_markdown_table(df: pd.DataFrame) -> str:
+def _baseline_markdown_table(df: pd.DataFrame, spec: BaselineSpec) -> str:
     best_values: Dict[str, float] = {}
-    for metric, direction in RECON_BEST_DIRECTIONS.items():
+    for metric, direction in spec.best_directions.items():
         series = pd.to_numeric(df[metric], errors="coerce").dropna()
         if series.empty:
             best_values[metric] = float("nan")
         else:
             best_values[metric] = series.max() if direction == "max" else series.min()
 
-    headers = ["Method", "V-IoU ↑", "C-l2 ↓", "P2S ↓", "NC ↑"]
+    headers = ["Method", *[spec.metric_headers[m] for m in spec.metric_order]]
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join(["---"] * len(headers)) + " |",
@@ -184,9 +189,9 @@ def _reconstruction_markdown_table(df: pd.DataFrame) -> str:
 
     for _, row in df.iterrows():
         values: List[str] = [str(row["method"])]
-        for metric in RECON_METRIC_ORDER:
-            value = row.get(metric)
-            display = _format_reconstruction_value(value, metric)
+        for metric in spec.metric_order:
+            value = pd.to_numeric(row.get(metric), errors="coerce")
+            display = _format_baseline_value(value, spec.formats[metric])
             best = best_values.get(metric)
             if pd.notna(value) and pd.notna(best) and abs(float(value) - float(best)) <= 1e-9:
                 display = f"**{display}**"
@@ -196,74 +201,141 @@ def _reconstruction_markdown_table(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
-def _write_reconstruction_with_baselines(
+def _baseline_dataset_order(
+    scene_indices_by_ds: Dict[str, List[int]], baseline_df: pd.DataFrame
+) -> List[str]:
+    ordered: List[str] = []
+    for ds_name in scene_indices_by_ds:
+        label = _dataset_label(ds_name)
+        if label not in ordered:
+            ordered.append(label)
+    if "dataset" in baseline_df.columns:
+        for label in baseline_df["dataset"].dropna().tolist():
+            if label not in ordered:
+                ordered.append(label)
+    return ordered
+
+
+def _ours_row_for_dataset(
     args: Args,
-    task: TaskSpec,
+    spec: BaselineSpec,
+    dataset_label: str,
+    label_to_scene_key: Dict[str, str],
     scene_indices_by_ds: Dict[str, List[int]],
-    out_dir: Path,
-) -> None:
-    baseline_path = Path(__file__).resolve().parents[1] / "baselines" / "reconstruction.csv"
-    baseline_df = _load_reconstruction_baselines(baseline_path)
-    sections = []
+) -> Dict[str, object]:
+    ours_row: Dict[str, object] = {"dataset": dataset_label, "method": "Ours"}
+    ds_name = label_to_scene_key.get(dataset_label)
+    if ds_name is None:
+        print(
+            f"Warning: no scenes listed for dataset {dataset_label} when "
+            f"building {spec.name} baselines."
+        )
+        for metric in spec.metric_order:
+            ours_row[metric] = float("nan")
+        return ours_row
 
-    for ds_name, indices in scene_indices_by_ds.items():
-        dataset_label = _dataset_label(ds_name)
-        dataset_scenes = [args.scene_names[i] for i in indices]
-        missing = [
-            scene
-            for scene in dataset_scenes
-            if not _results_path(args, scene, task).is_file()
-        ]
+    indices = scene_indices_by_ds[ds_name]
+    dataset_scenes = [args.scene_names[i] for i in indices]
+    missing = [
+        scene
+        for scene in dataset_scenes
+        if not _results_path(args, scene, spec.task).is_file()
+    ]
 
-        ours_row: Dict[str, object] = {"dataset": dataset_label, "method": "Ours"}
-        if missing:
-            print(
-                f"Warning: could not find reconstruction results for {dataset_label}: "
-                f"{', '.join(missing)}"
-            )
-            for metric in RECON_METRIC_ORDER:
-                ours_row[metric] = float("nan")
-        else:
-            numeric_df = _collect_task_results_numeric(
-                args, task, dataset_scenes, src_cam_ids=[]
-            )
-            avg = numeric_df.loc["avg"]
-            for metric, source_col in RECON_METRIC_MAP.items():
-                ours_row[metric] = float(avg[source_col])
+    if missing:
+        print(
+            f"Warning: could not find {spec.name} results for {dataset_label}: "
+            f"{', '.join(missing)}"
+        )
+        for metric in spec.metric_order:
+            ours_row[metric] = float("nan")
+        return ours_row
 
-        baseline_rows = baseline_df.loc[baseline_df["dataset"] == dataset_label].copy()
+    if spec.task.kind == "csv_camera":
+        dataset_src_cam_ids = (
+            [args.src_cam_ids[i] for i in indices] if args.src_cam_ids else []
+        )
+    else:
+        dataset_src_cam_ids = []
+
+    numeric_df = _collect_task_results_numeric(
+        args, spec.task, dataset_scenes, dataset_src_cam_ids
+    )
+    avg = numeric_df.loc["avg"]
+    for metric, source_col in spec.task_metric_map.items():
+        ours_row[metric] = float(avg[source_col])
+    return ours_row
+
+
+def _baseline_sections_for_spec(
+    args: Args,
+    spec: BaselineSpec,
+    scene_indices_by_ds: Dict[str, List[int]],
+) -> List[str]:
+    baseline_dir = Path(__file__).resolve().parents[1] / "baselines"
+    required_columns = ["dataset", "method", *spec.metric_order]
+    baseline_path = baseline_dir / spec.baseline_filename
+    baseline_df = _load_baseline_table(baseline_path, required_columns, spec.name)
+
+    label_to_scene_key = {
+        _dataset_label(ds_name): ds_name for ds_name in scene_indices_by_ds
+    }
+    dataset_order = _baseline_dataset_order(scene_indices_by_ds, baseline_df)
+
+    sections: List[str] = []
+    for dataset_label in dataset_order:
+        ours_row = _ours_row_for_dataset(
+            args, spec, dataset_label, label_to_scene_key, scene_indices_by_ds
+        )
+
+        baseline_rows = baseline_df.loc[
+            baseline_df["dataset"] == dataset_label
+        ].copy()
         if baseline_rows.empty:
             print(
-                f"Warning: no reconstruction baselines found for dataset {dataset_label} "
+                f"Warning: no {spec.name} baselines found for dataset {dataset_label} "
                 f"in {baseline_path}"
             )
 
         combined_records = baseline_rows.to_dict("records")
         combined_records.append(ours_row)
-        combined_df = pd.DataFrame(combined_records, columns=RECON_BASELINE_COLUMNS)
-        for metric in RECON_METRIC_ORDER:
+        combined_df = pd.DataFrame(combined_records, columns=required_columns)
+        for metric in spec.metric_order:
             combined_df[metric] = pd.to_numeric(combined_df[metric], errors="coerce")
 
-        table_md = _reconstruction_markdown_table(combined_df)
+        table_md = _baseline_markdown_table(combined_df, spec)
         sections.append(f"#### {dataset_label}\n{table_md}")
 
     if not sections:
-        print("Warning: no datasets available to build reconstruction baselines table.")
+        print(f"Warning: no datasets available to build {spec.name} baselines table.")
+
+    return sections
+
+
+def _write_baselines_markdown(
+    args: Args,
+    specs: Sequence[BaselineSpec],
+    scene_indices_by_ds: Dict[str, List[int]],
+    out_dir: Path,
+    filename: str,
+) -> None:
+    sections: List[str] = []
+    for spec in specs:
+        task_sections = _baseline_sections_for_spec(args, spec, scene_indices_by_ds)
+        if not task_sections:
+            continue
+        sections.append(
+            f"### {spec.title} (Baselines + Ours)\n"
+            f"{spec.description}\n\n"
+            + "\n\n".join(task_sections)
+        )
+
+    if not sections:
+        print(f"Warning: no baseline sections generated for {filename}.")
         return
 
-    md_path = out_dir / "reconstruction_with_baselines.md"
-    description = (
-        "We consider the following metrics for human mesh reconstruction evaluation: "
-        "volumetric IoU (V-IoU), Chamfer distance (C−l2) [cm], "
-        "point-to-surface distance (P2S) [cm], and normal consistency (NC). "
-        "We highlight the best results for each dataset and metric in **bold**."
-    )
-    md_path.write_text(
-        "### Reconstruction (Baselines + Ours)\n"
-        f"{description}\n\n"
-        + "\n\n".join(sections),
-        encoding="utf-8",
-    )
+    md_path = out_dir / filename
+    md_path.write_text("\n\n".join(sections), encoding="utf-8")
     print(f"Wrote {md_path}")
 
 def main(args: Args) -> None:
@@ -335,6 +407,126 @@ def main(args: Args) -> None:
                 f"({len(args.src_cam_ids)} vs {len(args.scene_names)})."
             )
 
+    task_by_name = {task.name: task for task in tasks}
+    segmentation_task = task_by_name.get("segmentation_src_cam")
+    if segmentation_task is None:
+        segmentation_task = task_by_name.get(
+            "segmentation",
+            TaskSpec(
+                name="segmentation",
+                title="Segmentation",
+                kind="kv",
+                filename="segmentation_overall_results.txt",
+                columns=[("IoU", "iou"), ("Recall", "recall"), ("F1", "f1")],
+            ),
+        )
+        if args.src_cam_ids:
+            print(
+                "Warning: segmentation source-view metrics not available; "
+                "falling back to segmentation_overall_results.txt."
+            )
+
+    reconstruction_description = (
+        "We consider the following metrics for human mesh reconstruction evaluation: "
+        "volumetric IoU (V-IoU), Chamfer distance (C−l2) [cm], "
+        "point-to-surface distance (P2S) [cm], and normal consistency (NC). "
+        "We highlight the best results for each dataset and metric in **bold**."
+    )
+    nvs_description = (
+        "Rendering quality is measured via three metrics: PSNR, SSIM, and LPIPS. "
+        "We highlight the best results for each dataset and metric in **bold**."
+    )
+    pose_description = (
+        "We assess human pose estimation using four metrics: MPJPE [mm], MVE [mm], "
+        "Contact Distance (CD) [mm], and Percentage of Correct Depth Relations (PCDR) "
+        "with a threshold of 0.15m. We highlight the best results for each dataset and "
+        "metric in **bold**."
+    )
+    segmentation_description = (
+        "We report IoU, Recall, and F1 score for human instance segmentation, and "
+        "highlight the best results for each dataset and metric in **bold**."
+    )
+
+    baseline_specs = [
+        BaselineSpec(
+            name="nvs",
+            title="NVS",
+            description=nvs_description,
+            baseline_filename="nvs.csv",
+            task=task_by_name["nvs"],
+            metric_order=["ssim", "psnr", "lpips"],
+            metric_headers={
+                "ssim": "SSIM ↑",
+                "psnr": "PSNR ↑",
+                "lpips": "LPIPS ↓",
+            },
+            best_directions={"ssim": "max", "psnr": "max", "lpips": "min"},
+            formats={"ssim": ".3f", "psnr": ".1f", "lpips": ".4f"},
+            task_metric_map={"ssim": "SSIM", "psnr": "PSNR", "lpips": "LPIPS"},
+        ),
+        BaselineSpec(
+            name="pose",
+            title="Pose Estimation",
+            description=pose_description,
+            baseline_filename="pose.csv",
+            task=task_by_name["pose_estimation"],
+            metric_order=["mpjpe", "mve", "cd", "pcdr"],
+            metric_headers={
+                "mpjpe": "MPJPE ↓",
+                "mve": "MVE ↓",
+                "cd": "CD ↓",
+                "pcdr": "PCDR ↑",
+            },
+            best_directions={
+                "mpjpe": "min",
+                "mve": "min",
+                "cd": "min",
+                "pcdr": "max",
+            },
+            formats={"mpjpe": ".1f", "mve": ".1f", "cd": ".1f", "pcdr": ".3f"},
+            task_metric_map={
+                "mpjpe": "MPJPE_mm",
+                "mve": "MVE_mm",
+                "cd": "CD_mm",
+                "pcdr": "PCDR",
+            },
+        ),
+        BaselineSpec(
+            name="reconstruction",
+            title="Reconstruction",
+            description=reconstruction_description,
+            baseline_filename="reconstruction.csv",
+            task=task_by_name["reconstruction"],
+            metric_order=["v-iou", "c-l2", "p2s", "nc"],
+            metric_headers={
+                "v-iou": "V-IoU ↑",
+                "c-l2": "C-l2 ↓",
+                "p2s": "P2S ↓",
+                "nc": "NC ↑",
+            },
+            best_directions={"v-iou": "max", "c-l2": "min", "p2s": "min", "nc": "max"},
+            formats={"v-iou": ".3f", "c-l2": ".2f", "p2s": ".2f", "nc": ".3f"},
+            task_metric_map={
+                "v-iou": "V_IoU",
+                "c-l2": "Chamfer_cm",
+                "p2s": "P2S_cm",
+                "nc": "Normal_Consistency",
+            },
+        ),
+        BaselineSpec(
+            name="segmentation",
+            title="Segmentation",
+            description=segmentation_description,
+            baseline_filename="segmentation.csv",
+            task=segmentation_task,
+            metric_order=["iou", "recall", "f1"],
+            metric_headers={"iou": "IoU ↑", "recall": "Recall ↑", "f1": "F1 ↑"},
+            best_directions={"iou": "max", "recall": "max", "f1": "max"},
+            formats={"iou": ".3f", "recall": ".3f", "f1": ".3f"},
+            task_metric_map={"iou": "IoU", "recall": "Recall", "f1": "F1"},
+        ),
+    ]
+
     scene_indices_by_ds: Dict[str, List[int]] = {}
     for idx, scene in enumerate(args.scene_names):
         ds_name = _scene_dataset(scene)
@@ -368,22 +560,15 @@ def main(args: Args) -> None:
             task_sections.append(
                 f"#### {ds_name}\n{_to_markdown_table(formatted_df)}"
             )
-            print(f"Wrote {csv_path}")
-            print(f"Wrote {md_path}")
         if task_sections:
             combined_sections.append(f"### {task.title}\n" + "\n\n".join(task_sections))
 
     combined_path = out_dir / "all_results.md"
     combined_path.write_text("\n\n".join(combined_sections), encoding="utf-8")
-    print(f"Wrote {combined_path}")
 
-    reconstruction_task = next(
-        (task for task in tasks if task.name == "reconstruction"), None
+    _write_baselines_markdown(
+        args, baseline_specs, scene_indices_by_ds, out_dir, "baselines_with_ours.md"
     )
-    if reconstruction_task is not None:
-        _write_reconstruction_with_baselines(
-            args, reconstruction_task, scene_indices_by_ds, out_dir
-        )
 
 if __name__ == "__main__":
     args = tyro.cli(Args)

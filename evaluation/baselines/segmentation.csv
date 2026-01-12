@@ -1,0 +1,4 @@
+dataset,method,iou,recall,f1
+Hi4D,SCHP,0.937,0.983,0.982
+Hi4D,MultiPly (Init.),0.943,0.975,0.984
+Hi4D,MultiPly (Progressive),0.963,0.985,0.990
