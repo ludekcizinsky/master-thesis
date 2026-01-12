@@ -12,6 +12,8 @@ import tyro
 
 
 HI4D_TARGET_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
+HI4D_TRN_NV_GEN_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
+MMM_TRN_NV_GEN_CAM_IDS = [0, 100, 101, 102, 103, 104, 105, 107]
 PREPROCESSING_DIR = "/scratch/izar/cizinsky/thesis/preprocessing"
 
 
@@ -23,6 +25,7 @@ class Scene:
     root_gt_dir_path: str
     num_persons: int
     target_camera_ids: List[int]
+    trn_nv_gen_cam_ids: List[int]
     preprocessing_dir_path: str | None = None
     test_masks_scene_dir: str | None = None
     test_smpl_params_scene_dir: str | None = None
@@ -61,6 +64,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15",
                 2,
                 list(HI4D_TARGET_CAM_IDS),
+                list(HI4D_TRN_NV_GEN_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair16_jump",
@@ -68,6 +72,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16",
                 2,
                 list(HI4D_TARGET_CAM_IDS),
+                list(HI4D_TRN_NV_GEN_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair17_dance",
@@ -75,6 +80,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17",
                 2,
                 list(HI4D_TARGET_CAM_IDS),
+                list(HI4D_TRN_NV_GEN_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair19_piggyback",
@@ -82,6 +88,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19",
                 2,
                 list(HI4D_TARGET_CAM_IDS),
+                list(HI4D_TRN_NV_GEN_CAM_IDS),
             ),
             Scene(
                 "mmm_dance",
@@ -89,6 +96,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/mmm/dance",
                 4,
                 [],
+                list(MMM_TRN_NV_GEN_CAM_IDS),
                 test_masks_scene_dir="null",
                 test_smpl_params_scene_dir="null",
                 smpl_params_scene_dir="null",
@@ -101,6 +109,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/mmm/lift",
                 3,
                 [],
+                list(MMM_TRN_NV_GEN_CAM_IDS),
                 test_masks_scene_dir="null",
                 test_smpl_params_scene_dir="null",
                 smpl_params_scene_dir="null",
@@ -113,6 +122,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance",
                 3,
                 [],
+                list(MMM_TRN_NV_GEN_CAM_IDS),
                 test_masks_scene_dir="null",
                 test_smpl_params_scene_dir="null",
                 smpl_params_scene_dir="null",
@@ -125,10 +135,13 @@ class ScheduleConfig:
 
 def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
     job_name = f"{cfg.job_name_prefix}_{scene.seq_name}"
-    if scene.target_camera_ids:
-        target_camera_ids = ":".join(str(cam_id) for cam_id in scene.target_camera_ids)
-    else:
-        target_camera_ids = "[]"
+    def encode_cam_ids(cam_ids: List[int]) -> str:
+        if cam_ids:
+            return ":".join(str(cam_id) for cam_id in cam_ids)
+        return "[]"
+
+    target_camera_ids = encode_cam_ids(scene.target_camera_ids)
+    trn_nv_gen_cam_ids = encode_cam_ids(scene.trn_nv_gen_cam_ids)
     export_env = (
         "ALL,"
         f"EXP_NAME={cfg.exp_name},"
@@ -137,6 +150,7 @@ def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
         f"SOURCE_CAM_ID={scene.source_cam_id},"
         f"ROOT_GT_DIR_PATH={scene.root_gt_dir_path},"
         f"TARGET_CAMERA_IDS={target_camera_ids},"
+        f"TRN_NV_GEN_CAMERA_IDS={trn_nv_gen_cam_ids},"
         f"PREPROCESSING_DIR_PATH={scene.preprocessing_dir_path},"
         f"TEST_MASKS_SCENE_DIR={scene.test_masks_scene_dir},"
         f"TEST_SMPL_PARAMS_SCENE_DIR={scene.test_smpl_params_scene_dir},"

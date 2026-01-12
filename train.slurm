@@ -22,6 +22,7 @@ seq_name="${SEQ_NAME:-}"
 source_cam_id="${SOURCE_CAM_ID:-}"
 root_gt_dir_path="${ROOT_GT_DIR_PATH:-}"
 target_cam_ids="${TARGET_CAMERA_IDS:-}"
+trn_nv_gen_cam_ids="${TRN_NV_GEN_CAMERA_IDS:-}"
 test_masks_scene_dir="${TEST_MASKS_SCENE_DIR:-}"
 test_smpl_params_scene_dir="${TEST_SMPL_PARAMS_SCENE_DIR:-}"
 smpl_params_scene_dir="${SMPL_PARAMS_SCENE_DIR:-}"
@@ -41,6 +42,14 @@ if [[ -n "$target_cam_ids" ]]; then
     target_cam_ids_formatted="[${target_cam_ids//:/,}]"
   fi
   extra_args+=("nvs_eval.target_camera_ids=$target_cam_ids_formatted")
+fi
+if [[ -n "$trn_nv_gen_cam_ids" ]]; then
+  if [[ "$trn_nv_gen_cam_ids" == \[* ]]; then
+    trn_nv_gen_cam_ids_formatted="$trn_nv_gen_cam_ids"
+  else
+    trn_nv_gen_cam_ids_formatted="[${trn_nv_gen_cam_ids//:/,}]"
+  fi
+  extra_args+=("trn_nv_gen.camera_ids=$trn_nv_gen_cam_ids_formatted")
 fi
 if [[ -n "$test_masks_scene_dir" ]]; then
   extra_args+=("test_masks_scene_dir=$test_masks_scene_dir")
