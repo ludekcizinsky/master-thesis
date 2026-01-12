@@ -91,8 +91,9 @@ cd /home/cizinsky/master-thesis
 # # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 false
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 false
-bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
+# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
+bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 
 # src_cam_id=4
 # scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
