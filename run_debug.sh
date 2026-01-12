@@ -91,12 +91,12 @@ cd /home/cizinsky/master-thesis
 # # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 false
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 false
-# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
+bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
 
-src_cam_id=4
-scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
-python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
+# src_cam_id=4
+# scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
+# python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
 
 # Check inputs to the evaluation script
 # root_pred_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_large_refactor_check/epoch_0000
