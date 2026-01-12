@@ -7,7 +7,7 @@ conda activate thesis
 
 cd /home/cizinsky/master-thesis
 
-exp_name="v1_we_can_run_hi4d_tune_after_refactoring"
+exp_name="v1_all_scenes_tune_after_major_refactor"
 epoch_str="0015"
 
 scene_names=(

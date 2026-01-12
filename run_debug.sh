@@ -93,7 +93,7 @@ cd /home/cizinsky/master-thesis
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
-bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
+# bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 
 # src_cam_id=4
 # scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
@@ -112,11 +112,11 @@ bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 # path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
 # python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
-# root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/v3_large_refactor_check/epoch_0000
-# path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
-# path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
-# path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift/meshes
-# python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
+root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/v1_all_scenes_tune_after_major_refactor/epoch_0015
+path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
+path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift/meshes
+python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
 # root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_walkdance/evaluation/v3_large_refactor_check/epoch_0000
 # path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
