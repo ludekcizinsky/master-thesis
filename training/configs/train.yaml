@@ -55,6 +55,10 @@ difix:
   overwrite_existing: false
   resolution_multiple: 8
 
+trn_nv_gen:
+  camera_ids: [4,16,28,40,52,64,76,88]
+
+
 wandb:
   enable: true
   project: "hybrid-lhm"

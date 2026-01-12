@@ -672,7 +672,7 @@ class MultiHumanTrainer:
     def _init_nv_generation(self):
         src_cam_id = self.cfg.nvs_eval.source_camera_id
         self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id
-        self.camera_ids = [4, 16, 28, 40, 52, 64, 76, 88]
+        self.camera_ids = self.cfg.trn_nv_gen.camera_ids
         src_cam_idx = self.camera_ids.index(src_cam_id)
         half_n = (len(self.camera_ids) - 1) // 2
         other_half_n = len(self.camera_ids) - 1 - half_n

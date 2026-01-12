@@ -18,13 +18,13 @@ cd /home/cizinsky/master-thesis
 # root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15
 # python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false
 
-seq_name="hi4d_pair16_jump"
-num_persons=2
-exp_name="v6_check_if_we_can_still_run_trn_nv_gen"
-source_cam_id=4
-target_cam_ids="[76,4,28]"
-root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=true
+# seq_name="hi4d_pair16_jump"
+# num_persons=2
+# exp_name="v6_check_if_we_can_still_run_trn_nv_gen"
+# source_cam_id=4
+# target_cam_ids="[76,4,28]"
+# root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
+# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=true
 
 #seq_name="hi4d_pair17_dance"
 #num_persons=2
@@ -36,14 +36,15 @@ python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp
 
 
 # ------- MMM
-# seq_name="mmm_dance"
-# num_persons=4
-# exp_name="v3_large_refactor_check"
-# source_cam_id=0
-# target_cam_ids="[]"
-# root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
-# preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_dance
-# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir
+seq_name="mmm_dance"
+num_persons=4
+exp_name="v4_can_we_run_with_nv_cams"
+source_cam_id=0
+target_cam_ids="[]"
+root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance
+preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_dance
+trn_nv_cam_ids="[0,100,101,102,103,104,105,107]"
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir trn_nv_gen.camera_ids=$trn_nv_cam_ids
 
 
 # seq_name="mmm_lift"
