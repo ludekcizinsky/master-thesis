@@ -25,6 +25,18 @@ class TaskSpec:
     columns: Sequence[Tuple[str, str]]
     avg_formats: Dict[str, str] = field(default_factory=dict)
 
+RECON_BASELINE_COLUMNS = ("dataset", "method", "v-iou", "c-l2", "p2s", "nc")
+RECON_METRIC_MAP = {
+    "v-iou": "V_IoU",
+    "c-l2": "Chamfer_cm",
+    "p2s": "P2S_cm",
+    "nc": "Normal_Consistency",
+}
+RECON_METRIC_ORDER = ["v-iou", "c-l2", "p2s", "nc"]
+RECON_BEST_DIRECTIONS = {"v-iou": "max", "c-l2": "min", "p2s": "min", "nc": "max"}
+RECON_FORMATS = {"v-iou": ".3f", "c-l2": ".2f", "p2s": ".2f", "nc": ".3f"}
+DATASET_LABELS = {"hi4d": "Hi4D", "mmm": "MMM"}
+
 
 def _parse_metrics(results_path: Path) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
@@ -78,7 +90,7 @@ def _results_path(args: Args, scene: str, task: TaskSpec) -> Path:
     )
 
 
-def _collect_task_results(
+def _collect_task_results_numeric(
     args: Args,
     task: TaskSpec,
     scene_names: Sequence[str],
@@ -117,12 +129,142 @@ def _collect_task_results(
     column_names = [column for column, _ in task.columns]
     df = pd.DataFrame(rows).set_index("scene")[column_names]
     df.loc["avg"] = df.mean(numeric_only=True)
+    return df
+
+
+def _collect_task_results(
+    args: Args,
+    task: TaskSpec,
+    scene_names: Sequence[str],
+    src_cam_ids: Sequence[int],
+) -> pd.DataFrame:
+    df = _collect_task_results_numeric(args, task, scene_names, src_cam_ids)
     return _format_table(df, avg_formats=task.avg_formats)
 
 
 def _scene_dataset(scene: str) -> str:
     return scene.split("_", 1)[0]
 
+def _dataset_label(ds_name: str) -> str:
+    return DATASET_LABELS.get(ds_name, ds_name)
+
+def _load_reconstruction_baselines(path: Path) -> pd.DataFrame:
+    if not path.is_file():
+        print(f"Warning: reconstruction baseline file not found at {path}")
+        return pd.DataFrame(columns=RECON_BASELINE_COLUMNS)
+    df = pd.read_csv(path)
+    missing = [col for col in RECON_BASELINE_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Reconstruction baseline file is missing columns: {', '.join(missing)}"
+        )
+    return df[list(RECON_BASELINE_COLUMNS)]
+
+
+def _format_reconstruction_value(value: float, metric: str) -> str:
+    if pd.isna(value):
+        return "N/A"
+    return f"{value:{RECON_FORMATS[metric]}}"
+
+
+def _reconstruction_markdown_table(df: pd.DataFrame) -> str:
+    best_values: Dict[str, float] = {}
+    for metric, direction in RECON_BEST_DIRECTIONS.items():
+        series = pd.to_numeric(df[metric], errors="coerce").dropna()
+        if series.empty:
+            best_values[metric] = float("nan")
+        else:
+            best_values[metric] = series.max() if direction == "max" else series.min()
+
+    headers = ["Method", "V-IoU ↑", "C-l2 ↓", "P2S ↓", "NC ↑"]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+
+    for _, row in df.iterrows():
+        values: List[str] = [str(row["method"])]
+        for metric in RECON_METRIC_ORDER:
+            value = row.get(metric)
+            display = _format_reconstruction_value(value, metric)
+            best = best_values.get(metric)
+            if pd.notna(value) and pd.notna(best) and abs(float(value) - float(best)) <= 1e-9:
+                display = f"**{display}**"
+            values.append(display)
+        lines.append("| " + " | ".join(values) + " |")
+
+    return "\n".join(lines)
+
+
+def _write_reconstruction_with_baselines(
+    args: Args,
+    task: TaskSpec,
+    scene_indices_by_ds: Dict[str, List[int]],
+    out_dir: Path,
+) -> None:
+    baseline_path = Path(__file__).resolve().parents[1] / "baselines" / "reconstruction.csv"
+    baseline_df = _load_reconstruction_baselines(baseline_path)
+    sections = []
+
+    for ds_name, indices in scene_indices_by_ds.items():
+        dataset_label = _dataset_label(ds_name)
+        dataset_scenes = [args.scene_names[i] for i in indices]
+        missing = [
+            scene
+            for scene in dataset_scenes
+            if not _results_path(args, scene, task).is_file()
+        ]
+
+        ours_row: Dict[str, object] = {"dataset": dataset_label, "method": "Ours"}
+        if missing:
+            print(
+                f"Warning: could not find reconstruction results for {dataset_label}: "
+                f"{', '.join(missing)}"
+            )
+            for metric in RECON_METRIC_ORDER:
+                ours_row[metric] = float("nan")
+        else:
+            numeric_df = _collect_task_results_numeric(
+                args, task, dataset_scenes, src_cam_ids=[]
+            )
+            avg = numeric_df.loc["avg"]
+            for metric, source_col in RECON_METRIC_MAP.items():
+                ours_row[metric] = float(avg[source_col])
+
+        baseline_rows = baseline_df.loc[baseline_df["dataset"] == dataset_label].copy()
+        if baseline_rows.empty:
+            print(
+                f"Warning: no reconstruction baselines found for dataset {dataset_label} "
+                f"in {baseline_path}"
+            )
+
+        combined_records = baseline_rows.to_dict("records")
+        combined_records.append(ours_row)
+        combined_df = pd.DataFrame(combined_records, columns=RECON_BASELINE_COLUMNS)
+        for metric in RECON_METRIC_ORDER:
+            combined_df[metric] = pd.to_numeric(combined_df[metric], errors="coerce")
+
+        table_md = _reconstruction_markdown_table(combined_df)
+        sections.append(f"#### {dataset_label}\n{table_md}")
+
+    if not sections:
+        print("Warning: no datasets available to build reconstruction baselines table.")
+        return
+
+    md_path = out_dir / "reconstruction_with_baselines.md"
+    description = (
+        "We consider the following metrics for human mesh reconstruction evaluation: "
+        "volumetric IoU (V-IoU), Chamfer distance (C−l2) [cm], "
+        "point-to-surface distance (P2S) [cm], and normal consistency (NC). "
+        "We highlight the best results for each dataset and metric in **bold**."
+    )
+    md_path.write_text(
+        "### Reconstruction (Baselines + Ours)\n"
+        f"{description}\n\n"
+        + "\n\n".join(sections),
+        encoding="utf-8",
+    )
+    print(f"Wrote {md_path}")
 
 def main(args: Args) -> None:
     tasks = [
@@ -234,6 +376,14 @@ def main(args: Args) -> None:
     combined_path = out_dir / "all_results.md"
     combined_path.write_text("\n\n".join(combined_sections), encoding="utf-8")
     print(f"Wrote {combined_path}")
+
+    reconstruction_task = next(
+        (task for task in tasks if task.name == "reconstruction"), None
+    )
+    if reconstruction_task is not None:
+        _write_reconstruction_with_baselines(
+            args, reconstruction_task, scene_indices_by_ds, out_dir
+        )
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
