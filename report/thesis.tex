@@ -70,6 +70,28 @@
 % - The main contribution of this work is a novel hybrid framework for monocular 4D reconstruction of dynamic human centric scenes that combines the best of both worlds - the speed and efficiency of feedforward networks, and the accuracy and quality of optimisation based approaches.
 % - As a result, we obtain the quality comparable to the state of the art methods that require hours to days of training time, while being able to reconstruct a scene in order of minutes.
 
+% Some notes for relatged work:
+% - Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+% Examples of state of the art method for lifting monocular video to multi view videos:
+% 1. Generative Camera Dolly (GCD) - trained on synthetic data only, if I am not mistaken, can only synthesise one novel video at a time. Also I did test it myself, and the quality of the model is not great.
+% 2. Cat4D - this is one of the earliest works. First of all, the model and the data is closed source which signifficantly limits any possible future research since it requites quite signifficant amount of resources to train. If I remember correctly, one of the limitations of this approach is A) it is mostly trained on synthetic data, and B) they show very limited novel view deviation - and this is where it indeed gets very difficult to hallucinate views which are on t he complete other side of the person for instance.
+% 3. SV4D - this is I would say open source version of Cat4d. The main problem with this method is that they assume: single object scenes with ideally no background and simple motion. So these are quite limiting constraints.
+% --- Also all these methods assume as input input from a **static** camera, which is quite limiting for real world applications.
+
+% Notes on implicit formats:
+% - I think that it is important to mention NeRF paper which started this whole wave of implicit neural representations for 3D reconstruction. NeRF back then had two main limitatioshn which was the need for multi view inputs and also really slow training time.
+% - This sparked a new direction of papers that addressed these limitations espeically the training time, but still one of the problems with impliciti representation is it is quite hard to compose them where as with 3dgs you can easily train separate gaussians for different objects in the scene and then just combine them together. This also has to do with editability - you can easily move around gaussians in 3d space, whereas with implicit representations this is not so straightforward.
+% - Also one of the main issues with NeRF is still its rendering speed - ultimately, i thing in the last two years, we have seen transitiopn from implicit representations to explicit representations and various forms of 3DGS
+% - One thing where however implict representations still shines is its generalisation in sparse view settings. By defintin, the implciti model needs to learn a continuous function that maps from 3d space to color and density, so it can interpolate between the known views quite well. On the other hand, explicit representations such as 3dgs need to store all the information in the gaussians themselves, so if there is not enough gaussians to cover the space, it might lead to holes in the reconstruction or just weird artifacts, hence having dense set of views is crucial for good quality reconstruction.
+
+% Notes on dynamic explicit scene representations formats
+% - 1. Deformation field over canonical representation: have a canonical space and then then track deformations over time. Of course then the question becomes how to track this motion over time. For instance:
+% -- a. use point tracking and then use these points to guide the deformation field 
+% -- b. parametric human models (SMPL, SMPL-X, etc.) - however these are limited to humans only
+% - 2. Explicit time parametrisation - add time as an additional input to the representation. 
+% - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
+% I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
+
 \section{Related Work}
 \subsection{3D Gaussian Splatting}
 \subsection{Dynamic Scene Reconstruction}
@@ -81,6 +103,8 @@
 % - Input and output specification
 % - Assumptions
 % - Scope and evaluation goals
+
+
 
 \section{Method}
 \subsection{Overview}
