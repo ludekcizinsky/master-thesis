@@ -568,6 +568,8 @@ def main() -> None:
                 w2c[:3, :4] = extr.astype(np.float32)
                 c2w = np.linalg.inv(w2c)
                 fov, aspect = _fov_aspect_from_intrinsics(intr, camera_image_hw.get(cam_id))
+                is_src = cam_id == str(cfg.src_cam_id)
+                color = (30, 144, 255) if is_src else (255, 140, 0)
                 server.scene.add_camera_frustum(
                     f"/scene/cameras/f_{frame_id}/{cam_id}",
                     fov=float(fov),
@@ -575,6 +577,7 @@ def main() -> None:
                     scale=0.2,
                     wxyz=tuple(tf.SO3.from_matrix(c2w[:3, :3]).wxyz),
                     position=tuple(c2w[:3, 3].tolist()),
+                    color=color,
                 )
             node.visible = False
     if gs_root is not None:
