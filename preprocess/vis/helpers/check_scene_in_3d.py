@@ -391,15 +391,17 @@ def main() -> None:
     )
 
     # Compute a fixed rotation to align the scene upright.
-    # +y is up to +z is up (viser's default).
-    R_fix = tf.SO3.from_x_radians(np.pi / 2)
+    # hi4d uses +y is up while the rest is -y up
+    # we need to convert to +z is up (viser's default).
+    sign = 1.0 if "hi4d" in str(cfg.scene_dir).lower() else -1.0
+    R_fix = tf.SO3.from_x_radians(sign * np.pi / 2)
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
 
     server.scene.add_frame(
         "/scene",
-        show_axes=False,
+        show_axes=True,
     )
     smpl_root = (
         server.scene.add_frame(
@@ -413,7 +415,7 @@ def main() -> None:
     smplx_root = (
         server.scene.add_frame(
             "/scene/smplx", 
-            show_axes=True, 
+            show_axes=False, 
             wxyz=tuple(R_fix.wxyz),
             position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) if smplx_layer is not None else None
@@ -524,7 +526,7 @@ def main() -> None:
                             color=color,
                         )
                         # debug - compute min of y axis for given person
-                        print(f"SMPL-X Frame {frame_id} Person {pid} min y: {verts[pid][:,1].min()}, max y: {verts[pid][:,1].max()}, delta y: {verts[pid][:,1].max() - verts[pid][:,1].min()}")
+#                        print(f"SMPL-X Frame {frame_id} Person {pid} min y: {verts[pid][:,1].min()}, max y: {verts[pid][:,1].max()}, delta y: {verts[pid][:,1].max() - verts[pid][:,1].min()}")
             node.visible = False
 
     if mesh_root is not None:
