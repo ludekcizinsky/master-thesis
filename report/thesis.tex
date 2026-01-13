@@ -49,35 +49,97 @@
 
 
 \section{Introduction}
-% Problem context and motivation
+% Problem context
+% We want to focus on *dynamic* human centric scenes captured from monocular video that capture multiple humans interacting or performing complex motions. 
+% Our method is able to handle inputs from static as well as moving cameras, which is important for real world applications where the camera might be handheld. 
+
+% Motivation for my work
 % - I see two important applications of my work
 % - First: interactive media - we no longer have to rely on watching monocular feed, and instead can view the given video from any angle we want. This is especially useful in sports broadcasting, where the viewer can choose their own perspective. Here, the important aspect of the reconstruction is how accurate the extracted motion is, and how realistic the novel view renderings are.
 % - Second: With the recent advances in humanoid robotics, being able to precisely recover human motion from monocular videos can help extract training motion data for robots to imitate. Here, we only care about the accuracy of the recovered motion, and not so much about the visual quality of the renderings.
-% Challenges in monocular dynamic scene reconstruction
-% - General challenges in dynamic scene reconstruction
-% -- In general, 4D reconstruction from monocular video is highly ill-posed problem
-% -- Apart from obtaining multi-view consistency from monocular video, we also have to ensure temporal consistency
-% -- In addition, the system needs to be able to accurately disentangle the motion of camera and objects in the scene
-% -- Further, we need to make sure we correctly separate dynamic and static parts of the scene - e.g. avoid having static background bleed into dynamic objects
-% - Specific challenges in human-centric reconstruction
-% -- Humans are highly non-rigid objects, with complex articulations and deformations including clothing dynamics and hair motion
-% -- Human motion is often fast and unpredictable, leading to motion blur and occlusions
-% -- when we have multiple people in the scene, we have to deal with inter-person occlusions and interactions  
+
+
+% General challenges in dynamic scene reconstruction
+% - In general, 4D reconstruction from monocular video is highly ill-posed problem
+% - Apart from obtaining multi-view consistency from monocular video, we also have to ensure temporal consistency
+% - In addition, the system needs to be able to accurately disentangle the motion of camera and objects in the scene
+% - Further, we need to make sure we correctly separate dynamic and static parts of the scene - e.g. avoid having static background bleed into dynamic objects
+% - I would also say that depending on the scene, the video quaity may vary, especially motion blur can occur frequently in fast moving scenes - this is indeed bad signal for 3dgs
+
+
+% Specific challenges in human-centric reconstruction
+% - Humans are highly non-rigid objects, with complex articulations and deformations including clothing dynamics and hair motion
+% - Human motion is often fast and unpredictable, leading to motion blur and occlusions
+% - when we have multiple people in the scene, we have to deal with inter-person occlusions and interactions  
+
+
 % Gap in existing methods
 % - Majority of the existing human-centric scenes methods focues on mapping either single image, set of image or monocular video to parametric human model (SMPL, SMPL-X, etc.). These approaches assume clean video capture conditions and fail for the in the wild scenarios where we might have multiple people interacting and occluding each other. 
 % - In the last year or two, there has been a new wave of papers that deviate from the tradional 3D reconstruction methods, and instead, train a feedforward network to directly map the input image or video to the target set of modalities, usually depth maps and camera parameters. The main limitation of these approaches is that while at a first glance they give decent predictions, they are still much less acurrate than their more classical optimisation based counterparts. 
+% - In addition, the feed forward methods often only estimate point clouds or meshes, which are not ideal for photorealistic novel view synthesis due to their discrete nature. Similarly, it is impractical to extract accurate joint positions from these representations, which is crucial for many applications such as motion capture for robotics.
 % - While there have been previous attempts for monocular 4D reconstruction of dynamic human centric scenes, the main limitation of these approaches is that they require order of hours to days of training time per scene, making them impractical for real world applications. 
+
+
 % Contributions
 % - The main contribution of this work is a novel hybrid framework for monocular 4D reconstruction of dynamic human centric scenes that combines the best of both worlds - the speed and efficiency of feedforward networks, and the accuracy and quality of optimisation based approaches.
 % - As a result, we obtain the quality comparable to the state of the art methods that require hours to days of training time, while being able to reconstruct a scene in order of minutes.
+% - Our methods can not only obtain high quality novel view renderings, but also accurately recover human motion in the scene, making it suitable for a wide range of applications including interactive media and robotics
+% - We directly address to limitations mentioned in MultiPly: to introduice generative prior and also to use more expressive human model SMPLX
+% - We demonstrate our effectivness on our method on 4 tasks including human pose estimation, novel view synthesis, mesh reconstruction and segmentation 
 
-% Some notes for relatged work:
-% - Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+\section{Related Work}
+\subsection{Static Scene Reconstruction}
+% Goal: establish representational and optimization foundations
+% Organizing axis: view density and prior strength
+
+\subsubsection{Dense Multi-View Reconstruction}
+% NeRF-style methods assuming many views and static geometry
+
+\subsubsection{Sparse-View Reconstruction with Priors}
+% Methods that compensate for limited views using learned or geometric priors
+
+
+\subsection{Dynamic Scene Reconstruction}
+% Goal: extend static assumptions to time-varying geometry
+% Organizing axis: how dynamics are modeled and constrained
+
+\subsubsection{Multi-View Dynamic Reconstruction}
+% Dense-view dynamic methods, often extensions of static representations
+
+\subsubsection{Sparse-View and Monocular Dynamic Reconstruction}
+% Methods requiring temporal, motion, or semantic priors
+
+
+\subsection{Human-Centric Reconstruction}
+% Goal: introduce strong semantic structure as an explicit modeling choice
+
+\subsubsection{Parametric Human Models}
+% SMPL / SMPL-X based approaches
+
+\subsubsection{Human-Centric Dynamic Scene Reconstruction}
+% Multi-person, interaction-aware, or scene-integrated methods
+
+
+% ---------- Notes section
+% I think another important topic crucial for realistic 4d reconstruction modelling are video diffusion models, so it may be good to somehow integrate this part into the thesis as well
+
+% One of the main themes we have also been seeing in the last year or so is the transition from 
+% per scene optimisation method to feedforward methods that can reconstruct the scene in a single forward pass.
+
+% Another trend I need to capture is the transition from implicit representations to explicit representations such as 3dgs 
+
+% Multi view dynamic scene reconstruction:
+% 1. Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+
+
 % Examples of state of the art method for lifting monocular video to multi view videos:
 % 1. Generative Camera Dolly (GCD) - trained on synthetic data only, if I am not mistaken, can only synthesise one novel video at a time. Also I did test it myself, and the quality of the model is not great.
 % 2. Cat4D - this is one of the earliest works. First of all, the model and the data is closed source which signifficantly limits any possible future research since it requites quite signifficant amount of resources to train. If I remember correctly, one of the limitations of this approach is A) it is mostly trained on synthetic data, and B) they show very limited novel view deviation - and this is where it indeed gets very difficult to hallucinate views which are on t he complete other side of the person for instance.
 % 3. SV4D - this is I would say open source version of Cat4d. The main problem with this method is that they assume: single object scenes with ideally no background and simple motion. So these are quite limiting constraints.
 % --- Also all these methods assume as input input from a **static** camera, which is quite limiting for real world applications.
+
+% Why do we even need explicit scene representation - can we just use diffusion models?
+% - I should try comment on this as well based on the 3dv talk from J.Barron
 
 % Notes on implicit formats:
 % - I think that it is important to mention NeRF paper which started this whole wave of implicit neural representations for 3D reconstruction. NeRF back then had two main limitatioshn which was the need for multi view inputs and also really slow training time.
@@ -89,6 +151,7 @@
 % - 1. Deformation field over canonical representation: have a canonical space and then then track deformations over time. Of course then the question becomes how to track this motion over time. For instance:
 % -- a. use point tracking and then use these points to guide the deformation field 
 % -- b. parametric human models (SMPL, SMPL-X, etc.) - however these are limited to humans only
+% -- I think it is important to note here that canonical representation's pro is that it can be animated from any motion that we can recover, whereas explicit time varying representation is limited to the motion seen during training only
 % - 2. Explicit time parametrisation - add time as an additional input to the representation. 
 % - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
 % I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
@@ -97,22 +160,63 @@
 % 1. Generative camera dolly - I think this one of the first papers to introduce explicit camera control for the novel view synthesis, however, the main limitation of their method was: 1. scope of data - very limited domain - trained on synthetic data - multiple objects 2. the farther from the original you go, the worse quality. When I tried their model on their own data, it did not work so well, and it did not work essentially at all on my football data
 % 2. Guess the unseen - the main limitation of this model is that they have to tune single SD1.5 for every person in the scene. And from what I have observed the model in addition to that hallucinated a lot - and I was only able to visualise the original view of the scene. Another issue with guess the unseen was their separation of dynamic and static background - their masking pipeline often failed and as a result you could see how static background is actually attached to the dynamic objects.
 % 3. Shape of motion - you can see with their demo on the website that the nvs from extreme viewpoints sucks
+% 4. LHM - this works pretty good in order to get initial results, but it only reasons about the canonical apperance and geometry. You have to separately model the motion, and this becomes an issue with state of the art pose estimatros - as of now. In addition, they still assume quite clean capture of the person to infer the canonical representation - therefore it is neccesary to be smart about how you choose the frames
 
 
-\section{Related Work}
-\subsection{3D Gaussian Splatting}
-\subsection{Dynamic Scene Reconstruction}
-\subsection{Human-Centric Reconstruction}
-\subsection{Novel View Synthesis}
-\subsection{Sports and Monocular Reconstruction}
+% Notes on tempalate based vs tracking methods for modelling motion
+% - Template based methods - e.g. SMPL, SMPL-X, etc. These methods are great because they provide a strong prior on human shape and motion, which helps to regularise the reconstruction. However, these methods are limited to the expressiveness of the underlying model, and often fail to capture clothing dynamics and other non-rigid deformations.
 
-\section{Problem Definition}
+% - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
+
+% ---------- end of notes section
+
+
+\section{Preliminary}
+\subsection{SMPLX Body Model}
+% - brief overview of SMPLX model
+% - parameters: shape, pose, expression, global translation
+% - forward kinematics and linear blend skinning
+
+\subsection{3D Gaussians}
+% - representation of 3D scene using 3D Gaussians
+% - parameters: position, covariance, color, opacity, etc.
+% - volume rendering with 3D Gaussians
+
+
+\section{Method}
+\subsection{Problem Definition}
 % - Input and output specification
+% Input: unposed monocular video of dynamic human centric scene, captured from either static or moving camera
+% Output: 4D representation of the scene: a. canonical 3dgs b. smplx parameters over time c. camera parameters over time
+% d. if needed 3dgs can be converted to mesh representation for easier visualisation. Everything is meters and in world coordinate system.
+
 % - Assumptions
+% - we currently do not account for blurry images - so we assume that the input video is of decent quality with minimal motion blur
+
 % - Scope and evaluation goals
+% - Our goal is to obtain high rendering quality for novel view synthesis, as well as accurate recovery of human motion in the scene. We evaluate our method on both quantitative metrics such as PSNR, SSIM, LPIPS for novel view synthesis
+% - We also want to obtain high pose quality which we measure using MPJPE, MVE, Contact Distance and Percentage of Correct Depth relations
+% - As another proxy for quality of extracted geometry, we also measure mesh reconstrution quality using V-IoU, Chamfer Distance, P2S and Normal Consistency
+% - Finally, we also evaluate the segmentation quality using IoU, F1 and Recall metrics - segmentation is important for being able to distenghuish dynamic and static parts of the scene
+
+\subsection{Preprocessing}
+% 1. Estimate SMPLX parameters for each frame using feed forward model Human3R and obtain SMPLX parameters in world coordiantes along with camera parameters
+% 2. Estimate the humans using sam3 (video model) and prompt "a person"
+% 3. Then use the estimated masks for each human and select the first frame, and feed the masked image for each human to LHM to obtain canonical 3dgs for each human 
+
+\subsection{Novel Training View Synthesis with DiFix}
+% - explain how DiFix works
+% - explain the algorithm for synthesising novel training views
+% - show visualisation with camera setup and novel training views
 
 
-% Notes for my method
+\subsection{Training loop}
+% - canonical to posed 3dgs
+% - posed 3dgs to rendered image
+% - loss functions: reconstruction loss, regularization losses
+
+
+% ---------------------------- Notes section for method 
 % - One of the not so obvious things was how to choose LBS weights for the gaussians if you do not have one to one mapping 
 % to the corresponding SMPL vertex. So I definitely have to mention how LHM does it
 
@@ -120,42 +224,83 @@
 % 1. I thought that it would be good idea to apply the mask to rendred images if the mask was classified as unreliable - meaning the IoU was below threshold - meaning maybe only a small subset of valid pixels from the human was selected -> btw. that's a big if because the unreliable mask could be also just selecting wrong pixels in which case I would actually include the static bg
 % --> bottom line here is: when I never apply mask to render, this gives best reults.
 % 2. I have figgured that promptin SAM autoregressively actually help a lot! In fact, in week 14, i have done full deep dive into how to promt SAM best. In general, this weird artifacts did not seem to be an issue specific to our pipeline and there have geen some opened Github issues
-\section{Method}
-\subsection{Overview}
-\subsection{Preprocessing}
-\subsection{Camera Setup and Coordinate Systems}
-\subsection{Human Representation}
-\subsection{Static and Dynamic Gaussian Modeling}
-\subsection{Optimization and Training Procedure}
-\subsection{Novel View Rendering}
-% \subsection{Optional Refinement Stage}
+
+% I think the two unique and novel ideas of my method are:
+% 1. using DiFix for canonical initialisation  - this allows me to then later use DiFix since the rendered novel vies are already decent so there is less ambiguity for DiFix to resolve
+% 2. integrating DiFix - I not only take what works in the original implementatation, but I have to adapt it to my specific case where we dont just have static scene but instad dynamic scene, and we have 
+% feed from just a single mono camera - so I have to figure out a way to synthesise the virtual camera, this is in contrast to the original difix paper where they have sparse set of views already
+
+% I think i should also highlight that while I do use SMPLX as prior, the 3DGS is free to learn the offset from the SMPLX surface, so in theory it can learn clothing dynamics and other non-rigid deformations that are not captured by the SMPLX model itself.
+% ----------------------------- end of notes section
+
 
 \section{Experimental Setup}
+
 \subsection{Datasets}
-\subsection{Baselines}
+% Datasets
+% Hi4d - two humans performing complex interactions - dance, hug etc., in door capture, multiple static cameras, access to ground truth meshes and poses, and also multi view videos for eval.
+% MMM - 3-4 humans per scene performing complex interactions, in door capture, capture via singly dynamic camera (smartphone), access to ground truth meshes and camera poses only - hence we only eval mesh reconstruction using this dataset
+% We also use one in the wild video to validate that our method works in real world scenarios 
 
 
 % Some notes on the evaluation
 % At the start, of the thesis, I still thought I am going to use football videos
 % So my approach was similar to Neuman paper split monovideo into train and val frames
-
 \subsection{Evaluation Metrics}
+% - Novel View Synthesis: PSNR, SSIM, LPIPS. We use the ground truth camera and smpl parameters to render the ground truth images for the novel views. Side note: since our method expects smplx, we use the official SMPLX fitting code to fit smplx to the ground truth meshes to obtain smplx parameters for rendering the ground truth images.
+% - Pose Estimation: MPJPE (mm), MVE (mm), Contact Distance, Percentage of Correct
+% - Mesh Reconstruction: V-IoU, Chamfer Distance (cm), P2S (cm), Normal Consistency. We use marching cubes algorithm to extract meshes from the 3dgs representation for evaluation.
+% - Segmentation: IoU, F1, Recall
+
 \subsection{Implementation Details}
+% - training details: 
+% -- optimizer AdamW 
+% -- learning rate 1e-5
+% -- batch size 5
+% -- for differentable rasterisation, we are using gsplat library 
+% -- number of iterations = 15 epochs
+% -- nuber of views = 8, subsample original frames by factor of 5, so 100 frames -> 20 training views
+% --> so in total 8*20 = 160 novel training views
+% - preprocessing time - around 10-15 minutes per scene
+% - training time - around 15 minutes per scene on single V100 GPU
 
 \section{Results}
-\subsection{Quantitative Results}
-\subsection{Qualitative Results}
+% My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
+
+\subsection{Reconstruction Comparisons}
+% In addition to MultiPly, here we are comparing to: ECON and Vid2Avatar
+% We evaluate the mesh reconstruction quality on two datasets: Hi4D and MMM
+
+\subsection{Instance Segmentation Comparisons}
+% We compare our segmentation quality to MultiPly's initial version (SAM1), to MultiPly's final versin using progressive masking with SAM1, and then ours using SAM3 video model
+
+
+\subsection{Novel View Synthesis Comparisons}
+% We use MultiPly and in addition also the result from strong multi view baseline model
+
+\subsection{Pose Estimation Comparisons}
+% We compare our pose estimation quality to MultiPly, we use Human3R without any 2D refinement as MultiPly does
+% ideally, I would also compare how this improves after tuning the params during training
+
 \subsection{Ablation Studies}
+% - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training
+% - No DiFix refinement: init from LHM, but do not refine the novel training views using DiFix
+% - NO LHM + No DiFix: train from scratch without LHM initialisation and without DiFix refinement of novel training views
 
 \section{Discussion}
-% - Interpretation of results
-% - Strengths and weaknesses
-% - Comparison to baselines
+% - What was surprisingly hard
+% -- explicit methods are really bad for sparse view settings and unlike implicit methods, they cannot really interpolate well between the known views
+% -- even state of the art pose estimators still struggle with complex interactions and occlusions
+% -- I expected DiFix to be better it seems that the model is simply lackign human priors
+% -- Overall, comin up with good preprocessing pipeline was really challenging and time consuming, I started with 4D humans to realise that this gives me only local poses and also only SMPL
 
 \section{Limitations}
 % - Failure cases
 % - Assumptions that do not hold
-% - Scalability and generalization limits
+% Scalability and generalization limits
+% - in general, the method is still quite slow, taking between 15 to 30 minutes to run whole pipleine 
+% - also since it is multi step pipeline, there are many interdependent components, and installing all the environment dependencies can be quite challenging
+
 
 \section{Conclusion}
 % - Summary of contributions

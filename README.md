@@ -22,3 +22,7 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 9. Better 3dgs initialisation from LHM - currently always use the first frame to predict human, too naive, would be better to use somthing more sophisticated
 10. currently, when doing the difix refinement for novel view, i choose the exact same time point 
 11. maybe I was all wrong and the alternative approach with 1. mono to multivide video 2. fit 4dgs is way to go. There is a new paper called MV performer that shows sort of this path for scenes with a single human. I think it would be worth testing this pipleine and see how well it extends to multiple humans and possibly more complex environments 
+12. End to end model - we know that LHM is strong at getting canonical human representation, but not so good at motion. While Human3R can get us motion, but is not trained to predict cano representation, maybe these two could be combined
+13. project website - get isnpired from 
+- difix: https://research.nvidia.com/labs/toronto-ai/difix3d/
+- https://monst3r-project.github.io/
