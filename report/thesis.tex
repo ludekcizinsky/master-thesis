@@ -58,6 +58,7 @@
 % -- In general, 4D reconstruction from monocular video is highly ill-posed problem
 % -- Apart from obtaining multi-view consistency from monocular video, we also have to ensure temporal consistency
 % -- In addition, the system needs to be able to accurately disentangle the motion of camera and objects in the scene
+% -- Further, we need to make sure we correctly separate dynamic and static parts of the scene - e.g. avoid having static background bleed into dynamic objects
 % - Specific challenges in human-centric reconstruction
 % -- Humans are highly non-rigid objects, with complex articulations and deformations including clothing dynamics and hair motion
 % -- Human motion is often fast and unpredictable, leading to motion blur and occlusions
@@ -92,6 +93,12 @@
 % - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
 % I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
 
+% Notes on models that I have actually tried:
+% 1. Generative camera dolly - I think this one of the first papers to introduce explicit camera control for the novel view synthesis, however, the main limitation of their method was: 1. scope of data - very limited domain - trained on synthetic data - multiple objects 2. the farther from the original you go, the worse quality. When I tried their model on their own data, it did not work so well, and it did not work essentially at all on my football data
+% 2. Guess the unseen - the main limitation of this model is that they have to tune single SD1.5 for every person in the scene. And from what I have observed the model in addition to that hallucinated a lot - and I was only able to visualise the original view of the scene. Another issue with guess the unseen was their separation of dynamic and static background - their masking pipeline often failed and as a result you could see how static background is actually attached to the dynamic objects.
+% 3. Shape of motion - you can see with their demo on the website that the nvs from extreme viewpoints sucks
+
+
 \section{Related Work}
 \subsection{3D Gaussian Splatting}
 \subsection{Dynamic Scene Reconstruction}
@@ -105,7 +112,14 @@
 % - Scope and evaluation goals
 
 
+% Notes for my method
+% - One of the not so obvious things was how to choose LBS weights for the gaussians if you do not have one to one mapping 
+% to the corresponding SMPL vertex. So I definitely have to mention how LHM does it
 
+% I have spent signifficant amount of time making the progressive masking work and thinking, and especially making sure the ouput masks are good. Here are some main learning points I made along the way:
+% 1. I thought that it would be good idea to apply the mask to rendred images if the mask was classified as unreliable - meaning the IoU was below threshold - meaning maybe only a small subset of valid pixels from the human was selected -> btw. that's a big if because the unreliable mask could be also just selecting wrong pixels in which case I would actually include the static bg
+% --> bottom line here is: when I never apply mask to render, this gives best reults.
+% 2. I have figgured that promptin SAM autoregressively actually help a lot! In fact, in week 14, i have done full deep dive into how to promt SAM best. In general, this weird artifacts did not seem to be an issue specific to our pipeline and there have geen some opened Github issues
 \section{Method}
 \subsection{Overview}
 \subsection{Preprocessing}
@@ -119,6 +133,12 @@
 \section{Experimental Setup}
 \subsection{Datasets}
 \subsection{Baselines}
+
+
+% Some notes on the evaluation
+% At the start, of the thesis, I still thought I am going to use football videos
+% So my approach was similar to Neuman paper split monovideo into train and val frames
+
 \subsection{Evaluation Metrics}
 \subsection{Implementation Details}
 
