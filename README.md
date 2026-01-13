@@ -26,3 +26,5 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 13. project website - get isnpired from 
 - difix: https://research.nvidia.com/labs/toronto-ai/difix3d/
 - https://monst3r-project.github.io/
+
+14. I wonder how well the 3dgs of depth anything 3 would work for our use case

@@ -206,15 +206,54 @@
 % - As another proxy for quality of extracted geometry, we also measure mesh reconstrution quality using V-IoU, Chamfer Distance, P2S and Normal Consistency
 % - Finally, we also evaluate the segmentation quality using IoU, F1 and Recall metrics - segmentation is important for being able to distenghuish dynamic and static parts of the scene
 
+We expect as input unposed monocular video of a scene with multiple humans interacting or performing complex motions. The video can be captured from either a static or moving camera. Our method outputs a 4D representation of the scene consisting of: (a) a canonical 3D Gaussian Splatting (3DGS) representation, (b) SMPLX parameters over time for each human, and (c) camera parameters over time. If needed, the 3DGS can be converted to a mesh representation for easier visualization. All outputs are represented in meters and in the world coordinate system. We assume that the video sequence does not contain significant motion blur, ensuring that the input frames are of sufficient quality for accurate reconstruction. Further, we assumes that there are no objects that would signifficantly occlude the humans in the scene. In addition, reconstruction of the static components of the scene as well as dynamic objects (except from humans indeed) is out of the scope of this work. Finally, our method has been only tested on short videos sequences of up to 10 seconds in length.
+
+First, our goal is to obtain realistic motion and geometry. Therefore, we will evaluate our method on 3D pose estimation and mesh reconstruction. Second, we want to ensure high rendering quality for novel view synthesis, even from extreme viewpoints, therefore to this end we will evaluate our method on novel view synthesis task. Finally, we want to be able to accurately distengle the static part of the scene from the dynamic humans. We will evaluate this by segmentation metrics.
+
+
 \subsection{Preprocessing}
 % 1. Estimate SMPLX parameters for each frame using feed forward model Human3R and obtain SMPLX parameters in world coordiantes along with camera parameters
 % 2. Estimate the humans using sam3 (video model) and prompt "a person"
 % 3. Then use the estimated masks for each human and select the first frame, and feed the masked image for each human to LHM to obtain canonical 3dgs for each human 
 
+First, we start with obtaining SMPLX parameters \cite{smplx} using Human3R \cite{chen2025human3r} which is a feed forward model capable of jointly estimating not only SMPLX parameters, but also camera parameters and static point cloud all in a shared world frame and in meters. Next, we use SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmentation masks for each human in the scene. We simply prompt the model with "a person" and use the video model to ensure temporal consistency. Finally, we select a representative frame for each human, mask out the rest of the image using the estimated segmentation masks, and feed the masked images to LHM \cite{qiu2025lhm} to obtain canonical 3DGS representation for each human.
+
+
 \subsection{Novel Training View Synthesis with DiFix}
-% - explain how DiFix works
-% - explain the algorithm for synthesising novel training views
-% - show visualisation with camera setup and novel training views
+
+% inclue this figure here:
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/novel_view_gen_overview.drawio.png}
+    \caption{Overview of our novel training view synthesis pipeline using DiFix. We start with the monocular video and the estimated SMPLX parameters to render initial novel views of the humans using the canonical 3DGS obtained from LHM during preprocessing. These initial renderings are then refined using DiFix to ensure multi-view and temporal consistency. The refined novel views are then used as input to our main training pipeline.}
+    \label{fig:novel_view_synthesis_difix}  
+\end{figure}
+
+
+% explain how DiFix works
+Our explicit scene representation is sensitive to the number of input views, and easily overfits to the training views, while for unseen views, we get blurry artifacts and holes in the reconstruction. For this reason, it is crucial to lift the monocular video to a set of multi-view videos to provide multi-view guidance during trainig and avoid the before mentioned issues.
+
+Synthesising novel training videos from monocular video is indeed highly ill posed problem. The key challenge is to produce novel videos that are both multi-view as well as temporally consistent. Therefore, to make the problem simpler, we make use of the following two insights. First, it is much simpler to synthesie novel views which are close to the original view. In other words, we can recursively synthesie novel views that are slightly offset from the original view, and then use these novel views as input to synthesie further novel views. Second, it is much easier to synthesie apperance of the person if we already have a initial good estimate. For this reason, we make use of the canonical 3DGS obtained from LHM during preprocessing to render initial novel views of the person, and then use these renderings as input to DiFix \cite{wu2025difix3d} to refine the renderings and ensure multi-view and temporal consistency.
+
+
+% explain the algorithm for synthesising novel training views
+Figure \ref{fig:novel_view_synthesis_difix} shows an overview of our algorithm for obtaining novel view videos based on the source monocular video. First, DiFix is image-to-image diffusion model (finetuned version of Stable Diffusion) that expects three inputs: a. reference image b. image to refine c. prompt.
+We use the default prompt from the original paper which is "remove degradation". The first row of Figure \ref{fig:novel_view_synthesis_difix} shows how we obtain novel views which are progressively farther from the original view. For instance, in the first step, our goal is to synthesise novel views for cameras with IDs 16 and 88 (hence orange color). We therefore use as the reference view the source camera with the ID 4 (blue color). The second row of Figure \ref{fig:novel_view_synthesis_difix} shows the actual process of obtaining the novel views for selected camera frame by frame. For instance, to synthesise novel view for camera 88 whose reference camera is camera 4, we follow these steps to synthesise the novel view at frame $t$:
+
+\begin{enumerate}
+  \item Sample frame $t$ from the reference camera 4
+  \item Render frame $t$ from target camera 88 using the canonical 3DGS obtained from LHM during preprocessing. This gives us an initial estimate of the novel view.
+  \item Feed both images to DiFix to obtain the refined novel view for camera 88 at frame $t$.
+\end{enumerate}
+
+We repeat the above process for all frames in the video sequence to obtain the full novel view video for camera 88. We repeat the entire process for all target cameras to obtain a set of novel view videos that are then used as input to our main training pipeline. Figure \ref{fig:trn_nv_cam_gen_3d_vis} shows a 3D visualisation of the generated novel training view cameras around the original scene. We generate this circle of novel training cameras before starting the DiFix synthesis process. Cameras are generated in such a way that they are evenly distribured in a circle around the scene such that across all frames, the estimated SMPLX humans are always in the field of view of all cameras.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/trn_view_cam_gen_in_3d.png}
+    \caption{Visualisation of the generated generated training view cameras around the original scene. The generated cameras are in orange, while the original camera trajectory is in blue. We use Viser \cite{yi2025viser} to obtain this visualisation.}
+    \label{fig:trn_nv_cam_gen_3d_vis}  
+\end{figure}
 
 
 \subsection{Training loop}
@@ -400,9 +439,8 @@
 % - Key findings
 % - Future work
 
-\bibliographystyle{ieee_fullname}
-\bibliography{references}
 
+\newpage
 \bibliographystyle{plainnat}
 \bibliography{references}
 
