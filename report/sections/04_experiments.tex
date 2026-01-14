@@ -17,29 +17,17 @@
 \section{Experimental Setup}
 
 \subsection{Datasets}
-% Datasets
-% Hi4d - two humans performing complex interactions - dance, hug etc., in door capture, multiple static cameras, access to ground truth meshes and poses, and also multi view videos for eval.
-% MMM - 3-4 humans per scene performing complex interactions, in door capture, capture via singly dynamic camera (smartphone), access to ground truth meshes and camera poses only - hence we only eval mesh reconstruction using this dataset
-% We also use one in the wild video to validate that our method works in real world scenarios 
 
-
-% Some notes on the evaluation
-% At the start, of the thesis, I still thought I am going to use football videos
-% So my approach was similar to Neuman paper split monovideo into train and val frames
 \paragraph{Hi4D.}
-We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly \cite{multiply} for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters live in different world frame, we align our predictions to the ground truth world coordinate system using the provided camera parameters.
+We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people performing complex motions. Hi4D provides multi-view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly \cite{multiply} for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters can live in a different world coordinate frame than the ground truth, we apply a camera-based world alignment using the provided camera parameters and use the same alignment consistently across all tasks, including pose and reconstruction metrics.
 
 
 \paragraph{MMM.}
-To also evaluate our method on scenes with more than two persons and dynamic camera motion, we also
-evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions. Again, we follow the evaluation protocol of MultiPly and use the following scenes from MMM - \textit{dance}, \textit{lift} and \textit{walkdance}.
+We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and dynamic camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM: \textit{dance}, \textit{lift} and \textit{walkdance}.
 
 
 \subsection{Evaluation Metrics}
-% - Novel View Synthesis: PSNR, SSIM, LPIPS. We use the ground truth camera and smpl parameters to render the ground truth images for the novel views. Side note: since our method expects smplx, we use the official SMPLX fitting code to fit smplx to the ground truth meshes to obtain smplx parameters for rendering the ground truth images.
-% - Pose Estimation: MPJPE (mm), MVE (mm), Contact Distance, Percentage of Correct
-% - Mesh Reconstruction: V-IoU, Chamfer Distance (cm), P2S (cm), Normal Consistency. We use marching cubes algorithm to extract meshes from the 3dgs representation for evaluation.
-% - Segmentation: IoU, F1, Recall
+
 \paragraph{Novel view synthesis.}
 We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (lower is better) \cite{lpips}. PSNR measures the pixel-wise fidelity of the reconstructed image by computing the logarithmic ratio between the maximum pixel value and the mean squared error, and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network and correlates better with human judgement than purely pixel-based metrics.
 
@@ -64,16 +52,6 @@ For Chamfer distance, P2S, and normal consistency we estimate the metrics by sam
 Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
 
 \subsection{Implementation Details}
-% - training details: 
-% -- optimizer AdamW 
-% -- learning rate 1e-5
-% -- batch size 5
-% -- for differentable rasterisation, we are using gsplat library 
-% -- number of iterations = 15 epochs
-% -- nuber of views = 8, subsample original frames by factor of 5, so 100 frames -> 20 training views
-% --> so in total 8*20 = 160 novel training views
-% - preprocessing time - around 10-15 minutes per scene
-% - training time - around 15 minutes per scene on single V100 GPU
 We optimize all 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 8 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps). For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
 
 \section{Results}
