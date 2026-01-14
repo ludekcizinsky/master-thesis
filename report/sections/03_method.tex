@@ -3,8 +3,6 @@
 %
 % Created 03/08/2024 by Tobias Fischer
 %% ----------------------------------------------------------------------------
-\newpage
-\chapter{Method}
 
 % -------- Instructions for writing the method section:
 % The objectives of the Method section are the following: 
@@ -16,6 +14,9 @@
 % \end{itemize}
 
 
+\newpage
+\chapter{Method}
+
 \section{Preliminaries}
 \subsection{SMPLX Body Model}
 % - brief overview of SMPLX model
@@ -26,7 +27,6 @@
 % - representation of 3D scene using 3D Gaussians
 % - parameters: position, covariance, color, opacity, etc.
 % - volume rendering with 3D Gaussians and camera parameters
-
 
 
 \section{Problem Definition}
@@ -52,11 +52,20 @@ Our evaluation axes reflect the overall objectives of the thesis. First, we targ
 
 
 \section{Preprocessing}
-% 1. Estimate SMPLX parameters for each frame using feed forward model Human3R and obtain SMPLX parameters in world coordiantes along with camera parameters
-% 2. Estimate the humans using sam3 (video model) and prompt "a person"
-% 3. Then use the estimated masks for each human and select the first frame, and feed the masked image for each human to LHM to obtain canonical 3dgs for each human 
 
-First, we start with obtaining SMPLX parameters \cite{smplx} using Human3R \cite{chen2025human3r} which is a feed forward model capable of jointly estimating not only SMPLX parameters, but also camera parameters and static point cloud all in a shared world frame and in meters. Next, we use SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmentation masks for each human in the scene. We simply prompt the model with "a person" and use the video model to ensure temporal consistency. Finally, we select a representative frame for each human, mask out the rest of the image using the estimated segmentation masks, and feed the masked images to LHM \cite{qiu2025lhm} to obtain canonical 3DGS representation for each human.
+Our pipeline relies on a preprocessing stage that estimates camera and human priors from the raw monocular video. All three components are necessary: Human3R provides per-frame cameras and SMPL-X parameters, SAM3 provides instance masks, and LHM provides a per-person canonical 3DGS initialization. This initialization is later crucial for novel training view synthesis, where we render posed 3DGS and refine them with DiFix. If the initial renderings are poor, the image-to-image refinement becomes substantially harder.
+
+\paragraph{Human3R.}
+We first estimate SMPL-X parameters and camera parameters for every frame using Human3R \cite{chen2025human3r}. Human3R outputs all estimates in a shared world coordinate frame and in metric units.
+
+\paragraph{SAM3.}
+Next, we run SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmentation masks for each person. We prompt the video model with ``a person'' and rely on its temporal tracking to maintain consistent identities across frames.
+
+\paragraph{LHM initialization.}
+Finally, we initialize a canonical 3DGS model for each person using LHM \cite{qiu2025lhm}. LHM predicts the Gaussians in its neutral canonical pose space. For simplicity, we always use the first video frame as the reference frame: we mask the frame with the corresponding SAM3 instance mask and feed the masked image to LHM.
+
+\paragraph{Limitations.}
+Preprocessing can fail in several ways. SAM3 may miss all people in a scene or lose a person for a subset of frames, which requires manual inspection. In addition, mask track identities may not always match the motion tracks and ground truth track identities, and we need to ensure that we process all detected people. These limitations motivate careful curation of the preprocessed outputs before training.
 
 
 \section{Novel Training View Synthesis with DiFix}
