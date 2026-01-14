@@ -1,0 +1,33 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+\newpage
+\chapter{Discussion}
+
+% -------- Instructions for writing the discussion section:
+% The discussion section gives an interpretation of what you have done \cite{day2006wap}:
+
+% \begin{itemize}
+ % \item \textit{What do your results mean?} Here you discuss, but you do not recapitulate results. Describe principles, relationships and generalizations shown. Also, mention inconsistencies or exceptions you found.
+ % \item \textit{How do your results relate to other's work?} Show how your work agrees or disagrees with other's work. You can rely on the information you presented in the ``related work'' section.
+ % \item \textit{What are the implications and applications of your work?} State how your methods may be applied and what implications might be. 
+% \end{itemize}
+
+% \noindent Make sure that the introduction/related work and the discussion section act as a pair, i.e. ``be sure the discussion section answers what the introduction section asked'' \cite{day2006wap}. 
+
+
+\section{Discussion}
+% - What was surprisingly hard
+% -- explicit methods are really bad for sparse view settings and unlike implicit methods, they cannot really interpolate well between the known views
+% -- even state of the art pose estimators still struggle with complex interactions and occlusions
+% -- I expected DiFix to be better it seems that the model is simply lackign human priors
+% -- Overall, comin up with good preprocessing pipeline was really challenging and time consuming, I started with 4D humans to realise that this gives me only local poses and also only SMPL
+
+\section{Limitations}
+% - Failure cases
+% - Assumptions that do not hold
+% Scalability and generalization limits
+% - in general, the method is still quite slow, taking between 15 to 30 minutes to run whole pipleine 
+% - also since it is multi step pipeline, there are many interdependent components, and installing all the environment dependencies can be quite challenging

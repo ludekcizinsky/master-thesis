@@ -1,0 +1,178 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+\newpage
+\chapter{Experiments}
+
+% ------- Instructions for writing the experiments section:
+% Describe the evaluation you did in a way, such that an independent researcher can repeat it. Cover the following questions:
+% \begin{itemize}
+ % \item \textit{What is the experimental setup and methodology?} Describe the setting of the experiments and give all the parameters you have used in detail. Give a detailed account of how the experiment was conducted.
+ % \item \textit{What are your results?} In this section, a \emph{clear description} of the results is given. If you produced lots of data, include only representative data here and put all results into the appendix. 
+% \end{itemize}
+
+
+\section{Experimental Setup}
+
+\subsection{Datasets}
+% Datasets
+% Hi4d - two humans performing complex interactions - dance, hug etc., in door capture, multiple static cameras, access to ground truth meshes and poses, and also multi view videos for eval.
+% MMM - 3-4 humans per scene performing complex interactions, in door capture, capture via singly dynamic camera (smartphone), access to ground truth meshes and camera poses only - hence we only eval mesh reconstruction using this dataset
+% We also use one in the wild video to validate that our method works in real world scenarios 
+
+
+% Some notes on the evaluation
+% At the start, of the thesis, I still thought I am going to use football videos
+% So my approach was similar to Neuman paper split monovideo into train and val frames
+\paragraph{Hi4D.}
+We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction.
+
+\paragraph{MMM.}
+To also evaluate our method on scenes with more than two persons and dynamic camera motion, we also
+evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions.
+
+\paragraph{In the wild.}
+Finally, we include one in the wild monocular video to qualitatively validate that the pipeline can be applied outside of curated datasets.
+
+\subsection{Evaluation Metrics}
+% - Novel View Synthesis: PSNR, SSIM, LPIPS. We use the ground truth camera and smpl parameters to render the ground truth images for the novel views. Side note: since our method expects smplx, we use the official SMPLX fitting code to fit smplx to the ground truth meshes to obtain smplx parameters for rendering the ground truth images.
+% - Pose Estimation: MPJPE (mm), MVE (mm), Contact Distance, Percentage of Correct
+% - Mesh Reconstruction: V-IoU, Chamfer Distance (cm), P2S (cm), Normal Consistency. We use marching cubes algorithm to extract meshes from the 3dgs representation for evaluation.
+% - Segmentation: IoU, F1, Recall
+\paragraph{Novel view synthesis.}
+We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (lower is better). When ground truth camera parameters and SMPL parameters are available, we render the corresponding ground truth images for evaluation. Since our pipeline uses SMPL-X, we fit SMPL-X to the ground truth meshes when needed to obtain compatible parameters using the official transfer code \cite{smplx}.
+
+\paragraph{Pose estimation.}
+We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction focused metrics: contact distance (CD, mm) and percentage of correct depth relations (PCDR) with a threshold of $0.15$m.
+
+\paragraph{Mesh reconstruction.}
+To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$, cm), point to surface distance (P2S, cm), and normal consistency (NC). For this evaluation, we extract meshes from the 3DGS representation using marching cubes.
+
+\paragraph{Instance segmentation.}
+Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection over union (IoU), recall, and F1 score.
+
+\subsection{Implementation Details}
+% - training details: 
+% -- optimizer AdamW 
+% -- learning rate 1e-5
+% -- batch size 5
+% -- for differentable rasterisation, we are using gsplat library 
+% -- number of iterations = 15 epochs
+% -- nuber of views = 8, subsample original frames by factor of 5, so 100 frames -> 20 training views
+% --> so in total 8*20 = 160 novel training views
+% - preprocessing time - around 10-15 minutes per scene
+% - training time - around 15 minutes per scene on single V100 GPU
+We optimize all 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 8 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps). For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
+
+\section{Results}
+% My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
+
+\subsection{Reconstruction Comparisons}
+% In addition to MultiPly, here we are comparing to: ECON and Vid2Avatar
+% We evaluate the mesh reconstruction quality on two datasets: Hi4D and MMM
+\begin{table}[!ht]
+  \centering
+  \caption{Human mesh reconstruction results on Hi4D and MMM. We report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$) [cm], point-to-surface distance (P2S) [cm], and normal consistency (NC). Best results per dataset and metric are in bold.}
+  \label{tab:reconstruction_results}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{ll
+      S[table-format=1.3]
+      S[table-format=1.2]
+      S[table-format=1.2]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Dataset} & \textbf{Method} & \multicolumn{1}{c}{\textbf{V-IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{C-$\ell_2$} $\downarrow$} & \multicolumn{1}{c}{\textbf{P2S} $\downarrow$} & \multicolumn{1}{c}{\textbf{NC} $\uparrow$} \\
+    \midrule
+    Hi4D & ECON & 0.787 & 3.72 & 3.59 & 0.746 \\
+     & V2A & 0.783 & 3.02 & 2.46 & 0.775 \\
+     & MultiPly & \textbf{0.816} & \textbf{2.53} & \textbf{2.34} & \textbf{0.789} \\
+     & Ours & 0.560 & 4.63 & 2.86 & 0.733 \\
+    \midrule
+    MMM & ECON & 0.760 & 4.17 & 3.71 & 0.705 \\
+     & V2A & 0.812 & 3.34 & 2.68 & 0.735 \\
+     & MultiPly & \textbf{0.826} & \textbf{2.89} & \textbf{2.40} & \textbf{0.757} \\
+     & Ours & 0.377 & 6.33 & 3.86 & 0.641 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Instance Segmentation Comparisons}
+% We compare our segmentation quality to MultiPly's initial version (SAM1), to MultiPly's final versin using progressive masking with SAM1, and then ours using SAM3 video model
+\begin{table}[!ht]
+  \centering
+  \caption{Human instance segmentation results on Hi4D. We report intersection-over-union (IoU), recall, and F1 score. Best results are in bold.}
+  \label{tab:segmentation_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=1.3]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
+    \midrule
+    SCHP & 0.937 & 0.983 & 0.982 \\
+    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
+    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
+    Ours & \textbf{0.974} & 0.982 & 0.987 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\subsection{Novel View Synthesis Comparisons}
+% We use MultiPly and in addition also the result from strong multi view baseline model
+\begin{table}[!ht]
+  \centering
+  \caption{Novel view synthesis results on Hi4D. We report PSNR and SSIM (higher is better) and LPIPS (lower is better). Best results are in bold.}
+  \label{tab:nvs_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=2.1]
+      S[table-format=1.4]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
+    \midrule
+    Shuai et al. & 0.898 & 19.6 & 0.1099 \\
+    MultiPly & 0.915 & \textbf{20.7} & \textbf{0.0798} \\
+    Ours & \textbf{0.926} & 20.2 & 0.0872 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Pose Estimation Comparisons}
+% We compare our pose estimation quality to MultiPly, we use Human3R without any 2D refinement as MultiPly does
+% ideally, I would also compare how this improves after tuning the params during training
+\begin{table}[!ht]
+  \centering
+  \caption{Human pose estimation results on Hi4D. We report MPJPE [mm], MVE [mm], contact distance (CD) [mm], and percentage of correct depth relations (PCDR) with threshold $0.15$m. Best results are in bold.}
+  \label{tab:pose_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{6pt}
+  \begin{tabular}{l
+      S[table-format=2.1]
+      S[table-format=3.1]
+      S[table-format=3.1]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{MPJPE} $\downarrow$} & \multicolumn{1}{c}{\textbf{MVE} $\downarrow$} & \multicolumn{1}{c}{\textbf{CD} $\downarrow$} & \multicolumn{1}{c}{\textbf{PCDR} $\uparrow$} \\
+    \midrule
+    CLIFF & 85.7 & 102.1 & 351.7 & 0.606 \\
+    TRACE & 95.6 & 115.7 & 249.4 & 0.603 \\
+    MultiPly & \textbf{69.4} & 83.6 & 218.4 & \textbf{0.709} \\
+    Ours & 93.9 & \textbf{77.7} & \textbf{195.8} & 0.647 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ablation Studies}
+% - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training
+% - No DiFix refinement: init from LHM, but do not refine the novel training views using DiFix
+% - NO LHM + No DiFix: train from scratch without LHM initialisation and without DiFix refinement of novel training views
+
+% I could also show ablations on using ACAP and ASAP regularisation losses as they do in LHM

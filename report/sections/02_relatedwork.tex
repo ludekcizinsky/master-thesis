@@ -1,0 +1,69 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+\newpage
+\chapter{Related Work}
+
+% -------- Instructions for writing the related work section:
+% The related work section has the following purposes: 
+
+% \begin{itemize}
+ % \item \textit{Is the overview concise?} Give an overview of the most relevant work to the needed extent. Make sure the reader can understand your work without referring to other literature.
+ % \item \textit{Does the compilation of work help to define the ``niche'' you are working in?} Another purpose of this section is to lay the groundwork for showing that you did significant work. The selection and presentation of the related work should enable you to name the implications, differences, and similarities sufficiently in the discussion section.
+% \end{itemize}
+
+% ---------- Notes section
+% I think another important topic crucial for realistic 4d reconstruction modelling are video diffusion models, so it may be good to somehow integrate this part into the thesis as well
+
+% One of the main themes we have also been seeing in the last year or so is the transition from 
+% per scene optimisation method to feedforward methods that can reconstruct the scene in a single forward pass.
+
+% Another trend I need to capture is the transition from implicit representations to explicit representations such as 3dgs 
+
+% Multi view dynamic scene reconstruction:
+% 1. Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+
+
+% Examples of state of the art method for lifting monocular video to multi view videos:
+% 1. Generative Camera Dolly (GCD) - trained on synthetic data only, if I am not mistaken, can only synthesise one novel video at a time. Also I did test it myself, and the quality of the model is not great.
+% 2. Cat4D - this is one of the earliest works. First of all, the model and the data is closed source which signifficantly limits any possible future research since it requites quite signifficant amount of resources to train. If I remember correctly, one of the limitations of this approach is A) it is mostly trained on synthetic data, and B) they show very limited novel view deviation - and this is where it indeed gets very difficult to hallucinate views which are on t he complete other side of the person for instance.
+% 3. SV4D - this is I would say open source version of Cat4d. The main problem with this method is that they assume: single object scenes with ideally no background and simple motion. So these are quite limiting constraints.
+% --- Also all these methods assume as input input from a **static** camera, which is quite limiting for real world applications.
+
+% Why do we even need explicit scene representation - can we just use diffusion models?
+% - I should try comment on this as well based on the 3dv talk from J.Barron
+
+% Notes on implicit formats:
+% - I think that it is important to mention NeRF paper which started this whole wave of implicit neural representations for 3D reconstruction. NeRF back then had two main limitatioshn which was the need for multi view inputs and also really slow training time.
+% - This sparked a new direction of papers that addressed these limitations espeically the training time, but still one of the problems with impliciti representation is it is quite hard to compose them where as with 3dgs you can easily train separate gaussians for different objects in the scene and then just combine them together. This also has to do with editability - you can easily move around gaussians in 3d space, whereas with implicit representations this is not so straightforward.
+% - Also one of the main issues with NeRF is still its rendering speed - ultimately, i thing in the last two years, we have seen transitiopn from implicit representations to explicit representations and various forms of 3DGS
+% - One thing where however implict representations still shines is its generalisation in sparse view settings. By defintin, the implciti model needs to learn a continuous function that maps from 3d space to color and density, so it can interpolate between the known views quite well. On the other hand, explicit representations such as 3dgs need to store all the information in the gaussians themselves, so if there is not enough gaussians to cover the space, it might lead to holes in the reconstruction or just weird artifacts, hence having dense set of views is crucial for good quality reconstruction.
+
+% Notes on dynamic explicit scene representations formats
+% - 1. Deformation field over canonical representation: have a canonical space and then then track deformations over time. Of course then the question becomes how to track this motion over time. For instance:
+% -- a. use point tracking and then use these points to guide the deformation field 
+% -- b. parametric human models (SMPL, SMPL-X, etc.) - however these are limited to humans only
+% -- I think it is important to note here that canonical representation's pro is that it can be animated from any motion that we can recover, whereas explicit time varying representation is limited to the motion seen during training only
+% - 2. Explicit time parametrisation - add time as an additional input to the representation. 
+% - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
+% I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
+
+% Notes on models that I have actually tried:
+% 1. Generative camera dolly - I think this one of the first papers to introduce explicit camera control for the novel view synthesis, however, the main limitation of their method was: 1. scope of data - very limited domain - trained on synthetic data - multiple objects 2. the farther from the original you go, the worse quality. When I tried their model on their own data, it did not work so well, and it did not work essentially at all on my football data
+% 2. Guess the unseen - the main limitation of this model is that they have to tune single SD1.5 for every person in the scene. And from what I have observed the model in addition to that hallucinated a lot - and I was only able to visualise the original view of the scene. Another issue with guess the unseen was their separation of dynamic and static background - their masking pipeline often failed and as a result you could see how static background is actually attached to the dynamic objects.
+% 3. Shape of motion - you can see with their demo on the website that the nvs from extreme viewpoints sucks
+% 4. LHM - this works pretty good in order to get initial results, but it only reasons about the canonical apperance and geometry. You have to separately model the motion, and this becomes an issue with state of the art pose estimatros - as of now. In addition, they still assume quite clean capture of the person to infer the canonical representation - therefore it is neccesary to be smart about how you choose the frames
+
+
+% Notes on tempalate based vs tracking methods for modelling motion
+% - Template based methods - e.g. SMPL, SMPL-X, etc. These methods are great because they provide a strong prior on human shape and motion, which helps to regularise the reconstruction. However, these methods are limited to the expressiveness of the underlying model, and often fail to capture clothing dynamics and other non-rigid deformations.
+
+% - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
+
+% I think another important aspect of my work is to highlight the differene between rasterisaton and ray tracing
+
+% ---------- end of notes section
+
