@@ -27,11 +27,12 @@
 % At the start, of the thesis, I still thought I am going to use football videos
 % So my approach was similar to Neuman paper split monovideo into train and val frames
 \paragraph{Hi4D.}
-We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction.
+We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly \cite{multiply} for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters live in different world frame, we align our predictions to the ground truth world coordinate system using the provided camera parameters.
+
 
 \paragraph{MMM.}
 To also evaluate our method on scenes with more than two persons and dynamic camera motion, we also
-evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions.
+evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions. Again, we follow the evaluation protocol of MultiPly and use the following scenes from MMM - \textit{dance}, \textit{lift} and \textit{walkdance}.
 
 \paragraph{In the wild.}
 Finally, we include one in the wild monocular video to qualitatively validate that the pipeline can be applied outside of curated datasets.
@@ -48,7 +49,9 @@ We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (
 We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction focused metrics: contact distance (CD, mm) and percentage of correct depth relations (PCDR) with a threshold of $0.15$m.
 
 \paragraph{Mesh reconstruction.}
-To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$, cm), point to surface distance (P2S, cm), and normal consistency (NC). For this evaluation, we extract meshes from the 3DGS representation using marching cubes.
+To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$, cm), point to surface distance (P2S, cm), and normal consistency (NC). For this evaluation, we extract meshes from the 3DGS representation using marching cubes. Before we compute the metrics, we align the reconstructed meshes to the ground truth meshes using rigid ICP (no scaling). We run ICP for 10 iterations with a convergence threshold of $10^{-4}$ and use 1000 surface samples to estimate the alignment.
+
+For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size 0.02 with padding 0.05 around the joint bounds of predicted and ground truth meshes.
 
 \paragraph{Instance segmentation.}
 Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection over union (IoU), recall, and F1 score.
