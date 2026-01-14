@@ -957,6 +957,7 @@ class SMPLXVoxelMeshModel(nn.Module):
         reye_pose = smplx_param["reye_pose"]
         lhand_pose = smplx_param["lhand_pose"]
         rhand_pose = smplx_param["rhand_pose"]
+        # the reason we do not use trans here is that we add it in the final LBS step
         # trans = smplx_param['trans']
 
         # forward kinematics
@@ -1079,11 +1080,17 @@ class SMPLXVoxelMeshModel(nn.Module):
            torch.Tensor: Posed vertices with shape [B*Nv, N, 3] + offset.
         """
 
+        # Get batch size and shape parameters
         batch_size = mean_3d.shape[0]
         shape_param = smplx_data["betas"]
+
+        # I believe these two are none by default
         face_offset = smplx_data.get("face_offset", None)
         joint_offset = smplx_data.get("joint_offset", None)
 
+
+        # just some shape broadcasting
+        # not sure if this case ever happens - but keep it for safety
         if shape_param.shape[0] != batch_size:
             num_views = batch_size // shape_param.shape[0]
             # print(shape_param.shape, batch_size)
@@ -1106,7 +1113,6 @@ class SMPLXVoxelMeshModel(nn.Module):
                 )
 
         # smplx facial expression offset
-
         try:
             # print(f"[DEBUG] Adding SMPL-X facial expression offset")
             smplx_expr_offset = (
@@ -1120,29 +1126,35 @@ class SMPLXVoxelMeshModel(nn.Module):
 
         mean_3d = mean_3d + smplx_expr_offset  # 大 pose
 
-        # get nearest vertex
-
-        # for hands and face, assign original vertex index to use sknning weight of the original vertex
+        # ---- Step 1: means from neutral pose to zero pose
+        # Map means to the zero pose (the smplx default pose)
+        # - for hands and face, assign original vertex index to use sknning weight of the original vertex
+        # - in practice, we are not using this at all
         mask = (
             ((self.is_rhand + self.is_lhand + self.is_face) > 0)
             .unsqueeze(0)
             .repeat(batch_size, 1)
         ).to(device)
 
-        # compute vertices-LBS function
+        # - now the transfoprm mat neutral pose is defined only for the 55 joints
+        # - we need to compute the transform mat for each vertex using the precompute skinning weights
         transform_mat_null_vertex = self.get_transform_mat_vertex(
             transform_mat_neutral_pose, mean_3d, mask
         )
 
+        # - finally use LBS to map mean_3d to the null pose
         null_mean_3d = self.lbs(
             mean_3d, transform_mat_null_vertex, torch.zeros_like(smplx_data["trans"])
-        )  # posed with smplx_param
+        )  
 
-        # blend_shape offset
+        # ----- Step 2: Add blend shape offset
+        # - this one is crucial to add so we integrate the estimated shape parameters
+        # - and therefore get unique shape per person
         blend_shape_offset = blend_shapes(shape_param, self.shape_dirs)
         null_mean3d_blendshape = null_mean_3d + blend_shape_offset
 
-        # get transformation matrix of the nearest vertex and perform lbs
+        # ----- Step 3: from zero pose to the target pose
+        # Start with getting joints at zero pose
         joint_null_pose = self.get_zero_pose_human(
             shape_param=shape_param,  # target shape
             device=device,
@@ -1150,25 +1162,29 @@ class SMPLXVoxelMeshModel(nn.Module):
             joint_offset=joint_offset,
         )
 
-        # NOTE that the question "joint_zero_pose" is different with (transform_mat_neutral_pose)'s joints.
+        # Get transform mat from zero pose to target pose along with posed joints in target pose
         transform_mat_joint, j3d = self.get_transform_mat_joint(
             None, joint_null_pose, smplx_data
         )
 
-        # compute vertices-LBS function
+        # Here, we use the precomputed skinning weights to get the zero->target mat for each vertex
+        # we do not use the means and mask inputs at all here
         transform_mat_vertex = self.get_transform_mat_vertex(
             transform_mat_joint, mean_3d, mask
         )
 
+        # Now, take the query points which are now in zero pose with blendshape applied
+        # and map them to the target pose using LBS
         posed_mean_3d = self.lbs(
             null_mean3d_blendshape, transform_mat_vertex, smplx_data["trans"]
         )  # posed with smplx_param
 
-        # as we do not use transform port [...,:,3],so we simply compute chain matrix
+        # ---- Step 4: get the final transform from neutral to posed
         neutral_to_posed_vertex = torch.matmul(
             transform_mat_vertex, transform_mat_null_vertex
         )  # [B, N, 4, 4]
 
+        # ---- Final return
         if return_joints:
             return posed_mean_3d, neutral_to_posed_vertex, j3d
         return posed_mean_3d, neutral_to_posed_vertex

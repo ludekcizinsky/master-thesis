@@ -16,3 +16,6 @@
 [submodule "submodules/sam3"]
 	path = submodules/sam3
 	url = git@github.com:ludekcizinsky/sam3.git
+[submodule "submodules/cvg-template"]
+	path = submodules/cvg-template
+	url = git@github.com:ludekcizinsky/CVG-Thesis-Template.git

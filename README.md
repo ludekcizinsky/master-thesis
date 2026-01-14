@@ -28,3 +28,4 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 - https://monst3r-project.github.io/
 
 14. I wonder how well the 3dgs of depth anything 3 would work for our use case
+15. clean up the args to the renderer and give shoutout to LHM authors that I have adapted their 3dgs model

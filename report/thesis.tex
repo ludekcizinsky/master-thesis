@@ -256,7 +256,48 @@ We repeat the above process for all frames in the video sequence to obtain the f
 \end{figure}
 
 
+\subsection{3DGS-based Dynamic Representation}
+
+
+% High-level summary (from implementation):
+% 1. We start by creatig neutrally posed mesh: this means we predefine a neutral pose smplx params, run thme through smplx model to obtain "neutrally" posed mesh. In practice, we turn the mesh into A-pose. And i think the reason why to do this is explaiend in the ex-avatar paper.
+% 2.
+
+
+% - Per-person canonical representation: each person is represented by its own canonical 3D Gaussian set (loaded as a list of Gaussian models; one model per person). Each Gaussian stores position, anisotropic scale, rotation (quaternion), opacity, and appearance coefficients (SH/RGB).
+% - Canonical positions are anchored to SMPL-X: for each person we obtain a fixed set of SMPL-X query points in a neutral/canonical pose and represent Gaussian centers as
+%   \[
+%     \mathbf{x}_{\text{cano}} = \mathbf{q} + \Delta \mathbf{x},
+%   \]
+%   where $\mathbf{q}$ are SMPL-X query points and $\Delta \mathbf{x}$ is a learned per-Gaussian offset (optimized during training).
+
+
+
+% - Deformation model: for each frame we take per-person SMPL-X parameters (pose, expression, translation, etc.) and warp the canonical Gaussian centers from neutral pose to the posed space using SMPL-X skinning (a per-point rigid transform produced by the SMPL-X model). We apply the same per-point rotation to the Gaussian orientation by converting the transform rotation to a quaternion and composing it with the canonical Gaussian rotation.
+% - Multi-person composition: we deform each person’s canonical Gaussians independently for the current frame, concatenate all posed Gaussians into one set, and render them jointly with the 3DGS renderer.
+
+
+
 \subsection{Training loop}
+
+% Write in bullet points the high level steps of the training loop here:
+% - Build a shuffled training dataloader over the training views (source camera + generated novel views), providing RGB, masks (and optionally depth), camera parameters, and per-frame SMPL-X parameters.
+% - Initialize the set of trainable tensors (canonical 3DGS parameters and selected SMPL/camera parameters, depending on the experiment) and optimize them with AdamW.
+% - (Optional) Run a pre-training evaluation to visualise the initialization quality.
+% - For each epoch:
+%   - Sample a mini-batch of frames/views and attach the neutral-pose transform to the SMPL-X parameters.
+%   - Forward pass: deform the canonical Gaussians with the per-frame SMPL-X pose and render per-view RGB, silhouette mask (and depth if enabled).
+%   - Form masked supervision targets using the foreground masks; optionally crop to a tight bounding box around the union mask for more stable losses.
+%   - Compute losses:
+%     - RGB reconstruction (masked MSE) and SSIM loss.
+%     - Silhouette loss only on the source camera view (novel-view masks can be noisy/bootstrapped).
+%     - Optional depth reconstruction loss.
+%     - Canonical regularization terms (ASAP/ACAP) to encourage plausible geometry.
+%   - Backpropagate, clip gradients, and take an optimizer step.
+%   - Log scalars to Weights\&Biases and periodically dump debug visualisations (render vs.\ GT, masks, depths).
+% - (Optional) Run evaluation every $N$ epochs (e.g., NVS metrics and/or mesh/pose metrics, depending on the dataset and available GT).
+
+
 \begin{figure}[!ht]
     \centering
     \includegraphics[width=0.8\textwidth]{figures/trn_pip_overview.drawio.png}
@@ -425,6 +466,8 @@ We repeat the above process for all frames in the video sequence to obtain the f
 % - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training
 % - No DiFix refinement: init from LHM, but do not refine the novel training views using DiFix
 % - NO LHM + No DiFix: train from scratch without LHM initialisation and without DiFix refinement of novel training views
+
+% I could also show ablations on using ACAP and ASAP regularisation losses as they do in LHM
 
 \section{Discussion}
 % - What was surprisingly hard
