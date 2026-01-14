@@ -175,6 +175,8 @@
 
 % - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
 
+% I think another important aspect of my work is to highlight the differene between rasterisaton and ray tracing
+
 % ---------- end of notes section
 
 
@@ -187,7 +189,7 @@
 \subsection{3D Gaussians}
 % - representation of 3D scene using 3D Gaussians
 % - parameters: position, covariance, color, opacity, etc.
-% - volume rendering with 3D Gaussians
+% - volume rendering with 3D Gaussians and camera parameters
 
 
 \section{Method}
@@ -258,45 +260,65 @@ We repeat the above process for all frames in the video sequence to obtain the f
 
 \subsection{3DGS-based Dynamic Representation}
 
+% Terminology definitions:
+% 1. Neutral pose - our own pose definition which is similar to A pose (have to double check this)
+% 2. Zero pose - SMPLX zero pose definition (all pose parameters set to zero)
+% 3. Target frame pose - estimated SMPLX pose for a given frame in the video sequence
+% 4. N = number of 3dgs vertices after upsampling = 40k
 
-% High-level summary (from implementation):
-% 1. We start by creatig neutrally posed mesh: this means we predefine a neutral pose smplx params, run thme through smplx model to obtain "neutrally" posed mesh. In practice, we turn the mesh into A-pose. And i think the reason why to do this is explaiend in the ex-avatar paper.
-% 2.
-
-
-% - Per-person canonical representation: each person is represented by its own canonical 3D Gaussian set (loaded as a list of Gaussian models; one model per person). Each Gaussian stores position, anisotropic scale, rotation (quaternion), opacity, and appearance coefficients (SH/RGB).
-% - Canonical positions are anchored to SMPL-X: for each person we obtain a fixed set of SMPL-X query points in a neutral/canonical pose and represent Gaussian centers as
-%   \[
-%     \mathbf{x}_{\text{cano}} = \mathbf{q} + \Delta \mathbf{x},
-%   \]
-%   where $\mathbf{q}$ are SMPL-X query points and $\Delta \mathbf{x}$ is a learned per-Gaussian offset (optimized during training).
-
-
-
-% - Deformation model: for each frame we take per-person SMPL-X parameters (pose, expression, translation, etc.) and warp the canonical Gaussian centers from neutral pose to the posed space using SMPL-X skinning (a per-point rigid transform produced by the SMPL-X model). We apply the same per-point rotation to the Gaussian orientation by converting the transform rotation to a quaternion and composing it with the canonical Gaussian rotation.
-% - Multi-person composition: we deform each person’s canonical Gaussians independently for the current frame, concatenate all posed Gaussians into one set, and render them jointly with the 3DGS renderer.
+% We define the neutrally posed upsampled mesh vertex as follows:
+% 1. We first define a neutral pose for the SMPLX model - this is similar to A-pose
+% 2. We then obtain the neutral pose mesh vertices - approximately 10k vertices
+% 3. We upsample these vertices to 40k vertices using the body/face ratio: 3 -> we therefore end up with around 30k body vertices and 10k face vertices
+% 4. For each upsampled vertex, we also obtain the corresponding LBS weights for all 55 joints by finding the closest original vertex from the original 10k vertices -> we get 40k x 55 LBS weights matrix
+% In addition, we store the transformation that takes us from the neutral pose back to the zero -> matrix of shape (55, 4, 4)
 
 
+% LHM then predicts the canonical 3DGS parameters in the neutral pose space:
+% 1. mean offsets from the neutral pose vertices, shape Nx3
+% 2. rotation represented as quarternions, shape Nx4
+% 3. scales represented as diagonal covariance matrices, with shape Nx3, therefore each of the 3 dims defines the variance along the corresponding axis
+% 4. opacity, shape Nx1
+% 5. colors in RGB space, shape Nx3
 
-\subsection{Training loop}
+% Deformation from the neutral pose to the target frame pose then works as follows.
+% On a high level, we need to determine the translation and rotation for each gaussian from the neutral pose to the target frame pose.
+% For the translation, our goal is to therefore determine the position of each gaussian in the target frame pose:
+  % 1. Take the query points defined in the neutral canonical space and add the learned offset_xyz
+  % 2. We then map these query points from the neutral canonical pose to the zero pose where we add the blendshapes offsets to account for spefic body shapes
+  % 3. Finally, given the precomputed skinning weights and the smplx pose parameters, we map the query points from the zero pose to the target posed space
+% As a result, we obtain the xyz position of each gaussian in the target frame pose
 
-% Write in bullet points the high level steps of the training loop here:
-% - Build a shuffled training dataloader over the training views (source camera + generated novel views), providing RGB, masks (and optionally depth), camera parameters, and per-frame SMPL-X parameters.
-% - Initialize the set of trainable tensors (canonical 3DGS parameters and selected SMPL/camera parameters, depending on the experiment) and optimize them with AdamW.
-% - (Optional) Run a pre-training evaluation to visualise the initialization quality.
-% - For each epoch:
-%   - Sample a mini-batch of frames/views and attach the neutral-pose transform to the SMPL-X parameters.
-%   - Forward pass: deform the canonical Gaussians with the per-frame SMPL-X pose and render per-view RGB, silhouette mask (and depth if enabled).
-%   - Form masked supervision targets using the foreground masks; optionally crop to a tight bounding box around the union mask for more stable losses.
-%   - Compute losses:
-%     - RGB reconstruction (masked MSE) and SSIM loss.
-%     - Silhouette loss only on the source camera view (novel-view masks can be noisy/bootstrapped).
-%     - Optional depth reconstruction loss.
-%     - Canonical regularization terms (ASAP/ACAP) to encourage plausible geometry.
-%   - Backpropagate, clip gradients, and take an optimizer step.
-%   - Log scalars to Weights\&Biases and periodically dump debug visualisations (render vs.\ GT, masks, depths).
-% - (Optional) Run evaluation every $N$ epochs (e.g., NVS metrics and/or mesh/pose metrics, depending on the dataset and available GT).
+%  For the rotation, we do the following:
+  % 1. Extract the rotation matrix that maps from the neutral canonical pose to the target posed space for each query point
+  % 2. Convert this rotation matrix to quaternion representation and normalize it to ensure valid rotation
+  % 3. We then apply then defined this rotation to a subset of 3dgs that are constrained to the body (e.g., torso, arms, legs) to avoid unwanted rotation artifacts, 
+  % for the rest of the 3dgs we keep the rotation as in the canonical spacea
+% As a result, we obtain rotatatio from the neutral pose to the target frame pose for each gaussian in the form of quaternions
 
+% We then render the posed 3dgs into images using differentiable rendering via gsplat library.
+
+% Benefits of my design choices:
+% 1. the 3DGS is free to learn the offset from the SMPLX surface, so in theory it can learn clothing dynamics and other non-rigid deformations that are not captured by the SMPLX model itself
+% 2. i should explain why do we actually have "special" neutral space - not just because that's what LHM does...
+
+We use a human-centric dynamic scene representation that combines a parametric body model (SMPL-X) with 3D Gaussian Splatting (3DGS). Throughout this section, we distinguish three poses: (i) the \emph{zero pose}, where all SMPL-X pose parameters are set to zero; (ii) a fixed \emph{neutral pose} (an A-pose-like configuration used to define our canonical space); and (iii) the \emph{target frame pose}, i.e., the estimated SMPL-X parameters for a particular video frame.
+
+\paragraph{Neutrally posed query points and skinning weights.}
+We start by constructing a dense set of $N$ query points on the SMPL-X surface in the neutral pose (in our experiments, $N=40{,}000$). Concretely, we use a precomputed dense point set and assign a body/face split by a fixed ratio (e.g., ratio $3$ yields approximately $30{,}000$ body points and $10{,}000$ face points). To deform these points with SMPL-X, we require linear blend skinning (LBS) weights. For each dense point, we find its nearest neighbor on the SMPL-X template mesh and copy the corresponding template vertex LBS weights, resulting in a per-point weight matrix of shape $N\times 55$ (55 SMPL-X joints in our setup). Finally, we compute and store a per-joint transformation that maps between the neutral-pose space and the SMPL-X zero-pose space, represented as a matrix of shape $(55,4,4)$; this transform is later converted into per-point transforms via the LBS weights.
+
+\paragraph{Canonical 3DGS per person.}
+For each person, we represent appearance and geometry in the neutral pose using a set of $N$ Gaussians. Each Gaussian stores its center offset relative to the neutral query point ($\Delta\mathbf{x}\in\mathbb{R}^{N\times 3}$), a rotation quaternion ($\mathbf{q}\in\mathbb{R}^{N\times 4}$), anisotropic scaling ($\mathbf{s}\in\mathbb{R}^{N\times 3}$), opacity ($\alpha\in\mathbb{R}^{N\times 1}$), and per-Gaussian color (RGB in our current implementation). Intuitively, anchoring Gaussians to the SMPL-X surface provides a strong prior for multi-person scenes, while the learned offsets allow the representation to deviate from the parametric surface (e.g., to capture clothing and other non-rigid details).
+
+\paragraph{Deforming Gaussians to a target frame.}
+Given SMPL-X parameters for a target frame, we deform the canonical Gaussians from the neutral pose to the target posed space. For the translation, we first form canonical Gaussian centers by adding the learned offsets to the neutral query points. We then map these centers from the neutral pose to the SMPL-X zero pose using the precomputed neutral-to-zero transforms (blended per point with LBS weights). In the zero-pose space, we apply SMPL-X blendshape offsets (from the subject-specific shape parameters) and finally warp the points from the zero pose to the target pose using standard SMPL-X forward kinematics and LBS. This produces the posed Gaussian centers $\mathbf{x}_t$ for the frame.
+
+For the rotation, we extract the per-point rigid rotation component of the neutral-to-posed transform and convert it to unit quaternions. We then compose this rotation with each Gaussian's canonical quaternion to obtain the posed Gaussian orientations. In addition, for a subset of Gaussians associated with constrained body regions, we optionally suppress the additional rotation to avoid undesirable orientation artifacts.
+
+\paragraph{Rendering.}
+For each view, we deform each person independently, concatenate all posed Gaussians in the scene, and render RGB, mask, and depth using a differentiable 3DGS renderer (gsplat).
+
+\subsection{Training objectives}
 
 \begin{figure}[!ht]
     \centering
@@ -305,28 +327,70 @@ We repeat the above process for all frames in the video sequence to obtain the f
     \label{fig:trn_pip_overview}  
 \end{figure}
 
-% - canonical to posed 3dgs
-% - posed 3dgs to rendered image
-% - loss functions: reconstruction loss, regularization losses
+% High level process:
+% 1. We sample a batch of frames from different views (source camera + generated novel views)
+% 2. Using the view camera parameters and the per-frame SMPLX parameters, we deform the canonical 3DGS to the posed space 
+%   for each frame in the batch and render the images using differentiable rendering via gsplat library.
+% 3. We then compute the losses between the rendered images and the ground truth images using the foreground masks to focus only on the humans in the scene.
+% We have the following losses:
+  % a. RGB reconstruction loss (masked MSE + SSIM)
+  % b. Silhouette loss (only on source camera view since this is where we have the most reliable masks)
+  % c. Canonical regularization losses (ASAP/ACAP) to encourage plausible geometry in the canonical space, formulas:
+  % 1. scales_pos = torch.exp(scales)
+  %    asap = ((scales_pos - scales_pos.mean(dim=-1, keepdim=True)) ** 2).sum(dim=-1).mean()
+  % 2. acap = torch.clamp(offsets.norm(dim=-1) - self.cfg.regularization['acap_margin'], min=0.0).mean() where we use by default acap_margin = 0.01 (1cm)
 
 
-% ---------------------------- Notes section for method 
-% - One of the not so obvious things was how to choose LBS weights for the gaussians if you do not have one to one mapping 
-% to the corresponding SMPL vertex. So I definitely have to mention how LHM does it
+% things to improve here:
+% 1. use paragraph stle to split the these explanation into: photometric loss, silhouette loss, canonical regularization losses
+% 2. At the end, we should mention the full objectie and mention that empirically we found the following weights to work the best for each loss term: 
+% loss_weights:
+  % rgb: 20.0
+  % sil: 4.0
+  % ssim: 0.4
+  % depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
 
-% I have spent signifficant amount of time making the progressive masking work and thinking, and especially making sure the ouput masks are good. Here are some main learning points I made along the way:
-% 1. I thought that it would be good idea to apply the mask to rendred images if the mask was classified as unreliable - meaning the IoU was below threshold - meaning maybe only a small subset of valid pixels from the human was selected -> btw. that's a big if because the unreliable mask could be also just selecting wrong pixels in which case I would actually include the static bg
-% --> bottom line here is: when I never apply mask to render, this gives best reults.
-% 2. I have figgured that promptin SAM autoregressively actually help a lot! In fact, in week 14, i have done full deep dive into how to promt SAM best. In general, this weird artifacts did not seem to be an issue specific to our pipeline and there have geen some opened Github issues
+% regularization:
+  % asap_w: 200.0
+  % acap_w: 200.0
+  % acap_margin: 0.01 # meters (1 cm)
 
-% I think the two unique and novel ideas of my method are:
-% 1. using DiFix for canonical initialisation  - this allows me to then later use DiFix since the rendered novel vies are already decent so there is less ambiguity for DiFix to resolve
-% 2. integrating DiFix - I not only take what works in the original implementatation, but I have to adapt it to my specific case where we dont just have static scene but instad dynamic scene, and we have 
-% feed from just a single mono camera - so I have to figure out a way to synthesise the virtual camera, this is in contrast to the original difix paper where they have sparse set of views already
+% 3. we need to acknowledge that the regularisaton terms are adopted from the lhm paper, therefore use
+% \cite{qiu2025lhm} to cite them. The ASAP stands for as spheric as possible, and ACAP stands for as close as possible (both of these terms were introduced in LHM paper. We should paraphrase the explanations from LHM paper about these terms and logic behind them:
+% a. ASAP term is to encourage isotropic scales for each gaussian - in the lhm paper, they found that this term removed weird blurry edges in the reconstruction
+% b. ACAP term is to encourage the gaussians to stay close to the smplx surface - in the lhm paper, they found that this term prevented gaussians from drifting too far away from the smplx surface which would lead to artifacts in the reconstruction 
 
-% I think i should also highlight that while I do use SMPLX as prior, the 3DGS is free to learn the offset from the SMPLX surface, so in theory it can learn clothing dynamics and other non-rigid deformations that are not captured by the SMPLX model itself.
-% ----------------------------- end of notes section
 
+Our training objective follows the pipeline shown in Figure \ref{fig:trn_pip_overview}. At each iteration, we sample a mini-batch of frames from a mixture of views (the source camera and the synthesized novel training views). Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image (and auxiliary outputs) using differentiable Gaussian splatting.
+
+\paragraph{Photometric loss.}
+We supervise the rendered RGB with foreground masks to focus the objective on the humans and reduce the influence of the static background. Our photometric objective combines a masked RGB reconstruction loss (mean squared error) with a perceptual structural term based on SSIM computed on the masked images.
+
+\paragraph{Silhouette loss.}
+We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
+
+\paragraph{Canonical regularization.}
+We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.
+
+For ASAP, let $\mathbf{s}\in\mathbb{R}^{N\times 3}$ denote the (log-)scales and $\mathbf{s}^+=\exp(\mathbf{s})$ their positive version; we compute
+\begin{equation}
+  \mathcal{L}_{\mathrm{ASAP}} = \frac{1}{N}\sum_{i=1}^{N}\left\lVert \mathbf{s}^+_i - \mathrm{mean}(\mathbf{s}^+_i)\mathbf{1}\right\rVert_2^2.
+\end{equation}
+For ACAP, we penalize large offset magnitudes beyond a margin $m$ (we use $m=0.01$m), where $\Delta\mathbf{x}_i$ denotes the learned offset of Gaussian $i$:
+\begin{equation}
+  \mathcal{L}_{\mathrm{ACAP}} = \frac{1}{N}\sum_{i=1}^{N}\max\left(0, \lVert \Delta\mathbf{x}_i \rVert_2 - m\right).
+\end{equation}
+
+Putting everything together, our total objective is a weighted sum of the above terms:
+\begin{equation}
+  \mathcal{L} =
+  w_{\mathrm{rgb}}\mathcal{L}_{\mathrm{rgb}} +
+  w_{\mathrm{ssim}}\mathcal{L}_{\mathrm{ssim}} +
+  w_{\mathrm{sil}}\mathcal{L}_{\mathrm{sil}} +
+  w_{\mathrm{asap}}\mathcal{L}_{\mathrm{ASAP}} +
+  w_{\mathrm{acap}}\mathcal{L}_{\mathrm{ACAP}}.
+\end{equation}
+Empirically, we found the following weights work best $w_{\mathrm{rgb}}=20.0$, $w_{\mathrm{ssim}}=0.4$, $w_{\mathrm{sil}}=4.0$, $w_{\mathrm{asap}}=200.0$, and $w_{\mathrm{acap}}=200.0$.
 
 \section{Experimental Setup}
 
@@ -340,11 +404,32 @@ We repeat the above process for all frames in the video sequence to obtain the f
 % Some notes on the evaluation
 % At the start, of the thesis, I still thought I am going to use football videos
 % So my approach was similar to Neuman paper split monovideo into train and val frames
+\paragraph{Hi4D.}
+We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction.
+
+\paragraph{MMM.}
+To also evaluate our method on scenes with more than two persons and dynamic camera motion, we also
+evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions.
+
+\paragraph{In the wild.}
+Finally, we include one in the wild monocular video to qualitatively validate that the pipeline can be applied outside of curated datasets.
+
 \subsection{Evaluation Metrics}
 % - Novel View Synthesis: PSNR, SSIM, LPIPS. We use the ground truth camera and smpl parameters to render the ground truth images for the novel views. Side note: since our method expects smplx, we use the official SMPLX fitting code to fit smplx to the ground truth meshes to obtain smplx parameters for rendering the ground truth images.
 % - Pose Estimation: MPJPE (mm), MVE (mm), Contact Distance, Percentage of Correct
 % - Mesh Reconstruction: V-IoU, Chamfer Distance (cm), P2S (cm), Normal Consistency. We use marching cubes algorithm to extract meshes from the 3dgs representation for evaluation.
 % - Segmentation: IoU, F1, Recall
+\paragraph{Novel view synthesis.}
+We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (lower is better). When ground truth camera parameters and SMPL parameters are available, we render the corresponding ground truth images for evaluation. Since our pipeline uses SMPL-X, we fit SMPL-X to the ground truth meshes when needed to obtain compatible parameters using the official transfer code \cite{smplx}.
+
+\paragraph{Pose estimation.}
+We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction focused metrics: contact distance (CD, mm) and percentage of correct depth relations (PCDR) with a threshold of $0.15$m.
+
+\paragraph{Mesh reconstruction.}
+To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$, cm), point to surface distance (P2S, cm), and normal consistency (NC). For this evaluation, we extract meshes from the 3DGS representation using marching cubes.
+
+\paragraph{Instance segmentation.}
+Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection over union (IoU), recall, and F1 score.
 
 \subsection{Implementation Details}
 % - training details: 
@@ -357,6 +442,7 @@ We repeat the above process for all frames in the video sequence to obtain the f
 % --> so in total 8*20 = 160 novel training views
 % - preprocessing time - around 10-15 minutes per scene
 % - training time - around 15 minutes per scene on single V100 GPU
+We optimize all 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 8 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps). For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
 
 \section{Results}
 % My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
