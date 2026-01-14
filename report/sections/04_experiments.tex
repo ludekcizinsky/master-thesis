@@ -23,8 +23,7 @@ We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people 
 
 
 \paragraph{MMM.}
-We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and dynamic camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM: \textit{dance}, \textit{lift} and \textit{walkdance}.
-
+We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and dynamic camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM: \textit{dance}, \textit{lift} and \textit{walkdance}. 
 
 \subsection{Evaluation Metrics}
 
@@ -52,7 +51,11 @@ For Chamfer distance, P2S, and normal consistency we estimate the metrics by sam
 Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
 
 \subsection{Implementation Details}
-We optimize all 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 8 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps). For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
+Unless stated otherwise, we optimize only the 3DGS parameters and keep SMPL-X parameters and camera parameters fixed. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views. Each person is represented by $N=40{,}000$ Gaussians.
+
+We optimize the 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
+
+For preprocessing, we use the original Hi4D image resolution, while for MMM we downsample images by a factor of 2. For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
 
 \section{Results}
 % My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
