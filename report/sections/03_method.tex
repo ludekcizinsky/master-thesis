@@ -19,6 +19,16 @@
 
 % todo: maybe explain briefly what are homogeneous coordinates
 \section{Preliminaries}
+\subsection{Homogeneous coordinate system}
+
+In 3D computer vision and graphics, we have two types of transformations that we apply to points: linear (e.g. rotation, scaling) and affine (e.g. translation). Linear transformations can be represented using $3 \times 3$ matrices, while affine transformations does not have this property. To unify the representation of both linear and affine transformations, we use homogeneous coordinates. In homogeneous coordinates, we represent a 3D point $\mathbf{p} = [x, y, z]^{T}$ as a 4D vector $\mathbf{p}_{h} = [x, y, z, 1]^{T}$. This allows us to represent both linear and affine transformations using $4 \times 4$ matrices. For example, a general affine transformation matrix $A$ can be represented as follows:
+
+\begin{equation}
+A = \begin{bmatrix} R & t \\ 0 & 1 \end{bmatrix}
+\end{equation}
+
+where $R$ is a $3 \times 3$ rotation matrix, $t$ is a $3 \times 1$ translation vector, and the last row is for homogeneous coordinates. This allows us to easily combine multiple transformations by simply multiplying their corresponding $4 \times 4$ matrices together.
+
 \subsection{SMPLX Body Model}
 Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents naked human body, i.e., no clothes. It defines two sets of parameters through which we can control the shape and pose of the body. First, the shape parameters define unique attributes of person's body such as height, overall proportions of the body (athletic, slim, etc.). Indeed, these parameters are identical across all video frames. 
 Second, pose parameters control the articulation of the body, hands and facial expressions. Using these parameters we can the map the canonical mesh representation of the body to the posed space using forward kinematics and linear blend skinning (LBS). In our work, we use this parametric 3D model as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation of the dynamic scene. We explain SMPLX model in more detail below.
