@@ -280,7 +280,7 @@ For each view, we deform each person independently, concatenate all posed Gaussi
     \centering
     \includegraphics[width=0.8\textwidth]{figures/train_step_example.drawio.png}
     \caption{Overview of a single training step including both the forward and backward pass.}
-    \label{fig:trn_pip_overview}  
+    \label{fig:trn_step_example}  
 \end{figure}
 
 % High level process:
@@ -317,7 +317,7 @@ For each view, we deform each person independently, concatenate all posed Gaussi
 % b. ACAP term is to encourage the gaussians to stay close to the smplx surface - in the lhm paper, they found that this term prevented gaussians from drifting too far away from the smplx surface which would lead to artifacts in the reconstruction 
 
 
-Our training objective follows the pipeline shown in Figure \ref{fig:trn_pip_overview}. At each iteration, we sample a mini-batch of frames from a mixture of views (the source camera and the synthesized novel training views). Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image (and auxiliary outputs) using differentiable Gaussian splatting.
+Figure \ref{fig:trn_step_example} shows an example training step. At each iteration, we sample a mini-batch of frames from a mixture of views (the source camera and the synthesized novel training views). Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image using differentiable Gaussian splatting. We then apply several loss terms to supervise the rendered images against the ground truth frames. We describe each loss term below.
 
 \paragraph{Photometric loss.}
 We supervise the rendered RGB with foreground masks to focus the objective on the humans and reduce the influence of the static background. Our photometric objective combines a masked RGB reconstruction loss (mean squared error) with a perceptual structural term based on SSIM computed on the masked images.
@@ -326,8 +326,7 @@ We supervise the rendered RGB with foreground masks to focus the objective on th
 We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
 
 \paragraph{Canonical regularization.}
-We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.
-
+We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.\newline
 For ASAP, let $\mathbf{s}\in\mathbb{R}^{N\times 3}$ denote the (log-)scales and $\mathbf{s}^+=\exp(\mathbf{s})$ their positive version; we compute
 \begin{equation}
   \mathcal{L}_{\mathrm{ASAP}} = \frac{1}{N}\sum_{i=1}^{N}\left\lVert \mathbf{s}^+_i - \mathrm{mean}(\mathbf{s}^+_i)\mathbf{1}\right\rVert_2^2.
@@ -336,7 +335,6 @@ For ACAP, we penalize large offset magnitudes beyond a margin $m$ (we use $m=0.0
 \begin{equation}
   \mathcal{L}_{\mathrm{ACAP}} = \frac{1}{N}\sum_{i=1}^{N}\max\left(0, \lVert \Delta\mathbf{x}_i \rVert_2 - m\right).
 \end{equation}
-
 Putting everything together, our total objective is a weighted sum of the above terms:
 \begin{equation}
   \mathcal{L} =
