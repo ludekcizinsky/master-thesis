@@ -105,10 +105,46 @@ where $V^{final}$ is the final posed mesh with global translation applied.
 
 
 \subsection{3D Gaussians}
-% - representation of 3D scene using 3D Gaussians
-% - parameters: position, covariance, color, opacity, etc.
-% - volume rendering with 3D Gaussians and camera parameters
+\paragraph{Representation.} We use 3D Gaussians as an explicit scene representation. Each Gaussian is parameterized by its center position $\boldsymbol{\mu}\in\mathbb{R}^{3}$, an anisotropic scale $\boldsymbol{\sigma}\in\mathbb{R}^{3}$ (diagonal standard deviations), a rotation quaternion $\mathbf{q}\in\mathbb{R}^{4}$, an opacity $\alpha\in\mathbb{R}$, and a color $\mathbf{c}\in\mathbb{R}^{3}$ (RGB in our implementation). Together, these parameters define an oriented anisotropic density blob in 3D. 
 
+\paragraph{Projection of 3D Gaussians to 2D.}
+Given a set of 3D Gaussians $\{\mathcal{G}_{i}\}_{i=1}^{N}$ and a calibrated camera, we render images using differentiable Gaussian splatting \cite{3dgs}. We denote the camera intrinsics by $\mathbf{K}\in\mathbb{R}^{3\times 3}$ and the camera extrinsics by a world-to-camera transform $\mathbf{T}_{\mathrm{w2c}}=[\mathbf{R}\,|\,\mathbf{t}]\in\mathrm{SE}(3)$ with $\mathbf{R}\in\mathrm{SO}(3)$ and $\mathbf{t}\in\mathbb{R}^{3}$.
+Each Gaussian $\mathcal{G}_{i}$ is defined by a 3D mean $\boldsymbol{\mu}_{i}$ and a 3D covariance $\boldsymbol{\Sigma}_{i}$. Note that in our parameterization, the covariance is constructed from the anisotropic scales and rotation as $\boldsymbol{\Sigma}_{i}=\mathbf{R}_{i}\mathrm{diag}(\boldsymbol{\sigma}_{i}^{2})\mathbf{R}_{i}^{\top}$, where $\mathbf{R}_{i}$ is the rotation matrix corresponding to the quaternion $\mathbf{q}_{i}$ \cite{3dgs}. Given these inputs, we first transform the mean and covariance to camera coordinates:
+\begin{equation}
+  \boldsymbol{\mu}_{i}^{c} = \mathbf{R}\boldsymbol{\mu}_{i} + \mathbf{t}, \qquad
+  \boldsymbol{\Sigma}_{i}^{c} = \mathbf{R}\boldsymbol{\Sigma}_{i}\mathbf{R}^{\top}.
+\end{equation}
+We then project the Gaussian to the image plane using a first-order approximation of the pinhole projection \cite{3dgs}. Let $\pi(\cdot)$ denote the standard pinhole projection with intrinsics $\mathbf{K}$, which maps a camera-space point to pixel coordinates by perspective division followed by multiplication by $\mathbf{K}$. We denote by $\mathbf{J}_{i}=\frac{\partial \pi}{\partial \mathbf{x}}\big|_{\boldsymbol{\mu}_{i}^{c}}$ the Jacobian of this projection evaluated at the Gaussian mean. Given this projection definition, the projected mean and covariance then are
+\begin{equation}
+  \mathbf{u}_{i}=\pi(\boldsymbol{\mu}_{i}^{c}), \qquad
+  \boldsymbol{\Sigma}_{i}^{\mathrm{2D}} = \mathbf{J}_{i}\boldsymbol{\Sigma}_{i}^{c}\mathbf{J}_{i}^{\top}.
+\end{equation}
+Intuitively, after projection each 3D Gaussian becomes a soft 2D ellipse in the image. The ellipse is centered at the projected mean $\mathbf{u}_{i}$ and its shape and size are determined by the projected covariance $\boldsymbol{\Sigma}_{i}^{\mathrm{2D}}$. 
+
+\paragraph{Rasterization.}
+Given the projected ellipses, rasterization turns their per-pixel contributions into the final rendered image by accumulating colors and opacities along each camera ray. Specifically, we start by computing \textit{for each pixel} the weight of its surrounding Gaussians which fall within predefined radius. The weight for each such Gaussian with index $i$ at pixel location $\mathbf{u}$ is computed as:
+
+\begin{equation}
+  w_{i}(\mathbf{u}) = \,\exp\!\left(
+  -\tfrac{1}{2}(\mathbf{u}-\mathbf{u}_{i})^{\top}(\boldsymbol{\Sigma}_{i}^{\mathrm{2D}})^{-1}(\mathbf{u}-\mathbf{u}_{i})
+  \right)
+\end{equation}
+In words, we assign higher weights to Gaussians that are closer to the pixel center $\mathbf{u}$, with the falloff determined by the projected covariance $\boldsymbol{\Sigma}_{i}^{\mathrm{2D}}$. Before computing the final pixel color, we sort the Gaussians along the camera ray based on their depth (distance from the camera). We then obtain color for each color using front-to-back alpha compositing as follows:
+
+\begin{equation}
+  a_{i}(\mathbf{u}) = \alpha_{i}\,w_{i}(\mathbf{u})
+\end{equation}
+
+\begin{equation}
+  T_{i}(\mathbf{u}) = \prod_{j=1}^{i-1}\left(1-a_{j}(\mathbf{u})\right)
+\end{equation}
+
+\begin{equation}
+  \mathbf{C}(\mathbf{u}) = \sum_{i=1}^{M} T_{i}(\mathbf{u})\,a_{i}(\mathbf{u})\,\mathbf{c}_{i}
+\end{equation}
+Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ at pixel $\mathbf{u}$, computed from its learned opacity $\alpha_{i}$ and its spatial footprint weight $w_{i}(\mathbf{u})$. The accumulated transmittance $T_{i}(\mathbf{u})$ is the fraction of light that reaches Gaussian $i$ after passing through all closer Gaussians. The final pixel color $\mathbf{C}(\mathbf{u})$ is then obtained by summing each Gaussian's color $\mathbf{c}_{i}$ weighted by its effective opacity and the accumulated transmittance.
+
+\paragraph{Making use of rendering library.} In practice, we use gsplat library \cite{ye2025gsplat} to handle the whole rendering process, i.e. both the projection and rasterization steps. importantly, the whole process is differentiable, which allows us to optimize the 3D Gaussian parameters.
 
 \section{Problem Definition}
 % - Input and output specification
