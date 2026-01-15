@@ -52,20 +52,18 @@ Segmentation quality is important to accurately separate dynamic humans from the
 
 \subsection{Implementation Details}
 Unless stated otherwise, we optimize only the 3DGS parameters and keep SMPL-X parameters and camera parameters fixed. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views. Each person is represented by $N=40{,}000$ Gaussians.
-
 We optimize the 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
-
 For preprocessing, we use the original Hi4D image resolution, while for MMM we downsample images by a factor of 2. For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
 
 \section{Results}
-% My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
 
+% todo:
+% 1. trying to see if i have access to faces apart from the upsampled points could make these much better
+% 2. also i guess if improve pose i would think these results should improve as well
 \subsection{Reconstruction Comparisons}
-% In addition to MultiPly, here we are comparing to: ECON and Vid2Avatar
-% We evaluate the mesh reconstruction quality on two datasets: Hi4D and MMM
 \begin{table}[!ht]
   \centering
-  \caption{Human mesh reconstruction results on Hi4D and MMM. We report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$) [cm], point-to-surface distance (P2S) [cm], and normal consistency (NC). Best results per dataset and metric are in bold.}
+  \caption{\textbf{Human mesh reconstruction results on Hi4D and MMM.} Best results per dataset and metric are in bold.}
   \label{tab:reconstruction_results}
   \small
   \setlength{\tabcolsep}{7pt}
@@ -90,58 +88,20 @@ For preprocessing, we use the original Hi4D image resolution, while for MMM we d
   \end{tabular}
 \end{table}
 
-\subsection{Instance Segmentation Comparisons}
-% We compare our segmentation quality to MultiPly's initial version (SAM1), to MultiPly's final versin using progressive masking with SAM1, and then ours using SAM3 video model
-\begin{table}[!ht]
-  \centering
-  \caption{Human instance segmentation results on Hi4D. We report intersection-over-union (IoU), recall, and F1 score. Best results are in bold.}
-  \label{tab:segmentation_results_hi4d}
-  \small
-  \setlength{\tabcolsep}{7pt}
-  \begin{tabular}{l
-      S[table-format=1.3]
-      S[table-format=1.3]
-      S[table-format=1.3]}
-    \toprule
-    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
-    \midrule
-    SCHP & 0.937 & 0.983 & 0.982 \\
-    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
-    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
-    Ours & \textbf{0.974} & 0.982 & 0.987 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+We compare our mesh reconstruction quality to MultiPly \cite{multiply} which is currently the state-of-the-art method for multi-person reconstruction from monocular videos. For reference, we also include ECON and Vid2Avatar (V2A) which were used as baselines in MultiPly. ECON is image based method capable of reconsructing multiple people \cite{econ}. While V2A is video based method designed for single person reconstruction \cite{guo2023vid2avatar}. V2A was adapted to multi-person setting in MultiPly by reconstructing each person separately and then merging the results.
 
 
-\subsection{Novel View Synthesis Comparisons}
-% We use MultiPly and in addition also the result from strong multi view baseline model
-\begin{table}[!ht]
-  \centering
-  \caption{Novel view synthesis results on Hi4D. We report PSNR and SSIM (higher is better) and LPIPS (lower is better). Best results are in bold.}
-  \label{tab:nvs_results_hi4d}
-  \small
-  \setlength{\tabcolsep}{7pt}
-  \begin{tabular}{l
-      S[table-format=1.3]
-      S[table-format=2.1]
-      S[table-format=1.4]}
-    \toprule
-    \textbf{Method} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
-    \midrule
-    Shuai et al. & 0.898 & 19.6 & 0.1099 \\
-    MultiPly & 0.915 & \textbf{20.7} & \textbf{0.0798} \\
-    Ours & \textbf{0.926} & 20.2 & 0.0872 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+In general, our reconstruction results reveal two main trends. First, MultiPly outperforms our method across all metrics on both datasets. Second, we see that we get on average worse results on MMM which includes more people and dynamic camera motion compared to Hi4D. We believe this is mainly due to two reasons. First, if the predicted pose is not accurate, we pose the 3DGS into a wrong configuration which can lead to large parts of the body being outside the ground truth volume. Second, MultiPly's implicit Sign-distance field representation by its definition supports mesh reconstruction. In contrast, there is no direct way to extract a mesh from our 3DGS representation, and marching cubes on the Gaussian density field is only an approximation.
 
+% todo:
+% 1. adding vit pose based alignment might be interesting - to see how much we get from this
+% 2. optimising pose during training as well would be interesting to see how much we can gain here
+% 3. replacing human3r with promt hmr would probably also help a bit
 \subsection{Pose Estimation Comparisons}
-% We compare our pose estimation quality to MultiPly, we use Human3R without any 2D refinement as MultiPly does
-% ideally, I would also compare how this improves after tuning the params during training
+
 \begin{table}[!ht]
   \centering
-  \caption{Human pose estimation results on Hi4D. We report MPJPE [mm], MVE [mm], contact distance (CD) [mm], and percentage of correct depth relations (PCDR) with threshold $0.15$m. Best results are in bold.}
+  \caption{\textbf{Human pose estimation results on Hi4D.} Best results are in bold.}
   \label{tab:pose_results_hi4d}
   \small
   \setlength{\tabcolsep}{6pt}
@@ -160,6 +120,67 @@ For preprocessing, we use the original Hi4D image resolution, while for MMM we d
     \bottomrule
   \end{tabular}
 \end{table}
+
+Apart from MultiPly, which jointly optimizes pose and 3D reconstruction, we also include for reference results reported for CLIFF and TRACE by MultiPly. CLIFF adopts a top-down approach where it first detects each person, and then estimates their pose independently \cite{li2022cliff}. In contrast, TRACE first detects all keypoints in the image and then assemble these keypoints into poses for all people jointly \cite{trace}. MultiPly is using TRACE as its initial pose estimator and in additon uses ViTPose \cite{vitpose} (2D keypoints detector) to refine the initial estimates. Finally, it further optimises the poses during its training via photometris loss. We currently do not perform any pose refinement or optimisation and only rely on the initial estimates from Human3r \cite{chen2025human3r}.
+
+The results show that MultiPly achieves the best MPJPE and PCDR scores, while our method achieves the best MVE and CD scores. This indicates that while MultiPly is better at estimating joint locations, our method produces more accurate overall body shapes and better captures inter-person contacts. We believe that with pose refinement and optimisation during training, our method could further improve pose accuracy as well.
+
+% todo:
+% 1. having progressive refinemnt as well and showing we get better masks would make this section more meaningful, although the improvemnt would be probably small given how good sam3 is
+\subsection{Instance Segmentation Comparisons}
+\begin{table}[!ht]
+  \centering
+  \caption{\textbf{Human instance segmentation results on Hi4D.} Best results are in bold.}
+  \label{tab:segmentation_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=1.3]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
+    \midrule
+    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
+    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
+    Ours & \textbf{0.974} & 0.982 & 0.987 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+We compare our mask segmentation quality to MultiPly which reports results for both its initial masks from SAM1 \cite{sam1} as well as its progressively refined masks during training. In contrast, we do not refine our masks during training and only rely on the initial masks from SAM3 \cite{carion2025sam3segmentconcepts}. We can see that the results from SAM1 are already very strong and therefore only very little room for improvement is left. However, often these little details are crucial for instance in case of correctly segmenting all fingers during hand interactions. Interestingly, we can see that SAM3 already outperforms the progressively refined masks from MultiPly in terms of the IoU score, while MultiPly still achieves slightly better recall and F1 scores.
+
+
+% todo: i think here it would be interesting to compare to
+% 1. some multi view video generatio method that would condition on camera parameters, e.g. sv4d2.0 - the only issue is that the camera is conntrolled via elevation deg
+% 2. shape of motion - template free method, outputs 3dgs representation, so here the camera conditioning would be straight forward
+% 3. would be probably good to include also comparison to guess the unseen which is 3dgs based
+% 4. i could also include the results from LHM alone to have representation of the image to 3d methods
+\subsection{Novel View Synthesis Comparisons}
+\begin{table}[!ht]
+  \centering
+  \caption{\textbf{Novel view synthesis results on Hi4D.} Best results are in bold.}
+  \label{tab:nvs_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=2.1]
+      S[table-format=1.4]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
+    \midrule
+    Shuai et al. & 0.898 & 19.6 & 0.1099 \\
+    MultiPly & 0.915 & \textbf{20.7} & \textbf{0.0798} \\
+    Ours & \textbf{0.926} & 20.2 & 0.0872 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact} which is a multi-view method, however, for a fair comparison, it was adapted by MultiPly to work in monocular setting as well. The results show that our method achieves the best SSIM score, while MultiPly achieves the best PSNR and LPIPS scores. PSNR results indicate that MultiPly is better at reconstructing pixel-wise details, while our method achieves better structural similarity as indicated by the SSIM score. 
+
+
 
 \subsection{Ablation Studies}
 % - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training

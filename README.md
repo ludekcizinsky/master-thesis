@@ -9,7 +9,7 @@ YouTube is full of videss of people dancing, doing sports, or just walking aroun
 
 ### My backlog list of things to do in order to improve this project
 
-1. 3DGS to mesh converstion: try rendering 3dgs from multiple views and using a multi-view stereo method to get a mesh (e.g. what they do in 2dgs paper as baseline). More advanced would be to add the extra 2dgs params to the predicted 3dgs params from LHM and tune them.
+1. 3DGS to mesh converstion. First, try to see if you can load faces apart from the upsampled points, if so then mesh creation should be much easier. Alternative approaches could be rendering 3dgs from multiple views and using a multi-view stereo method to get a mesh (e.g. what they do in 2dgs paper as baseline). More advanced would be to add the extra 2dgs params to the predicted 3dgs params from LHM and tune them.
 2. Make a demo of the reconstruction using rerun io
 3. Make the preprocessing pipeline fully automated - ideally use SAM3D to get masks and tracks automatically from video -> also probabky would need to add some heuristic to remove tracks that are too short or not humans. Then feed that to PromptHMR to obtain get initial smplx params and camera poses
 4. would be nice to use +y is up as the convention for the smplx params
