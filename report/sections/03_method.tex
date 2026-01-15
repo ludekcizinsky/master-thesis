@@ -182,26 +182,31 @@ Preprocessing can fail in several ways. SAM3 may miss all people in a scene or l
 % inclue this figure here:
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/novel_view_gen_overview.drawio.png}
-    \caption{Overview of our novel training view synthesis pipeline using DiFix. We start with the monocular video and the estimated SMPL-X parameters to render initial novel views of the humans using the canonical 3DGS obtained from LHM during preprocessing. These initial renderings are then refined using DiFix to improve multi-view and temporal consistency. The refined novel views are then used as input to our main training pipeline.}
-    \label{fig:novel_view_synthesis_difix}  
+    \includegraphics[width=0.8\textwidth]{figures/example_of_progressive_trn_nv_gen.drawio.png}
+    \caption{\textbf{Example of progressive novel training view synthesis}. We start with synthesising the closest cameras to the source camera view (first column). Once we complete this step, we repeat the same procedure for the next set of cameras further away from the source camera view (second column). However, this time we use the previously synthesised views as reference views.}
+    \label{fig:how_we_choose_ref_and_tgt_nv_views}  
 \end{figure}
 
-
+% todo: here it should be more clearly stated that in practice we downsample the number of frames in the original video, and then use this same downsampled set of frames for both the original source views and the generated novel views during training
 Our explicit scene representation is sensitive to the number of input views and can overfit to the observed views, which leads to blur and holes when rendering from unseen viewpoints. To mitigate this, we lift the monocular video to a multi-view training set by synthesizing novel training views around the scene. The resulting supervision is dense in time (we synthesize full videos for each virtual camera) but still sparse in viewpoints (we use a small number of virtual cameras). The key challenge is to generate videos that are both multi-view consistent and temporally stable.
 
-Figure \ref{fig:novel_view_synthesis_difix} summarizes this procedure. We generate a set of virtual cameras on a circle around the reconstructed subject and render an initial estimate of each novel view using the canonical 3DGS initialization from LHM together with the estimated SMPL-X parameters and camera parameters. These renderings are imperfect but provide a strong geometric and appearance prior that reduces ambiguity for view synthesis.
-
-To improve visual quality and enforce consistency, we refine the initial renderings using DiFix \cite{wu2025difix3d}, an image-to-image diffusion model. DiFix takes (i) a reference image, (ii) an image to refine, and (iii) a text prompt. We use the default prompt from the original work (``remove degradation''). For each target camera and each frame, we render the initial novel view and refine it with DiFix using a nearby reference view. We repeat this procedure for all frames, producing a temporally consistent novel view video for each virtual camera. The resulting refined videos are then treated as pseudo ground truth training views and used as additional supervision during 3DGS optimization.
+Figure \ref{fig:how_we_choose_ref_and_tgt_nv_views} demonstrates how we progressively generate novel training views. We start from the source camera view and synthesize novel views at nearby camera positions. Once these are generated, we use them as reference views to synthesize further-away novel views, and so on. This progressive approach relies on the fact that nearby views have a large overlap, therefore we are asking the image-to-image model to perform only small changes at each step.
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/trn_view_cam_gen_in_3d.png}
-    \caption{Visualisation of the generated training view cameras around the original scene. The generated cameras are in orange, while the original camera trajectory is in blue. We use Viser \cite{yi2025viser} to obtain this visualisation.}
-    \label{fig:trn_nv_cam_gen_3d_vis}  
+    \includegraphics[width=0.8\textwidth]{figures/single_nv_train_view_synthesis_diagram.drawio.png}
+    \caption{\textbf{Example of synthesizing a single novel training view}. We start by sampling next frame at time $t$ from the reference camera view. We then use our canonical 3DGS human scene representation initialised from LHM's prediction, estimated SMPL-X parameters, and estimated camera parameters to render an initial novel view. Finally, we feed the reference view, the initial novel view, and a text prompt to DiFix to obtain the refined novel view at time $t$. We repeat this process for all frames in the video to obtain a full refined novel view video for the target camera.}\label{fig:how_we_synthesise_single_nv_view}  
 \end{figure}
 
-Figure \ref{fig:trn_nv_cam_gen_3d_vis} illustrates the placement of the virtual training cameras around the scene relative to the source camera trajectory.
+Figure \ref{fig:how_we_synthesise_single_nv_view} illustrates the synthesis of a single novel training view at a target camera position. We start by rendering an initial novel view using our canonical 3DGS representation (initialized from LHM) and the estimated SMPL-X and camera parameters. We then refine this initial rendering using DiFix \cite{wu2025difix3d}, an image-to-image diffusion model designed for high-quality view synthesis. DiFix takes as input the reference view, the initial novel view, and a text prompt that describes the desired transformation (in our case, ``remove degradation''). The model outputs a refined novel view that combines details from the reference view with the geometry and perspective of the initial rendering. We repeat this process for all frames in the video to obtain a full refined video for the target camera.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/example_of_all_cams_in_3d.png}
+    \caption{\textbf{Example training cameras in 3D}. Blue camera denotes the source view while the remainder are virtual cameras used for novel view synthesis.}\label{fig:example_of_all_cams_in_3d}  
+\end{figure}
+
+Finally, Figure \ref{fig:example_of_all_cams_in_3d} shows an example of all training cameras in 3D. The blue camera denotes the source view while the remainder are virtual cameras used for novel view synthesis. In our experiments, we generate between 7 novel training views per scene.
 
 
 \section{3DGS-based Dynamic Representation}
@@ -268,8 +273,8 @@ For each view, we deform each person independently, concatenate all posed Gaussi
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/trn_pip_overview.drawio.png}
-    \caption{Overview of our training pipeline.}
+    \includegraphics[width=0.8\textwidth]{figures/train_step_example.drawio.png}
+    \caption{Overview of a single training step including both the forward and backward pass.}
     \label{fig:trn_pip_overview}  
 \end{figure}
 
