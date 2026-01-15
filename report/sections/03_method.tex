@@ -147,28 +147,17 @@ Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ a
 \paragraph{Making use of rendering library.} In practice, we use the gsplat library \cite{ye2025gsplat} to handle the whole rendering process, including projection and rasterization. Importantly, the whole process is differentiable, which allows us to optimize the 3D Gaussian parameters.
 
 \section{Problem Definition}
-% - Input and output specification
-% Input: unposed monocular video of dynamic human centric scene, captured from either static or moving camera
-% Output: 4D representation of the scene: a. canonical 3dgs b. smplx parameters over time c. camera parameters over time
-% d. if needed 3dgs can be converted to mesh representation for easier visualisation. Everything is meters and in world coordinate system.
 
-% - Assumptions
-% - we currently do not account for blurry images - so we assume that the input video is of decent quality with minimal motion blur
-
-% - Scope and evaluation goals
-% - Our goal is to obtain high rendering quality for novel view synthesis, as well as accurate recovery of human motion in the scene. We evaluate our method on both quantitative metrics such as PSNR, SSIM, LPIPS for novel view synthesis
-% - We also want to obtain high pose quality which we measure using MPJPE, MVE, Contact Distance and Percentage of Correct Depth relations
-% - As another proxy for quality of extracted geometry, we also measure mesh reconstrution quality using V-IoU, Chamfer Distance, P2S and Normal Consistency
-% - Finally, we also evaluate the segmentation quality using IoU, F1 and Recall metrics - segmentation is important for being able to distenghuish dynamic and static parts of the scene
-
-Our input consists only of the RGB frames of a monocular video capturing multiple people interacting in a dynamic scene. The video can be captured with either a static or a moving camera. No camera parameters, segmentations, or body model parameters are given at test time. Our pipeline estimates, for each frame, the camera parameters and per-person SMPL-X parameters, and uses them to optimize a canonical 3D Gaussian Splatting (3DGS) representation. The final output is a 4D scene representation that includes (i) a canonical 3DGS model, (ii) per-frame SMPL-X parameters for each person, and (iii) per-frame camera parameters. If needed, the 3DGS can be converted to a mesh representation for visualization and evaluation. We represent geometry in meters.
+Our input consists only of the RGB frames of a monocular video capturing multiple people interacting in a dynamic scene. The video can be captured with either a static or a moving camera. No camera parameters, segmentations, or body model parameters are given at test time. Our pipeline estimates, for each frame, the camera parameters (including intrinsics, estimated within the Human3R pipeline from its depth predictions) and per-person SMPL-X parameters, and uses them to estimate a canonical 3D Gaussian Splatting (3DGS) representation. The final output is a 4D scene representation that includes (i) a canonical 3DGS model, (ii) per-frame SMPL-X parameters for each person, and (iii) per-frame camera parameters. If needed, the 3DGS can be converted to a mesh representation for visualization and evaluation. We represent geometry in meters.
 
 We assume that the input video does not contain severe motion blur and that the people are not persistently occluded by large objects. We focus on reconstructing the dynamic humans and do not aim to reconstruct dynamic non-human objects. Our experiments cover short sequences (up to about 10 seconds), and we treat longer videos as outside the validated scope of this work.
 
 Our evaluation axes reflect the overall objectives of the thesis. First, we target high-quality appearance from arbitrary viewpoints, which we assess via novel view synthesis. Second, we aim for realistic geometry and motion, which we assess via pose estimation and mesh reconstruction metrics. Third, we aim to correctly separate dynamic humans from the static background, which we assess via instance segmentation metrics. We define the specific metrics and evaluation protocols in the Experiments section.
 
-
 \section{Preprocessing}
+% Optional improvements (to revisit later):
+% - Add a short description of how we handle preprocessing failures in practice (e.g., skip frames/scenes, manual relabeling of track IDs, rerun SAM3 with adjusted prompts, etc.).
+% - Add rough runtimes per preprocessing step (Human3R, SAM3, LHM) for reproducibility.
 
 Our pipeline relies on a preprocessing stage that estimates camera and human priors from the raw monocular video. All three components are necessary: Human3R provides per-frame cameras and SMPL-X parameters, SAM3 provides instance masks, and LHM provides a per-person canonical 3DGS initialization. This initialization is later crucial for novel training view synthesis, where we render posed 3DGS and refine them with DiFix. If the initial renderings are poor, the image-to-image refinement becomes substantially harder.
 
