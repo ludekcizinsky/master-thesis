@@ -17,7 +17,6 @@
 \newpage
 \chapter{Method}
 
-% todo: maybe explain briefly what are homogeneous coordinates
 \section{Preliminaries}
 \subsection{Homogeneous coordinate system}
 
@@ -29,10 +28,10 @@ A = \begin{bmatrix} R & t \\ 0 & 1 \end{bmatrix}
 
 where $R$ is a $3\times 3$ rotation matrix and $t$ is a $3\times 1$ translation vector. We make use of homogeneous coordinates throughout this work, especially when working with SMPL-X transformations and 3D Gaussian Splatting.
 
-\subsection{SMPLX Body Model}
+\subsection{SMPL-X Body Model}
 Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage.
 
-\paragraph{SMPLX model overview.} In general, SMPLX is a mesh based model defined as the following function:
+\paragraph{SMPL-X model overview.} In general, SMPL-X is a mesh-based model defined as the following function:
 
 \begin{equation}
 M(\beta, \theta, \psi, t) \rightarrow V \in \mathbb{R}^{N \times 3}
@@ -40,28 +39,32 @@ M(\beta, \theta, \psi, t) \rightarrow V \in \mathbb{R}^{N \times 3}
 
 where $\beta$ are the shape parameters, $\theta$ are the pose parameters, $\psi$ are the facial expression parameters, $t$ is the global translation of the body in the world coordinate system, and $V$ are the output mesh vertices of the body with $N$ vertices \cite{smplx}.
 
-\paragraph{Applying shape parameters.} We start from the template mesh in the zero T-Pose defined as 
+\paragraph{Fixed model components provided by SMPL-X.}
+SMPL-X comes with fixed model components, including the template mesh $T_{0}$, a kinematic tree (joint hierarchy), a joint regression function $J(\beta)$, per-vertex skinning weights $w_{j,i}$ that specify how strongly joint $i$ influences vertex $j$, and learned blendshape bases used by $B_{s}(\beta)$, $B_{e}(\psi)$, and $B_{p}(\theta)$. The skinning weights and blendshape bases are part of the SMPL-X model and are not estimated in our pipeline. Preprocessing estimates per-person shape $\beta$ and, for each frame, the pose parameters $\theta$ and global translation $t$; we do not use facial expression parameters $\psi$. For reference, the shape blendshapes are implemented as a linear combination of fixed per-vertex direction fields,
+\begin{equation}
+B_{s}(\beta) = \sum_{k=1}^{|\beta|} \beta_{k}\mathbf{S}_{k},
+\end{equation}
+where $\mathbf{S}_{k}\in\mathbb{R}^{N\times 3}$ are shape directions learned during SMPL-X model training and $\beta_{k}$ are the corresponding shape coefficients.
+
+\paragraph{Applying shape parameters.} We start from the template mesh in the rest pose (all joint rotations set to zero), denoted
 $T_{0} \in \mathbb{R}^{N \times 3}$. We then apply the shape parameters $\beta$ using blendshapes as follows:
 
 \begin{equation}
 T_{shaped} = T_{0} + B_{s}(\beta)
 \end{equation}
 
-% todo: here we need to explain what is B_s function
 where $B_{s}(\beta)$ is the linear blendshape function that takes as input the shape parameters $\beta$ and outputs the per-vertex offsets to be applied to the template mesh. Optionally, we can also apply expression blendshapes $B_{e}(\psi)$ to account for facial expressions:
 
 \begin{equation}
 T_{shaped,expr} = T_{0} + B_{s}(\beta) + B_{e}(\psi)
 \end{equation}
 
-% todo: here we should mention that the reason why we are not using expression blendshapes is because human3r does not estimate them reliably
-In practice, in our work, we do not use facial expressions, so we only apply the shape blendshapes.
+In practice, in our work, we do not use facial expressions because Human3R does not estimate them reliably, so we only apply the shape blendshapes.
 
-% todo: cite rodriques formula paper
-\paragraph{Converting pose parameters into global transformations.} Next, we convert the pose parameters $\theta$ from the axis-angle representation to rotation matrices using Rodrigues' formula. As a result, for each of the $K$ joints in the kinematic tree of the SMPLX body model, we obtain a rotation matrix $R_{i} \in \mathbb{R}^{3 \times 3}$ where $i = 1, \ldots, K$. These rotation matrices for each joint represent the local rotation of the joint with respect to its parent joint in the kinematic tree. 
+\paragraph{Converting pose parameters into global transformations.} Next, we convert the pose parameters $\theta$ from axis-angle representation to rotation matrices using Rodrigues' formula. As a result, for each of the $K$ joints in the kinematic tree of the SMPL-X body model we obtain a rotation matrix $R_{i} \in \mathbb{R}^{3 \times 3}$ where $i = 1, \ldots, K$ (in our setup, $K=55$). These rotation matrices represent the local joint rotations with respect to the parent joint in the kinematic tree.
 
 \paragraph{Pose-dependent deformations.}
-In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
+In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging. These offsets are applied in the canonical space before skinning. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
 
 We convert each of these local joint \textit{rotations} to local joint \textit{transformation} matrices $G_{i} \in \mathbb{R}^{4 \times 4}$ by appending the joint translation and a row for homogeneous coordinates as follows:
 
@@ -75,7 +78,6 @@ where $t_{i} \in \mathbb{R}^{3}$ is the translation vector of joint $i$ with res
 t_{i} = J_{i}(\beta) - J_{parent(i)}(\beta)
 \end{equation}
 
-% todo: maybe complement this mathy explanation also with one sentence explanation on a more intuitive level
 where $J_{i}(\beta)$ is the 3D position of joint $i$ given the shape parameters $\beta$, and $parent(i)$ returns the index of the parent joint of joint $i$ in the kinematic tree. 
 
 Finally, to transform the rigid transformations from the local joint space to the world coordinate system, we perform forward kinematics as follows:
@@ -86,8 +88,7 @@ G_{i}^{world} = G_{parent(i)}^{world} \cdot G_{i}
 
 where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i)}^{world}$ is the world transformation of the parent joint of joint $i$. We perform this operation recursively starting from the root joint which has no parent.
 
-% todo: we should explain are the skinning weights estimated 
-\paragraph{Posing the mesh via Linear Blend skinning and global pose transformations.} Finally, we pose the mesh vertices using Linear Blend Skinning (LBS) and the global joint transformations obtained from forward kinematics. Each vertex $v_{j}$ in the mesh is associated with a set of skinning weights $w_{j,i}$ for each joint $i$. The posed vertex position $v_{j}^{posed}$ is then computed as follows:
+\paragraph{Posing the mesh via linear blend skinning and global pose transformations.} Finally, we pose the mesh vertices using linear blend skinning (LBS) and the global joint transformations obtained from forward kinematics. Each vertex $v_{j}$ in the mesh is associated with a set of fixed skinning weights $w_{j,i}$ for each joint $i$ (see the model overview above). The posed vertex position $v_{j}^{posed}$ is then computed as follows:
 
 \begin{equation}
 v_{j}^{posed} = \sum_{i=1}^{K} w_{j,i} \cdot \left(G_{i}^{world} \cdot \begin{bmatrix} v_{j}^{shaped} + B_{p}(\theta)_{j} \\ 1 \end{bmatrix}\right)_{1:3}
