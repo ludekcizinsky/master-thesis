@@ -21,17 +21,16 @@
 \section{Preliminaries}
 \subsection{Homogeneous coordinate system}
 
-In 3D computer vision and graphics, we have two types of transformations that we apply to points: linear (e.g. rotation, scaling) and affine (e.g. translation). Linear transformations can be represented using $3 \times 3$ matrices, while affine transformations does not have this property. To unify the representation of both linear and affine transformations, we use homogeneous coordinates. In homogeneous coordinates, we represent a 3D point $\mathbf{p} = [x, y, z]^{T}$ as a 4D vector $\mathbf{p}_{h} = [x, y, z, 1]^{T}$. This allows us to represent both linear and affine transformations using $4 \times 4$ matrices. For example, a general affine transformation matrix $A$ can be represented as follows:
+In 3D computer vision and graphics we frequently apply rigid and affine transformations to points and want to compose multiple transformations efficiently. Homogeneous coordinates unify linear and affine transformations by representing a 3D point $\mathbf{p}=[x,y,z]^{T}$ as a 4D vector $\mathbf{p}_{h}=[x,y,z,1]^{T}$, so that transformations can be written as $4\times 4$ matrices and composed by matrix multiplication. A general rigid transformation (an element of SE(3)) can be written as:
 
 \begin{equation}
 A = \begin{bmatrix} R & t \\ 0 & 1 \end{bmatrix}
 \end{equation}
 
-where $R$ is a $3 \times 3$ rotation matrix, $t$ is a $3 \times 1$ translation vector, and the last row is for homogeneous coordinates. This allows us to easily combine multiple transformations by simply multiplying their corresponding $4 \times 4$ matrices together.
+where $R$ is a $3\times 3$ rotation matrix and $t$ is a $3\times 1$ translation vector. We make use of homogeneous coordinates throughout this work, especially when working with SMPL-X transformations and 3D Gaussian Splatting.
 
 \subsection{SMPLX Body Model}
-Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents naked human body, i.e., no clothes. It defines two sets of parameters through which we can control the shape and pose of the body. First, the shape parameters define unique attributes of person's body such as height, overall proportions of the body (athletic, slim, etc.). Indeed, these parameters are identical across all video frames. 
-Second, pose parameters control the articulation of the body, hands and facial expressions. Using these parameters we can the map the canonical mesh representation of the body to the posed space using forward kinematics and linear blend skinning (LBS). In our work, we use this parametric 3D model as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation of the dynamic scene. We explain SMPLX model in more detail below.
+Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage.
 
 \paragraph{SMPLX model overview.} In general, SMPLX is a mesh based model defined as the following function:
 
@@ -52,14 +51,17 @@ T_{shaped} = T_{0} + B_{s}(\beta)
 where $B_{s}(\beta)$ is the linear blendshape function that takes as input the shape parameters $\beta$ and outputs the per-vertex offsets to be applied to the template mesh. Optionally, we can also apply expression blendshapes $B_{e}(\psi)$ to account for facial expressions:
 
 \begin{equation}
-T_{shaped} = T_{0} + B_{s}(\beta) + B_{e}(\psi)
+T_{shaped,expr} = T_{0} + B_{s}(\beta) + B_{e}(\psi)
 \end{equation}
 
-% why we are not applying the facial exprresions?
+% todo: here we should mention that the reason why we are not using expression blendshapes is because human3r does not estimate them reliably
 In practice, in our work, we do not use facial expressions, so we only apply the shape blendshapes.
 
 % todo: cite rodriques formula paper
 \paragraph{Converting pose parameters into global transformations.} Next, we convert the pose parameters $\theta$ from the axis-angle representation to rotation matrices using Rodrigues' formula. As a result, for each of the $K$ joints in the kinematic tree of the SMPLX body model, we obtain a rotation matrix $R_{i} \in \mathbb{R}^{3 \times 3}$ where $i = 1, \ldots, K$. These rotation matrices for each joint represent the local rotation of the joint with respect to its parent joint in the kinematic tree. 
+
+\paragraph{Pose-dependent deformations.}
+In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
 
 We convert each of these local joint \textit{rotations} to local joint \textit{transformation} matrices $G_{i} \in \mathbb{R}^{4 \times 4}$ by appending the joint translation and a row for homogeneous coordinates as follows:
 
@@ -88,10 +90,10 @@ where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i
 \paragraph{Posing the mesh via Linear Blend skinning and global pose transformations.} Finally, we pose the mesh vertices using Linear Blend Skinning (LBS) and the global joint transformations obtained from forward kinematics. Each vertex $v_{j}$ in the mesh is associated with a set of skinning weights $w_{j,i}$ for each joint $i$. The posed vertex position $v_{j}^{posed}$ is then computed as follows:
 
 \begin{equation}
-v_{j}^{posed} = \sum_{i=1}^{K} w_{j,i} \cdot (G_{i}^{world} \cdot \begin{bmatrix} v_{j}^{shaped} \\ 1 \end{bmatrix})_{1:3}
+v_{j}^{posed} = \sum_{i=1}^{K} w_{j,i} \cdot \left(G_{i}^{world} \cdot \begin{bmatrix} v_{j}^{shaped} + B_{p}(\theta)_{j} \\ 1 \end{bmatrix}\right)_{1:3}
 \end{equation}
 
-where $v_{j}^{shaped}$ is the vertex position after applying shape blendshapes, and $(\cdot)_{1:3}$ extracts the first three components of the resulting homogeneous coordinate. This operation is performed for all vertices in the mesh to obtain the final posed mesh $V^{posed}$.
+where $v_{j}^{shaped}$ is the vertex position after applying shape blendshapes, $B_{p}(\theta)_{j}$ is the pose-dependent offset for vertex $j$, and $(\cdot)_{1:3}$ extracts the first three components of the resulting homogeneous coordinate. This operation is performed for all vertices in the mesh to obtain the final posed mesh $V^{posed}$.
 
 \paragraph{Adding global translation.} To complete the posing process, we add the global translation $t$ to all posed vertices as follows:
 \begin{equation}
