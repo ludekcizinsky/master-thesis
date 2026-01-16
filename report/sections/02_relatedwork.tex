@@ -15,9 +15,6 @@
 
 \newpage
 \chapter{Related Work}
-
-
-
 % ---------- Notes section
 
 % mayne i should write about the evolution of body models - since in 25, there have been new body models from naver labs as well as meta. the reason i am using smplx is because i can then estimate pose metrics more easily, not sure if i would be able to compare to smplx if i use meta's body model
@@ -73,3 +70,79 @@
 
 % ---------- end of notes section
 
+% keep in mind the following writing rules:
+% 1. What problem dimension does this subsection cover, and why does it matter for my paper?
+% e.g. “This subsection reviews methods for monocular human reconstruction under occlusion, because occlusion is the main failure mode in our setting.”
+
+% 2. Start with a functional opening paragraph (not a polished one)
+% e.g. “A large body of work has studied [problem setting]. Existing approaches can be broadly grouped into [2–3 categories], which differ mainly in [key axis: representation, supervision, assumptions, etc.].”
+
+% 3. Write in “paper clusters,” not paper-by-paper
+% - Group papers before writing
+% - Write one sentence per group, not per paper
+
+% 4. End each subsection with a bridge sentence
+%  “What do all these approaches still fail to address that motivates the next section or my method?”
+
+% ---------
+
+% 5 min – Write the scope sentence (“This subsection reviews…”)
+
+% 10 min – Write 3–5 bullet points describing clusters of work
+
+% 10 min – Turn bullets into rough prose (no citations yet)
+
+% 5 min – Add citations and a closing bridge sentence
+
+\section{Parametric Body Models}
+% notes:
+% also called statistical body models
+
+% scope sentence: in our work, we rely on parametrric body model to a. anchor our explicit 3d representation and b. to define the deformation field over time.
+% clusters:
+% - 1. early body models before smpl: 
+% issues:
+% - traditional approach: model how vertices are related to the underlying skeleton via skinning weights -> while these approaches are supported by rendering engines, they generate unrealistic joint deformations 
+% - support limited variety of body shapes
+% - some are not compatible with with back then existing graphics pipeines and rendering engines
+
+% goals of smpl: make the model as simple as possible, as well as standardised so that it can be used by the community at large, and keep the realistic defomration and shapes learned from data
+
+% - 2. smpl and its variants (smplh, smplx)
+% in general, smpl divides the body modelling into two parts: 
+% a. shape model - the question is how to offset each vertex based on the shape parameters
+% b. pose model - you have predefined set of joints, and the question is how to rotate each of these joints - they use recursive kinematic tree with blend skinning weights to define how each vertex is influenced by the underlying joints
+
+% smpl stands for skinned multi-person linear model
+% smplx - prior works only focus either on body only or hands, not separately - except from an early attempts
+% ---Frank model - which however just stitched together seprarate hands, face and body models, this stitching result in unrealistic model
+% --- SMPL-H - extends smpl by adding articulated hands however it still does not model the face -> therefore they start from smpl-h and then add face model on top of it (FLAME)
+% in addition to smpl, smplx combines smpl body model with FLAME head model and MANO hand model
+
+% both smpl and smpl are models learned from large scale dataset of 3d body scans, smplx says 5586 scans 
+
+% FLAME in contrast to previous approaches that focus only on face models the entire head
+
+
+% - 3. modern approaches - annybody, meta momentum human rig (mhr)
+% mhr decouples skeletal pose from body shape to provide more control and higher interpretability -> they buiold this based on human momentum rig paper which is in turn based on ATLAS 
+% annybody - argues that smpl is trained on scans with limited population diversity, and therefore struggles to generalise to for instance children or elderly people. therefore they take scan free approach and learn the body priors instead from the community driven MakeHuman framework
+
+
+Modelling human bodies is a long standing and important problem in computer vision and graphics. The foundational paper in this area is the Skinned Multi-Person Linear (SMPL) model \cite{smpl}. Unlike its predecesors, SMPL was the first parametric model that was compatible with existing graphics pipelines, differentiable and capable of generaating realistic body shapes and poses since it was fitted on a large corpora of 3D scans. SMPL divides the body modelling into two parts. First, it models the shape variations via learned PCA shape space. Specifically, to obtain shape of given person, SMPL requires 10 shape parameters that define the coefficients of the PCA basis. Together, linear combination of these basis vectors define the offsets for each vertex in the body mesh. Second, the pose of the mesh is modelled via a predefined kinematic tree of joints. During inference, human mesh recovery method estimate the local rotation of each joint in the kinematic tree. The tree is then recursively travsersed to obtain the globabal transformation of each joint. Finally, to define how each vertex in the mesh is influenced by the underlying joints, SMPL uses the learned skinning weights to combine the transformations of all joints affecting given vertex.
+
+While SMPL enabled major step towards realistic human body modelling, it still lacked the ability to model hand and face details. To address this limitation, SMPL-H extended the SMPL model by adding articulated hand modelling \cite{smplh}. Later, SMPL-X extends the SMPL-H by adding also detailed face 
+modelling based on the FLAME head model \cite{smplx,flame}, and therefore marks the first method to jointly model body, hands and face in a single parametric model. Most recently, Anny \cite{annybody} introduces a new parametric body model that aims to address the limited population diversity in the training data of SMPL models. Specifically, AnnyBody learns body shape priors from the community driven MakeHuman framework, which contains a wide variety of body shapes including children and elderly people.
+Finally, most recently Meta introduced the Momentum Human Rig (MHR) \cite{yang2025sam3dbody}, which decouples skeletal pose from body shape to provide more control and higher interpretability. 
+
+We use SMPl-X body model in our work since it is being predicted by our chosen HMR method. We use the SMPL-X model to define the deformation field over time for our explicit 3D representation and also to 
+provide strong geometric prior for human body shape.
+
+
+\section{3D Pose Estimation}
+
+% why this section: in order to use smpl-x body model, we need to first estimate its parmaeters
+% from the monocular video
+
+% 25 methods: camera HMR, PromptHMR, GENMO
+% sam3d body current state of the art 
