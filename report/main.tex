@@ -3,7 +3,7 @@
 %
 % Created 03/08/2024 by Tobias Fischer
 %% ----------------------------------------------------------------------------
-\documentclass[11pt,openright]{book}
+\documentclass[11pt,openany]{book}
 
 \usepackage{iftex}
 \usepackage[margin=1in,headheight=48pt]{geometry}
@@ -61,14 +61,13 @@
 
 % Title page, modify accordingly 
 \input{title}
-\cleardoublepage
+\clearpage
 
 \input{sections/00_abstract}
 
 % Input here any acknowledgements
 \input{acknowledgements}
-\cleardoublepage
-\newpage
+\clearpage
 
 % % Chapter-pages etc. use the ``plain'' pagestyle - since we don't want to have a heading at all at chapter-pages, redefine plain accordingly. Don't forget the page number. 
 \fancypagestyle{plain}{
@@ -86,13 +85,11 @@
 
 % Insert list of figures
 \listoffigures
-\cleardoublepage
+\clearpage
 
 % Insert list of tables
 \listoftables
-\cleardoublepage
-
-\newpage
+\clearpage
 
 \pagenumbering{arabic}
 
