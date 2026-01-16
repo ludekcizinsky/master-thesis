@@ -54,8 +54,17 @@ Feed-forward models that directly infer scene representations from video are the
 
 
 \section{Limitations}
+\paragraph{Multi-stage preprocessing and brittleness.}
+Our pipeline relies on several pretrained components (Human3R for cameras and SMPL-X, SAM3 for instance masks, and LHM for canonical initialization). Failures in any of these stages can propagate to training and are not always recoverable by subsequent optimization. Common failure modes include identity swaps in crowded interactions, missed or fragmented masks under occlusions, and incorrect poses under severe self-contact. As a result, the method currently benefits from manual inspection of preprocessing outputs before launching training.
 
-% - in general, the method is still quite slow, taking between 15 to 30 minutes to run whole pipleine 
-% - also since it is multi step pipeline, there are many interdependent components, and installing all the environment dependencies can be quite challenging
-% - we currently assume that humans do not hold any objects for instance
-% - we also 
+\paragraph{Sensitivity to pose and camera errors.}
+We keep cameras and body parameters fixed during training. This makes the optimization stable and efficient, but also means that residual errors in pose or camera estimation directly bias the learned canonical representation. In particular, inaccurate poses can lead to incorrect placement of Gaussians and therefore inconsistent supervision, which affects both reconstruction quality and novel view synthesis.
+
+\paragraph{Mesh extraction from 3DGS.}
+Our representation is an explicit 3DGS optimized for rendering rather than for producing watertight surfaces. Meshes obtained by extracting an isosurface from a Gaussian density field are only an approximation and can be sensitive to thresholding, noise, and view-dependent artifacts. This limits the reliability of geometry metrics and partially explains the gap to methods that directly optimize an implicit surface representation.
+
+\paragraph{Input assumptions and scene scope.}
+We assume RGB-only input without severe motion blur and without persistent occlusions by large objects. We focus on reconstructing dynamic humans and do not aim to reconstruct dynamic non-human objects, such as handheld props. In such cases, appearance and geometry can be absorbed incorrectly into the human model or omitted entirely. Our experiments cover short sequences (up to about 10 seconds), and we treat longer videos as outside the validated scope of this work.
+
+\paragraph{Runtime and usability.}
+Although the end-to-end runtime is on the order of minutes rather than days, the method is still non-trivial to run. It depends on multiple external models and environments, and the overall system is more suitable for advanced users than fully feed-forward alternatives. Improving robustness, packaging, and automation of preprocessing checks are necessary steps for broader usability.
