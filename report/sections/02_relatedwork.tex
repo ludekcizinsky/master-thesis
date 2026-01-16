@@ -139,10 +139,58 @@ We use SMPl-X body model in our work since it is being predicted by our chosen H
 provide strong geometric prior for human body shape.
 
 
-\section{3D Pose Estimation}
+\section{Human Motion Estimation}
 
 % why this section: in order to use smpl-x body model, we need to first estimate its parmaeters
 % from the monocular video
+% 22 methods: glamr
+% 23 methods: humans in 4d
+% 24 methods: wham, tram, pace
+% 25 methods: Hsfm, camera HMR, PromptHMR, GENMO, human3r, sam3d body
 
-% 25 methods: camera HMR, PromptHMR, GENMO
-% sam3d body current state of the art 
+% local human mesh recovery: 
+% - goal: estimate parameters for mesh based body model from a single image in the local camera frame
+% - multiple people:
+% -- you can use top down approach: first detect people via object detector, then crop each person and then run single person hmr method, e.g. Humans in 4D, camera hmr
+% -- bottom up approach: first estimate all keypoints in the image, then group them into people, then run single person hmr method on each person. This should address the problems with more crowded scenes where people are close to each other. e.g. multi-hmr
+
+% global human mesh recovery:
+% - goal: estimate parameters for mesh based body model from a monocular video in the global world frame
+% - by defintion, very ill constrained problem since neither the camera nor the human motion is known, and decoupling these is not trivial
+% - early methods such as glamr first estimate local human mesh for each frame, then use these as input to the predictor that estimate the translation of the person in the world frame, after this, there is some joint optimisation to refine the results
+
+% - later methods such as slahmr rely on SLAM to estimate camera poses in world frame, and then use these to guide the global human mesh recovery, later TRAM improves Slahmr by enhancing the camera pose estimates to be in meters
+% - in contrast to these offline methohds, more modern methods such as TRACE or WHAM take an end to end approach and regress directly the global human mesh parameters from the monocular video and making use of memory unit to store the past information about the scene 
+
+
+% human3r notes:
+% - key idea: to reconstrution human motion accurately, we need to understand their surroundings as well
+% x hsfm reconstructions humans and scene separately and then combines them via refinement under constraints
+% in general the main advantage of h3r is unified one stop solution that is fast, easy to install and deploy in contrast to more complxe multi stage pipelines
+
+% todo: possible also mention sam3d body here since it is from meta and it is quite recent as well
+
+
+Human Mesh Recovery (HMR) methods aim to estimate the parameters of parametric body models from images or videos. These methods can be categorised into two main groups: local HMR and global HMR. Local HMR methods focus on estimating body model parameters in the local camera frame from single images, while global HMR methods aim to recover body model parameters in the global world frame from monocular videos.
+
+\paragraph{Local HMR methods}. Majority of the local HMR methods adopts a two-stage top-down approach. First, the method usually uses an off the shelf object detector to detect people in the image. Then, for each detected person, the method crops the image and runs a single-person HMR method to estimate the body model parameters \cite{4dhumans,camerahmr}. However, the top down approach often fails in crowded scenes. Therefore, bottom-up approaches first detect all joint keypoints in the image and then group these into individual per subjects keypoints before running single-person HMR \cite{multihmr}.
+
+\paragraph{Global HMR methods}. Earlier approaches first such as GLAMR \cite{glamr} first run local HMR for each frame, followed by a separate module that estimates the global translation of the person in the world frame. Finally, a joint optimisation is performed to refine the results. Later methods such as SLAHMR \cite{slahmr} and TRAM \cite{tram} leverage SLAM to estimate camera poses in the world frame, which are then used to guide the global HMR. More recent methods such as WHAM \cite{wham} and TRACE \cite{trace} take an end-to-end approach and directly regress global body model parameters from monocular videos, often using memory units to store past information about the scene. While these recent methods achieve already promising results, they still rely on varying number of the shelf estimators such as 2D keypoint detectors, segmentation models, and depth estimators. This dependency becomes espeically problematic in video where tracking consistency is crucial for high quality results.
+Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that jointly reconstructs human motion and scene geometry from monocular videos. By jointly reasoning about humans and their surroundings, Human3R achieves more accurate and consistent reconstructions compared to prior multi-stage pipelines. We therefore choose Human3R as our HMR method in this work.
+
+
+% Idea about 
+
+
+
+\section{3D Scene Reconstruction.}
+
+\paragraph{Representations.}
+
+\paragraph{Reconstruction methods.}
+
+\section{4D Scene Reconstruction.}
+
+\paragraph{Representations.}
+
+\paragraph{Reconstruction methods.}
