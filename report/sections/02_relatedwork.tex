@@ -179,18 +179,82 @@ Human Mesh Recovery (HMR) methods aim to estimate the parameters of parametric b
 Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that jointly reconstructs human motion and scene geometry from monocular videos. By jointly reasoning about humans and their surroundings, Human3R achieves more accurate and consistent reconstructions compared to prior multi-stage pipelines. We therefore choose Human3R as our HMR method in this work.
 
 
-% Idea about 
 
 
+% why this section: in order to be able to talk about 4d reconstruction, we first need to review 3d reconstruction methods on top of which 4d methods are built
 
-\section{3D Scene Reconstruction.}
+% some other importnat papers that i yet do not understand fully:
+% nerfies, hypernerf
 
-\paragraph{Representations.}
 
-\paragraph{Reconstruction methods.}
+% what was before nerf:
+% - colmap and the paper structure from motion revisited (2016)
+% - before nerf, you would use dense capture and the idea of light fields to reconstruct 3d scenes from images 
 
-\section{4D Scene Reconstruction.}
 
-\paragraph{Representations.}
+% nerf notes:
+    % at the time, there was a new trend to encode scene or 3d object as implicit neural representation (in practice a MLP net) - e.g. sign distance field (paper: A volumetric method for building complex models from range images)
+    % however at that time, these neural encoding techniques still lacked behing traditional methods, such as meshes or voxel grids,  in terms of the fidelty of the reconstructiona
+    % neural 3d shape representations review:
+    % - map xyz coordinates to signed distance values (e.g. deep sdf), or occupancy values (e.g. occupancy networks) -> both these examples required 3D supervision
+    % - later in the paper "Differentiable volumetric rendering: Learning implicit 3d representations without 3d supervision" they were first to show how to construct differentable rendering pipeline for implicit representations (before them some works showed this for explicit representations such as voxels or meshes), another work Scene Representation Networks learns a net that for each 3d world coordinate outoputs feature vector and rgb color
+    % - the prioblem with these techniques is that they were limited to only simple shapes - in contrast nerf showed how to reconstruct complex real world scenes with high fidelity
+    
+    % View synthesis and image-based rendering:
+    % - early techniques relied on light field sample interpolation (e.g. light field rendering, lumigraph) -> these require very very dense capture of images
+    % - therefore later methods focused on differentable rendering - one of the main directions focused on optimisation of mesh representation with apperance modeled via diffuse or view dependend apperance -> these did not succeed because apparantly optimising mesh from images is quite hard problem - difficult loss landscape 
+    % - therefore later works switched from meshes to volumetric representations - e.g. Deepview, local light field fusion - these approaches train deeped neural net on large number of scene datasets to predict sampled volumetric representation for novel scenes -> the main limit of these volumetric scenes is the resolution - to render higher resoliton iamges, you also need to have denser volumetric grids which quickly becomes infeasible in terms of memory consumption as well as sampling time
+    % - nerf overcomes this by using implicit continuous representation that can be sampled at arbitrary resolution, requires less storage, and yileds significantly better quality results
 
-\paragraph{Reconstruction methods.}
+
+% cat 3d notes:
+    % advances in photogammetry unlocked creation of high quality 3d assets from 2d inputs (images / videos) - more precisely NeRF and 3DGS have been the two most influential representations in this area
+    % both methods yield highly realistic results, however under the assumption that the input to these method is a dense capture of images  which is rare in real world scenarios
+    % so this is what spared interest in 
+    % key idea in cat3d paper:
+    % "This way, we reformulate a difficult ill-posed reconstruction problem as a generation problem: given any number of input images, generate a collection of consistent novel observations of the 3D scene"
+    % -> their solution to the problem: multi-view diffusion model that given arbitrary number of input images can generate novel view images of the scene from arbitrary camera viewpoints
+
+    % the key question in the 3d literature at the very start was how to make use of the fact that 2D data is abundant, whereas 3D data is scarce
+    % DreamFusion came up with a fundmental idea of score distlation sampling (SDS) that allows to distil knowledge from 2D diffusion models into 3D representations such as NeRF
+
+    % while this was a major step forward, DreamFusion lacked explicit camera control. This limitation was addressed by subsequent works such Zero123 or zero-nvs that introduced explicit camera conditioning into the diffusion models for 3D generation.
+
+    % another important aspect of 3d reconstruction methods is ensuring multi-view consistency, methods such as Image Dream or cat3d encode this by using 3D attention mechanism in their diffusion models, i believe also recon fusion is a good example here
+
+    % finally, in contrast to synthesise views and then fit NeRF or 3DGS to these views, there has been a new line of works focusing on feedforward 3d reconstruction that maps directly the input modality to the 3d representation.
+    % example of such methods in the 3d space include: lrm, dmv3d, instant3d, splatter image, gs-lrm
+    % while these methods are extremelly fast, they reconstruction quality is still lagging behind the optimisation based methods
+
+
+% cat 4d notes:
+    % similar to 3d recosntruction, under the right cappture conditions, we can reconstruct high quality 4d representations of dynamic scenes - e.g. 4dgs, free time gs, d-nerf, dynamic 3dgs
+    % while for both 3d and 4d, these capture conditions are quite limiting in real world scenarios, it is still feasible to do multi-view capture of a static scene e.g. just walk around with the smartphone. In contrast, 
+    % for 4d scene reconstruction, this is a different story - you literally need multiple cameras to capture the dynamic scene from different viewpoints at the same time - so the bar is much higher here
+
+    % the key idea behind cat4d paper is: learn 4d generative model based on the mix of synthetic and real world multi-view dynamic scene data, therefore, their model learns to transform an input monocular video
+    % into multi-view video, "Specifically, our model accepts any number of input images captured at different viewpoints and times, and synthesizes as output the scene’s appearance at any specified novel viewpoints and novel times"
+
+    % dynamic 3d scene reconstruction
+    % - methods assumes multi-view video capture as input: e.g. hexplane, k-planes, dynamic 3dgs, nerfies, hyper nerf, 4dgs
+    % - methods focus on monocular video input: e.g. Neural Scene Flow Fields,  Mosca, shape of motion -> they key idea behind these method is to use 3dgs or nerf as the underlying canonical static representation, and learn deformation field over time to model the motion -> the issue with these methods is that they cant reconstruct what has not been observed in the input video. This becomes especially problematic when using explicit representation such as 3dgs which becomes underoptimal in sparse view settings. of course another disadvantage of these methods is that they have to rely on other off the shelf modules 
+
+
+    % 4d generation:
+    % - early methods relied on score distilation sampling - e.g. DreamFusion for 3d, and text-to-4d dynamic scene generation for 4d
+    % - further advances in this field were driven by relying on pretrained multi-view (e.g. zero-1-to-3, mvdream) or video diffusion models (most promiment base video diffsion is stable video diffsion model), e.g. dreamgaussians4d, 4d-fy, consistent4d 
+
+    % most recent method drop the sds optimisation, and instead focus on generating multi-video, e.g. dimension-x, cat4d, vidid-zoo, efficient-4d, diffusion^2
+    % some methods take it even further and directly train feedforward 4d reconstruction models, e.g. l4gm
+    % why can not you use simple video to video diffusion models for 4d gen: no explicit multi-view consistency
+
+
+    % some notes on the initial score distaltion sampling idea:
+    % - the key idea of sds is as follows: render your 3d representation, and then ask diffusion model to refine it, and then backprop use the added vs predicted noise to guide the direction of the update
+    % - the problem with this is that the direction of the refiment depends on the input condition - in the vanila version of the sds formulation - this would be text - this is very weakly constraining signal for 3d reconstruction
+    % - another issue is that you have to keep prompting diffusion model during training which is quite computationally expensive
+
+% geometry informed video diffusion models
+% - e.g gen3c: predicted point clouds from the input image depth maps, and use these as input condition to the diffusion model    
+
+
