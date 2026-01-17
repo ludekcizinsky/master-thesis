@@ -184,7 +184,13 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
 % why this section: in order to be able to talk about 4d reconstruction, we first need to review 3d reconstruction methods on top of which 4d methods are built
 
 % some other importnat papers that i yet do not understand fully:
-% nerfies, hypernerf
+% nerfies, hypernerf, reconfusion
+
+
+
+
+% static sparse view 3d reconstruction: 
+% - methods that rely on learned data priors to make the monocular setting better constrained: mv splat, grm, gs-lrm 
 
 
 % what was before nerf:
@@ -237,7 +243,7 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
 
     % dynamic 3d scene reconstruction
     % - methods assumes multi-view video capture as input: e.g. hexplane, k-planes, dynamic 3dgs, nerfies, hyper nerf, 4dgs
-    % - methods focus on monocular video input: e.g. Neural Scene Flow Fields,  Mosca, shape of motion -> they key idea behind these method is to use 3dgs or nerf as the underlying canonical static representation, and learn deformation field over time to model the motion -> the issue with these methods is that they cant reconstruct what has not been observed in the input video. This becomes especially problematic when using explicit representation such as 3dgs which becomes underoptimal in sparse view settings. of course another disadvantage of these methods is that they have to rely on other off the shelf modules 
+    % - methods focus on monocular video input: e.g. Neural Scene Flow Fields,  Mosca, shape of motion or most recently HiMor -> they key idea behind these method is to use 3dgs or nerf as the underlying canonical static representation, and learn deformation field over time to model the motion -> the issue with these methods is that they cant reconstruct what has not been observed in the input video. This becomes especially problematic when using explicit representation such as 3dgs which becomes underoptimal in sparse view settings. of course another disadvantage of these methods is that they have to rely on other off the shelf modules 
 
 
     % 4d generation:
@@ -255,6 +261,61 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
     % - another issue is that you have to keep prompting diffusion model during training which is quite computationally expensive
 
 % geometry informed video diffusion models
-% - e.g gen3c: predicted point clouds from the input image depth maps, and use these as input condition to the diffusion model    
+% - e.g gen3c: predicted point clouds from the input image depth maps, and use these as input condition to the diffusion model
+% - viewcrafter - init point cloud, render, syntheseize novel views, and repeat
 
 
+
+% Works that primarily focus on the 3d/4d representation under the assumption of dense capture
+% --------------------
+% 3d methods:
+% - task definition: 3d reconstruction: estimate geometry and apperance of the scene from a set of images
+% - classical style: depth maps + and feature matching to arrive at some form of point cloud
+% - optimisation based that use some neural represenation: nerf, 3dgs
+
+
+% 4d methods:
+% - 4d task definitiion: same as 3d task definition but also need to model motion of the underlying scene representation
+% - prior neural representation methods: volume deform or dynamic fusion - rely on rgb-d data, and iteravily fit the underlying 4d model
+% - emphasis put on modelling motion: shape of motion, mosca, 4dgs, Gaussian flow, free time gs
+% - general scene and SLAM like approach: mega sam - idea combine feed forward depth estimation with with optimisation based post recosntruction of the scene
+
+
+% More practical real world settings capture
+%  in practice, you have access either to image, set of sparse image or monocular video. In this case, you need to densify the scene
+% -----------------------
+
+% 3d methods 
+% - earlier methods focused on better constraining the optimisation process of 3dgs / nerf via geometric prioors: mipnerf 360 (ray entropy), reprojection lossses (sparf), regnerf
+% - other rely on off the shelf modules to estimate depth / normals, e.g. "Dense depth priors for neural radiance fields from sparse input views", sparsenerf, fsgs, monosdf, depth supervise nerf
+% --- it seems that one of the main limitations of these methods is that they only yiled marginal improvements in denser view settings, also hard to balance the losses
+% - most recent focus is on synthesising new views via generative models to densify the scene:
+% -- distilation sampling methods: score (dreamfusion, prolific dreamer), neural mode seeking (sparse fusion), score jacobian chaining (zero1-to-3), nerf guided distilation (nerf diff)
+% ---- main disadvantages: expensive to query diffusuin modesl during trainign, ill posed conditioning signal for the diffusionm model guidanc, focus on object centric scenes and scale poorly to larger scenes 
+% -- synth views and then backrpoject: e.g. reconfusion, view crafter
+% -- synth new views first and then fit 3d rep: e.g. cat3d, sv3d
+% -- refine images and add as extra training views: flowr / difix / 3dgs enhancer: new way of using diffusion models - instead of doing noise to data generation, they do conditional source distribution to target distribution generation: 
+%   "We hypothesize that a generative process that directly maps samples from a conditional source distribution of rendered images to the target distribution of ground truth images is **preferable** to conditional noise-to-data generation" flowr compare to difix is also using flow matching, they propose single multi-view diffusion model that given M observed images and N rendered images, synthesises N refined images in a single forward pass ensuring multi-view consistency 
+% - feedforward methods 
+% --- MVS nerf and pixel nerf - first significant approach to tackle the generalisability for Nerf, LRM proposes eed forward model to predict directly 3d objrc represeantion from single iamge, trained on large dataset. the emphasis on object. 
+% --- more recently methods focused on directly predicint 3d representation from sparse set of images - pixelsplat, mvsplat, mvsplat360, lgm
+% --- For the scenes level recon that predicts also camera params, first shift came with dust3r, mast3r which take pair of images and predict camera parameters along with sparse point cloud (not sure what is the rep exactly). The main downside of these methods was the reliance on pair of images only, then vggt came and show it can infer all the 3d geometry from single image. Follow methods such as cut3r or point3r added a memory and use it to store past information about the scene to improve the quality of the reconstruction. bolt3d isntead predicts 3dgs instead of point clouds 
+
+% 4d methods
+% - two stage - synthesise and then optimise: synthesise first multi view video, then fit 4d representation -> separation of concerns - densification and 4d reconstruction
+% --- e.g. cat4d, sv4d
+% - altenation between synthesise and optimise 4d rep: construct first a sparse representation of the scene, render it, improve the renderings, repeat -> joint densification and 4d reconstruction
+% --- e.g. bulletgen
+% - feed forward with the focus on getting the camera and some sort of point bases representation: monst3r (focusing on extending dust3r to dynamic setting - their issue was that due to their formulatio you still required a 2D tracker 4d motion), dynamic points maps build on the idea of dust3r / mast3r and their view invariant point maops and introduced view and time invariant point maps to model dynamic scenes from monocular video -> this representaaion is complete in a sense that it can reconstruct all the components of the 4d scene including motion (without requiring extra 2d tracker module, similar formulation was adapted by St4track. Other feed forward approaches such as align3r, cut3r pi3 recover and align depth maps but still require 2d tracker or video diffusion (case of geo4d) to model motion. Another trully feed forward method is any4d that models motion via scene flow and geometry via dense point maps. feedforward with focus on dynamic objects: l4gm, animate3d.
+
+
+% human centric methods 
+% -------------------------
+
+% - implicit reps: human nerf, neuman, instant nvr, vid2avatar (no gen component)
+% - explicit reps: 
+% -- multi view video: free time gs, tao gs
+% -- mono video: 
+% --- no generative prior: drivable 3dgs, 3dgs avatar, gauhuman, gaussian avatar, hugs, exavatar, vid2avatarpro + hsr and odhsr (that add scene to the reconstruction) + MultiPly that focuses on multiple humans
+% --- with generative prior: mv performer (single human), guess the unseen (multiple humans)
+% -- single or sparse set of images: ani-gs, fresa, adahuman, human ram, mv performer
