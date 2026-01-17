@@ -181,22 +181,6 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
 
 
 
-% why this section: in order to be able to talk about 4d reconstruction, we first need to review 3d reconstruction methods on top of which 4d methods are built
-
-% some other importnat papers that i yet do not understand fully:
-% nerfies, hypernerf, reconfusion
-
-
-
-
-% static sparse view 3d reconstruction: 
-% - methods that rely on learned data priors to make the monocular setting better constrained: mv splat, grm, gs-lrm 
-
-
-% what was before nerf:
-% - colmap and the paper structure from motion revisited (2016)
-% - before nerf, you would use dense capture and the idea of light fields to reconstruct 3d scenes from images 
-
 
 % nerf notes:
     % at the time, there was a new trend to encode scene or 3d object as implicit neural representation (in practice a MLP net) - e.g. sign distance field (paper: A volumetric method for building complex models from range images)
@@ -265,22 +249,33 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
 % - viewcrafter - init point cloud, render, syntheseize novel views, and repeat
 
 
+\section{3D and 4D Reconstruction from Dense Input Capture}
 
-% Works that primarily focus on the 3d/4d representation under the assumption of dense capture
-% --------------------
+In this section, we review prior works that focus on 3D and 4D reconstruction of a given scene under the assumption of having as input dense set of views or multi-view video capture of the scene. While these capture conditions are quite limiting (espeically for the 4D case),
+they lay the foundation for the later works that focus on more practical real world capture settings with sparse input views or monocular videos, which we discuss in the next section.
+
+
 % 3d methods:
 % - task definition: 3d reconstruction: estimate geometry and apperance of the scene from a set of images
-% - classical style: depth maps + and feature matching to arrive at some form of point cloud
-% - optimisation based that use some neural represenation: nerf, 3dgs
+% - classical structure from motion pipeline such as colmap, map set of images to sparse point cloud via feature matching, triangulation, bundle adjustment, densify the sparse point cloud via multi view stereo
+% - neural representation methods:
+% -- early neural representation before nerf: main limitation of these methods is that they require 3d supervision (deep sdf, occupancy networks), or can only capture simple shapes ("Differentiable volumetric rendering: Learning implicit 3d representations without 3d supervision, Scene Representation Networks") or rendering at higher resolution is very expensive in terms both memory and time (e.g. Deepview, local light field fusion)
+% -- nerf overcomes this by using implicit continuous representation that can be sampled at arbitrary resolution, requires less storage, and yileds significantly better quality results with this being said, due to its implicit nature, nerf was slow to train as well as render from
+% -- this is why 3dgs became so popular since it addresses these two key limitations of nerf - fast to train and fast to render, while still yielding high quality results, later methods such as 2dgs or mesh splatting focused on also improving the mesh extraction quality from 3dgs
+
+\paragraph{3D reconstruction methods.} The goal of 3D reconstruction techniques is to recover the chosen scene representaton from the given set of images. Classical structure from motion pipelines such as COLMAP \cite{colmap} first map the set of images to a sparse point cloud via feature matching and triangulation, followed by bundle adjustment to refine the camera poses and 3D points. Finally, the sparse point cloud is densified via multi-view stereo techniques \cite{sfmrevisited,schoenberger2016mvs}. While COLMAP recovers accurate camera poses and point clouds, it is not capable of reconstructing continuous surface. This motivates the later neural representations such capable of reconstructing continuous 3D geometru such as DeepSDF \cite{park2019deepsdflearningcontinuoussigned} and Occupancy Networks \cite{mescheder2019occupancynetworkslearning3d}. Main limitation of DeepSDF and Occupancy Networks is that they require 3D supervision during training. Later works such as Differentiable Volumetric Rendering \cite{niemeyer2020differentiablevolumetricrenderinglearning} and Scene Representation Networks \cite{sitzmann2020scenerepresentationnetworkscontinuous} show how to learn implicit neural representations without 3D supervision by introducing differentiable rendering pipelines. However, these methods are limited to reconstructing simple shapes only. NeRF \cite{mildenhall2020nerfrepresentingscenesneural} overcomes these limitations by using implicit continuous representation that can be sampled at arbitrary resolution, requires less storage, and yields significantly better quality results. However, due to its implicit nature, NeRF is slow to train as well as render from. This motivates the later explicit representations such as 3D Gaussians (3DGS) \cite{3dgs} that address these two key limitations of NeRF - fast to train and fast to render, while still yielding high quality results. Later methods such as 2D Gaussians \cite{2dgs} and Mesh Splatting \cite{held2025meshsplattingdifferentiablerenderingopaque} focus on improving the mesh extraction quality from 3DGS. In our work, we choose 3DGS as our underlying 3D representation due to its fast training and rendering speed.
+
 
 
 % 4d methods:
 % - 4d task definitiion: same as 3d task definition but also need to model motion of the underlying scene representation
 % - prior neural representation methods: volume deform or dynamic fusion - rely on rgb-d data, and iteravily fit the underlying 4d model
-% - emphasis put on modelling motion: shape of motion, mosca, 4dgs, Gaussian flow, free time gs
-% - general scene and SLAM like approach: mega sam - idea combine feed forward depth estimation with with optimisation based post recosntruction of the scene
+% - emphasis put on modelling motion: shape of motion, mosca, 4dgs, free time gs
+
+\paragraph{4D reconstruction methods.} The goal of 4D reconstruction techniques is to recover the spatio-temporal scene representation from multi-view video capture of the dynamic scene. Early works such as VolumeDeform \cite{volumedeform} and DynamicFusion \cite{dynamicfusion} rely on RGB-D data and iteratively fit the underlying 4D model. Later works focus on modelling motion of the underlying scene representation. For instance, Shape of Motion \cite{som} and MOSCA \cite{lei2024moscadynamicgaussianfusion} use 3DGS as the underlying 3D representation and learn deformation field over time to model the motion. In contrast, 4D Gaussians (4DGS) \cite{4dgs} extend 3DGS to dynamic scenes by adding time as an additional input to the representation. Free Time Gaussians \cite{freetimegs} builds on top of 4dgs and introduce topology changing representations that allow Gaussians to appear and disappear over time, enabling modelling of dynamic scenes that capture complex motion. In contrast to methods such as Shape-of-Motion or Mosca that rely on point tracking to define the deformation field, we use parametric body models to define the deformation field over time. We hypothesize that parametric body prior provides stronger regularization for human motion compared to point tracking, leading to more accurate and consistent motion estimation.
 
 
+\section{3D and 4D reconstruction from Sparse Input Capture}
 % More practical real world settings capture
 %  in practice, you have access either to image, set of sparse image or monocular video. In this case, you need to densify the scene
 % -----------------------
