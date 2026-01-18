@@ -17,6 +17,72 @@
 \chapter{Related Work}
 % ---------- Notes section
 
+% --------- body models
+% also called statistical body models
+
+% scope sentence: in our work, we rely on parametrric body model to a. anchor our explicit 3d representation and b. to define the deformation field over time.
+% clusters:
+% - 1. early body models before smpl: 
+% issues:
+% - traditional approach: model how vertices are related to the underlying skeleton via skinning weights -> while these approaches are supported by rendering engines, they generate unrealistic joint deformations 
+% - support limited variety of body shapes
+% - some are not compatible with with back then existing graphics pipeines and rendering engines
+
+% goals of smpl: make the model as simple as possible, as well as standardised so that it can be used by the community at large, and keep the realistic defomration and shapes learned from data
+
+% - 2. smpl and its variants (smplh, smplx)
+% in general, smpl divides the body modelling into two parts: 
+% a. shape model - the question is how to offset each vertex based on the shape parameters
+% b. pose model - you have predefined set of joints, and the question is how to rotate each of these joints - they use recursive kinematic tree with blend skinning weights to define how each vertex is influenced by the underlying joints
+
+% smpl stands for skinned multi-person linear model
+% smplx - prior works only focus either on body only or hands, not separately - except from an early attempts
+% ---Frank model - which however just stitched together seprarate hands, face and body models, this stitching result in unrealistic model
+% --- SMPL-H - extends smpl by adding articulated hands however it still does not model the face -> therefore they start from smpl-h and then add face model on top of it (FLAME)
+% in addition to smpl, smplx combines smpl body model with FLAME head model and MANO hand model
+
+% both smpl and smpl are models learned from large scale dataset of 3d body scans, smplx says 5586 scans 
+
+% FLAME in contrast to previous approaches that focus only on face models the entire head
+
+
+% - 3. modern approaches - annybody, meta momentum human rig (mhr)
+% mhr decouples skeletal pose from body shape to provide more control and higher interpretability -> they buiold this based on human momentum rig paper which is in turn based on ATLAS 
+% annybody - argues that smpl is trained on scans with limited population diversity, and therefore struggles to generalise to for instance children or elderly people. therefore they take scan free approach and learn the body priors instead from the community driven MakeHuman framework
+
+
+% why this section: in order to use smpl-x body model, we need to first estimate its parmaeters
+% from the monocular video
+% 22 methods: glamr
+% 23 methods: humans in 4d
+% 24 methods: wham, tram, pace
+% 25 methods: Hsfm, camera HMR, PromptHMR, GENMO, human3r, sam3d body
+
+% local human mesh recovery: 
+% - goal: estimate parameters for mesh based body model from a single image in the local camera frame
+% - multiple people:
+% -- you can use top down approach: first detect people via object detector, then crop each person and then run single person hmr method, e.g. Humans in 4D, camera hmr
+% -- bottom up approach: first estimate all keypoints in the image, then group them into people, then run single person hmr method on each person. This should address the problems with more crowded scenes where people are close to each other. e.g. multi-hmr
+
+% global human mesh recovery:
+% - goal: estimate parameters for mesh based body model from a monocular video in the global world frame
+% - by defintion, very ill constrained problem since neither the camera nor the human motion is known, and decoupling these is not trivial
+% - early methods such as glamr first estimate local human mesh for each frame, then use these as input to the predictor that estimate the translation of the person in the world frame, after this, there is some joint optimisation to refine the results
+
+% - later methods such as slahmr rely on SLAM to estimate camera poses in world frame, and then use these to guide the global human mesh recovery, later TRAM improves Slahmr by enhancing the camera pose estimates to be in meters
+% - in contrast to these offline methohds, more modern methods such as TRACE or WHAM take an end to end approach and regress directly the global human mesh parameters from the monocular video and making use of memory unit to store the past information about the scene 
+
+
+% human3r notes:
+% - key idea: to reconstrution human motion accurately, we need to understand their surroundings as well
+% x hsfm reconstructions humans and scene separately and then combines them via refinement under constraints
+% in general the main advantage of h3r is unified one stop solution that is fast, easy to install and deploy in contrast to more complxe multi stage pipelines
+
+% todo: possible also mention sam3d body here since it is from meta and it is quite recent as well
+
+% -------------------------
+
+
 % mayne i should write about the evolution of body models - since in 25, there have been new body models from naver labs as well as meta. the reason i am using smplx is because i can then estimate pose metrics more easily, not sure if i would be able to compare to smplx if i use meta's body model
 
 % I think another important topic crucial for realistic 4d reconstruction modelling are video diffusion models, so it may be good to somehow integrate this part into the thesis as well
@@ -67,119 +133,6 @@
 % - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
 
 % I think another important aspect of my work is to highlight the differene between rasterisaton and ray tracing
-
-% ---------- end of notes section
-
-% keep in mind the following writing rules:
-% 1. What problem dimension does this subsection cover, and why does it matter for my paper?
-% e.g. “This subsection reviews methods for monocular human reconstruction under occlusion, because occlusion is the main failure mode in our setting.”
-
-% 2. Start with a functional opening paragraph (not a polished one)
-% e.g. “A large body of work has studied [problem setting]. Existing approaches can be broadly grouped into [2–3 categories], which differ mainly in [key axis: representation, supervision, assumptions, etc.].”
-
-% 3. Write in “paper clusters,” not paper-by-paper
-% - Group papers before writing
-% - Write one sentence per group, not per paper
-
-% 4. End each subsection with a bridge sentence
-%  “What do all these approaches still fail to address that motivates the next section or my method?”
-
-% ---------
-
-% 5 min – Write the scope sentence (“This subsection reviews…”)
-
-% 10 min – Write 3–5 bullet points describing clusters of work
-
-% 10 min – Turn bullets into rough prose (no citations yet)
-
-% 5 min – Add citations and a closing bridge sentence
-
-\section{Parametric Body Models}
-% notes:
-% also called statistical body models
-
-% scope sentence: in our work, we rely on parametrric body model to a. anchor our explicit 3d representation and b. to define the deformation field over time.
-% clusters:
-% - 1. early body models before smpl: 
-% issues:
-% - traditional approach: model how vertices are related to the underlying skeleton via skinning weights -> while these approaches are supported by rendering engines, they generate unrealistic joint deformations 
-% - support limited variety of body shapes
-% - some are not compatible with with back then existing graphics pipeines and rendering engines
-
-% goals of smpl: make the model as simple as possible, as well as standardised so that it can be used by the community at large, and keep the realistic defomration and shapes learned from data
-
-% - 2. smpl and its variants (smplh, smplx)
-% in general, smpl divides the body modelling into two parts: 
-% a. shape model - the question is how to offset each vertex based on the shape parameters
-% b. pose model - you have predefined set of joints, and the question is how to rotate each of these joints - they use recursive kinematic tree with blend skinning weights to define how each vertex is influenced by the underlying joints
-
-% smpl stands for skinned multi-person linear model
-% smplx - prior works only focus either on body only or hands, not separately - except from an early attempts
-% ---Frank model - which however just stitched together seprarate hands, face and body models, this stitching result in unrealistic model
-% --- SMPL-H - extends smpl by adding articulated hands however it still does not model the face -> therefore they start from smpl-h and then add face model on top of it (FLAME)
-% in addition to smpl, smplx combines smpl body model with FLAME head model and MANO hand model
-
-% both smpl and smpl are models learned from large scale dataset of 3d body scans, smplx says 5586 scans 
-
-% FLAME in contrast to previous approaches that focus only on face models the entire head
-
-
-% - 3. modern approaches - annybody, meta momentum human rig (mhr)
-% mhr decouples skeletal pose from body shape to provide more control and higher interpretability -> they buiold this based on human momentum rig paper which is in turn based on ATLAS 
-% annybody - argues that smpl is trained on scans with limited population diversity, and therefore struggles to generalise to for instance children or elderly people. therefore they take scan free approach and learn the body priors instead from the community driven MakeHuman framework
-
-
-Modelling human bodies is a long standing and important problem in computer vision and graphics. The foundational paper in this area is the Skinned Multi-Person Linear (SMPL) model \cite{smpl}. Unlike its predecesors, SMPL was the first parametric model that was compatible with existing graphics pipelines, differentiable and capable of generaating realistic body shapes and poses since it was fitted on a large corpora of 3D scans. SMPL divides the body modelling into two parts. First, it models the shape variations via learned PCA shape space. Specifically, to obtain shape of given person, SMPL requires 10 shape parameters that define the coefficients of the PCA basis. Together, linear combination of these basis vectors define the offsets for each vertex in the body mesh. Second, the pose of the mesh is modelled via a predefined kinematic tree of joints. During inference, human mesh recovery method estimate the local rotation of each joint in the kinematic tree. The tree is then recursively travsersed to obtain the globabal transformation of each joint. Finally, to define how each vertex in the mesh is influenced by the underlying joints, SMPL uses the learned skinning weights to combine the transformations of all joints affecting given vertex.
-
-While SMPL enabled major step towards realistic human body modelling, it still lacked the ability to model hand and face details. To address this limitation, SMPL-H extended the SMPL model by adding articulated hand modelling \cite{smplh}. Later, SMPL-X extends the SMPL-H by adding also detailed face 
-modelling based on the FLAME head model \cite{smplx,flame}, and therefore marks the first method to jointly model body, hands and face in a single parametric model. Most recently, Anny \cite{annybody} introduces a new parametric body model that aims to address the limited population diversity in the training data of SMPL models. Specifically, AnnyBody learns body shape priors from the community driven MakeHuman framework, which contains a wide variety of body shapes including children and elderly people.
-Finally, most recently Meta introduced the Momentum Human Rig (MHR) \cite{yang2025sam3dbody}, which decouples skeletal pose from body shape to provide more control and higher interpretability. 
-
-We use SMPl-X body model in our work since it is being predicted by our chosen HMR method. We use the SMPL-X model to define the deformation field over time for our explicit 3D representation and also to 
-provide strong geometric prior for human body shape.
-
-
-\section{Human Motion Estimation}
-
-% why this section: in order to use smpl-x body model, we need to first estimate its parmaeters
-% from the monocular video
-% 22 methods: glamr
-% 23 methods: humans in 4d
-% 24 methods: wham, tram, pace
-% 25 methods: Hsfm, camera HMR, PromptHMR, GENMO, human3r, sam3d body
-
-% local human mesh recovery: 
-% - goal: estimate parameters for mesh based body model from a single image in the local camera frame
-% - multiple people:
-% -- you can use top down approach: first detect people via object detector, then crop each person and then run single person hmr method, e.g. Humans in 4D, camera hmr
-% -- bottom up approach: first estimate all keypoints in the image, then group them into people, then run single person hmr method on each person. This should address the problems with more crowded scenes where people are close to each other. e.g. multi-hmr
-
-% global human mesh recovery:
-% - goal: estimate parameters for mesh based body model from a monocular video in the global world frame
-% - by defintion, very ill constrained problem since neither the camera nor the human motion is known, and decoupling these is not trivial
-% - early methods such as glamr first estimate local human mesh for each frame, then use these as input to the predictor that estimate the translation of the person in the world frame, after this, there is some joint optimisation to refine the results
-
-% - later methods such as slahmr rely on SLAM to estimate camera poses in world frame, and then use these to guide the global human mesh recovery, later TRAM improves Slahmr by enhancing the camera pose estimates to be in meters
-% - in contrast to these offline methohds, more modern methods such as TRACE or WHAM take an end to end approach and regress directly the global human mesh parameters from the monocular video and making use of memory unit to store the past information about the scene 
-
-
-% human3r notes:
-% - key idea: to reconstrution human motion accurately, we need to understand their surroundings as well
-% x hsfm reconstructions humans and scene separately and then combines them via refinement under constraints
-% in general the main advantage of h3r is unified one stop solution that is fast, easy to install and deploy in contrast to more complxe multi stage pipelines
-
-% todo: possible also mention sam3d body here since it is from meta and it is quite recent as well
-
-
-Human Mesh Recovery (HMR) methods aim to estimate the parameters of parametric body models from images or videos. These methods can be categorised into two main groups: local HMR and global HMR. Local HMR methods focus on estimating body model parameters in the local camera frame from single images, while global HMR methods aim to recover body model parameters in the global world frame from monocular videos.
-
-\paragraph{Local HMR methods}. Majority of the local HMR methods adopts a two-stage top-down approach. First, the method usually uses an off the shelf object detector to detect people in the image. Then, for each detected person, the method crops the image and runs a single-person HMR method to estimate the body model parameters \cite{4dhumans,camerahmr}. However, the top down approach often fails in crowded scenes. Therefore, bottom-up approaches first detect all joint keypoints in the image and then group these into individual per subjects keypoints before running single-person HMR \cite{multihmr}.
-
-\paragraph{Global HMR methods}. Earlier approaches first such as GLAMR \cite{glamr} first run local HMR for each frame, followed by a separate module that estimates the global translation of the person in the world frame. Finally, a joint optimisation is performed to refine the results. Later methods such as SLAHMR \cite{slahmr} and TRAM \cite{tram} leverage SLAM to estimate camera poses in the world frame, which are then used to guide the global HMR. More recent methods such as WHAM \cite{wham} and TRACE \cite{trace} take an end-to-end approach and directly regress global body model parameters from monocular videos, often using memory units to store past information about the scene. While these recent methods achieve already promising results, they still rely on varying number of the shelf estimators such as 2D keypoint detectors, segmentation models, and depth estimators. This dependency becomes espeically problematic in video where tracking consistency is crucial for high quality results.
-Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that jointly reconstructs human motion and scene geometry from monocular videos. By jointly reasoning about humans and their surroundings, Human3R achieves more accurate and consistent reconstructions compared to prior multi-stage pipelines. We therefore choose Human3R as our HMR method in this work.
-
-
-
 
 
 % nerf notes:
@@ -248,6 +201,45 @@ Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that 
 % - e.g gen3c: predicted point clouds from the input image depth maps, and use these as input condition to the diffusion model
 % - viewcrafter - init point cloud, render, syntheseize novel views, and repeat
 
+% keep in mind the following writing rules:
+% 1. What problem dimension does this subsection cover, and why does it matter for my paper?
+% e.g. “This subsection reviews methods for monocular human reconstruction under occlusion, because occlusion is the main failure mode in our setting.”
+
+% 2. Start with a functional opening paragraph (not a polished one)
+% e.g. “A large body of work has studied [problem setting]. Existing approaches can be broadly grouped into [2–3 categories], which differ mainly in [key axis: representation, supervision, assumptions, etc.].”
+
+% 3. Write in “paper clusters,” not paper-by-paper
+% - Group papers before writing
+% - Write one sentence per group, not per paper
+
+% 4. End each subsection with a bridge sentence
+%  “What do all these approaches still fail to address that motivates the next section or my method?”
+
+
+% ---------- end of notes section
+
+\section{Parametric Body Models}
+
+Modelling human bodies is a long standing and important problem in computer vision and graphics. The foundational paper in this area is the Skinned Multi-Person Linear (SMPL) model \cite{smpl}. Unlike its predecesors, SMPL was the first parametric model that was compatible with existing graphics pipelines, differentiable and capable of generaating realistic body shapes and poses since it was fitted on a large corpora of 3D scans. SMPL divides the body modelling into two parts. First, it models the shape variations via learned PCA shape space. Specifically, to obtain shape of given person, SMPL requires 10 shape parameters that define the coefficients of the PCA basis. Together, linear combination of these basis vectors define the offsets for each vertex in the body mesh. Second, the pose of the mesh is modelled via a predefined kinematic tree of joints. During inference, human mesh recovery method estimate the local rotation of each joint in the kinematic tree. The tree is then recursively travsersed to obtain the globabal transformation of each joint. Finally, to define how each vertex in the mesh is influenced by the underlying joints, SMPL uses the learned skinning weights to combine the transformations of all joints affecting given vertex.
+
+While SMPL enabled major step towards realistic human body modelling, it still lacked the ability to model hand and face details. To address this limitation, SMPL-H extended the SMPL model by adding articulated hand modelling \cite{smplh}. Later, SMPL-X extends the SMPL-H by adding also detailed face 
+modelling based on the FLAME head model \cite{smplx,flame}, and therefore marks the first method to jointly model body, hands and face in a single parametric model. Most recently, Anny \cite{annybody} introduces a new parametric body model that aims to address the limited population diversity in the training data of SMPL models. Specifically, AnnyBody learns body shape priors from the community driven MakeHuman framework, which contains a wide variety of body shapes including children and elderly people.
+Finally, most recently Meta introduced the Momentum Human Rig (MHR) \cite{yang2025sam3dbody}, which decouples skeletal pose from body shape to provide more control and higher interpretability. 
+
+We use SMPl-X body model in our work since it is being predicted by our chosen HMR method. We use the SMPL-X model to define the deformation field over time for our explicit 3D representation and also to 
+provide strong geometric prior for human body shape.
+
+
+\section{Human Motion Estimation}
+
+
+Human Mesh Recovery (HMR) methods aim to estimate the parameters of parametric body models from images or videos. These methods can be categorised into two main groups: local HMR and global HMR. Local HMR methods focus on estimating body model parameters in the local camera frame from single images, while global HMR methods aim to recover body model parameters in the global world frame from monocular videos.
+
+\paragraph{Local HMR methods}. Majority of the local HMR methods adopts a two-stage top-down approach. First, the method usually uses an off the shelf object detector to detect people in the image. Then, for each detected person, the method crops the image and runs a single-person HMR method to estimate the body model parameters \cite{4dhumans,camerahmr}. However, the top down approach often fails in crowded scenes. Therefore, bottom-up approaches first detect all joint keypoints in the image and then group these into individual per subjects keypoints before running single-person HMR \cite{multihmr}.
+
+\paragraph{Global HMR methods}. Earlier approaches first such as GLAMR \cite{glamr} first run local HMR for each frame, followed by a separate module that estimates the global translation of the person in the world frame. Finally, a joint optimisation is performed to refine the results. Later methods such as SLAHMR \cite{slahmr} and TRAM \cite{tram} leverage SLAM to estimate camera poses in the world frame, which are then used to guide the global HMR. More recent methods such as WHAM \cite{wham} and TRACE \cite{trace} take an end-to-end approach and directly regress global body model parameters from monocular videos, often using memory units to store past information about the scene. While these recent methods achieve already promising results, they still rely on varying number of the shelf estimators such as 2D keypoint detectors, segmentation models, and depth estimators. This dependency becomes espeically problematic in video where tracking consistency is crucial for high quality results.
+Most recently, Human3R \cite{chen2025human3r} proposes a unified framework that jointly reconstructs human motion and scene geometry from monocular videos. By jointly reasoning about humans and their surroundings, Human3R achieves more accurate and consistent reconstructions compared to prior multi-stage pipelines. We therefore choose Human3R as our HMR method in this work.
+
 
 \section{3D and 4D Reconstruction from Dense Input Capture}
 
@@ -265,8 +257,6 @@ they lay the foundation for the later works that focus on more practical real wo
 \section{3D and 4D reconstruction from Sparse Input Capture}
 
 In our work, we focus on a more practical and challenging setting of 4D reconstruction from monocular video. Therefore, we start by reviewing prior work that focus on addressing the challenges of sparse input views for 3D reconstruction, and that lay the foundation for later works that focus on monocular video input for 4D reconstruction.
-
-
 
 \subsection{3D methods}
 \paragraph{Optimisation based approaches.} Earlier works tried to better constraint the optimisation of neural representations such as NeRF or 3DGS via geometric priors. For instance, SPARF \cite{sparf} and RegNeRF \cite{regnerf} introduce reprojection losses to enforce multi-view consistency. Other methods rely on off-the-shelf modules to estimate depth or normals from the input images to guide the reconstruction process \cite{densedepthprior,sparsenerf,fsgs,monosdf,depthsupervisednerf}. However, these methods only yield marginal improvements in denser view settings and balancing the losses becomes challenging. Therefore, most recent works focus on novel view synthesis via a generative model and then use this view to backrpropagate the signal. Methods in this category differ in the way which underlying conditional model they choose, how they condition the generative model and finally how they use the generated view to guide the 3D reconstruction. Early approaches focused on using pretrained text-to-image models such as DreamFusion \cite{dreamfusion} or ProlificDreamer \cite{prolificdreamer} to synthesise novel views via score distillation sampling. However, these methods are computationally expensive since they require querying the diffusion model during training, and the text conditioning signal is often too weak to guide the 3D reconstruction. Later works such as ReconFusion \cite{reconfusion} and ViewCrafter \cite{viewcrafter} use geometry informed video diffusion models to synthesise novel views that are consistent with the input images. Other methods such as Cat3D \cite{cat3d} and SV3D \cite{sv3d} first synthesise novel views and then fit the 3D representation to these views. Finally, methods such as FlowR \cite{flowr}, DiFix \cite{wu2025difix3d} and 3DGS Enhancer \cite{3dgsenhancer} propose a new way of using diffusion models - instead of doing noise-to-data generation like DreamFusion and other score distilation techniques do, they perform conditional source distribution to target distribution generation. In practice, this means using rendered image or set of images as input to a pretrained \textit{refiner} model that outputs refined image which is then added to the collection of the training views. In contrast DiFix3D that takes as input only a single reference image and the image to be refined, FlowR was trained to take as input N input views to refine and M reference views, which should in theory help with better multi-view consistency. In our work, we choose DiFix as our generative model since it does not add large computationl overhead to our training process and as argued before, it more effectively uses the generative model priors compare to noise-to-data generation methods. We do not use FlowR because it has not been made publicly available yet.
