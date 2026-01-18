@@ -17,10 +17,10 @@ python $script_path --scene-root-dir $preprocessing_root/hi4d_pair16_jump --firs
 python $script_path --scene-root-dir $preprocessing_root/hi4d_pair17_dance --first-frame-number 1 --src-cam-id 28
 python $script_path --scene-root-dir $preprocessing_root/hi4d_pair19_piggyback --first-frame-number 1 --src-cam-id 4
 
-# MMM
-python $script_path --scene-root-dir $preprocessing_root/mmm_dance --first-frame-number 1 --src-cam-id 0
-python $script_path --scene-root-dir $preprocessing_root/mmm_lift --first-frame-number 1 --src-cam-id 0
-python $script_path --scene-root-dir $preprocessing_root/mmm_walkdance --first-frame-number 1 --src-cam-id 0
+# # MMM
+# python $script_path --scene-root-dir $preprocessing_root/mmm_dance --first-frame-number 1 --src-cam-id 0
+# python $script_path --scene-root-dir $preprocessing_root/mmm_lift --first-frame-number 1 --src-cam-id 0
+# python $script_path --scene-root-dir $preprocessing_root/mmm_walkdance --first-frame-number 1 --src-cam-id 0
 
-# In-the-wild
-python $script_path --scene-root-dir $preprocessing_root/taichi --first-frame-number 1 --src-cam-id 0
+# # In-the-wild
+# python $script_path --scene-root-dir $preprocessing_root/taichi --first-frame-number 1 --src-cam-id 0

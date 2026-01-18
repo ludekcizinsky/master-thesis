@@ -49,26 +49,26 @@ class ScheduleConfig:
                 4,
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19",
             ),
-#            Scene(
-                #"mmm_dance",
-                #0,
-                #"/scratch/izar/cizinsky/ait_datasets/full/mmm/dance",
-            #),
-            #Scene(
-                #"mmm_lift",
-                #0,
-                #"/scratch/izar/cizinsky/ait_datasets/full/mmm/lift",
-            #),
-            #Scene(
-                #"mmm_walkdance",
-                #0,
-                #"/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance",
-            #),
-            #Scene(
-                #"taichi",
-                #0,
-                #"/scratch/izar/cizinsky/thesis/in_the_wild/scenes/taichi",
-            #),
+            Scene(
+                "mmm_dance",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/dance",
+            ),
+            Scene(
+                "mmm_lift",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/lift",
+            ),
+            Scene(
+                "mmm_walkdance",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance",
+            ),
+            Scene(
+                "taichi",
+                0,
+                "/scratch/izar/cizinsky/thesis/in_the_wild/scenes/taichi",
+            ),
         ]
     )
 

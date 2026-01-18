@@ -178,9 +178,4 @@ In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a m
 
 
 \subsection{Ablation Studies}
-% - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training
-% - No DiFix refinement: init from LHM, but do not refine the novel training views using DiFix
-% - NO LHM + No DiFix: train from scratch without LHM initialisation and without DiFix refinement of novel training views
-
-% I could also show ablations on using ACAP and ASAP regularisation losses as they do in LHM
 An ablation study will be conducted to isolate the effect of key components, in particular (i) LHM initialization and (ii) DiFix-based view refinement. This requires rerunning per-scene optimization under matched settings and reporting results using the same evaluation protocol as in Tables~\ref{tab:nvs_results_hi4d}--\ref{tab:reconstruction_results}. The goal is to quantify which components primarily drive novel view synthesis improvements versus the remaining gap in mesh reconstruction.

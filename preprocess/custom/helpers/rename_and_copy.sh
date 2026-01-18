@@ -20,14 +20,14 @@ python $script_path --scene-root-dir $preprocessing_root/hi4d_pair16_jump --src-
 python $script_path --scene-root-dir $preprocessing_root/hi4d_pair17_dance --src-cam-id 28 --first-frame-number 1 
 python $script_path --scene-root-dir $preprocessing_root/hi4d_pair19_piggyback --src-cam-id 4 --first-frame-number 1 
 
-# MMM
-echo "Processing MMM scenes..."
-python $script_path --scene-root-dir $preprocessing_root/mmm_dance --src-cam-id 0 --first-frame-number 1 
-python $script_path --scene-root-dir $preprocessing_root/mmm_lift --src-cam-id 0 --first-frame-number 1
-python $script_path --scene-root-dir $preprocessing_root/mmm_walkdance --src-cam-id 0 --first-frame-number 1
+# # MMM
+# echo "Processing MMM scenes..."
+# python $script_path --scene-root-dir $preprocessing_root/mmm_dance --src-cam-id 0 --first-frame-number 1 
+# python $script_path --scene-root-dir $preprocessing_root/mmm_lift --src-cam-id 0 --first-frame-number 1
+# python $script_path --scene-root-dir $preprocessing_root/mmm_walkdance --src-cam-id 0 --first-frame-number 1
 
-# In-the-wild
-echo "Processing In-the-wild scenes..."
-python $script_path --scene-root-dir $preprocessing_root/taichi --src-cam-id 0 --first-frame-number 1
+# # In-the-wild
+# echo "Processing In-the-wild scenes..."
+# python $script_path --scene-root-dir $preprocessing_root/taichi --src-cam-id 0 --first-frame-number 1
 
 echo "Finished rename_and_copy.sh"

@@ -86,6 +86,15 @@ This step does the following:
 4. convert smplx to smpl format (this is important for eval since gt has only smpl)
 
 
+### Saving the state to Hugging Face
+
+To avoid that the preprocessed data is lost, we can save the preprocessed data to Hugging Face. This is done as follows:
+
+```bash
+cd /scratch/izar/cizinsky/thesis/preprocessing
+hf upload-large-folder ludekcizinsky/thesis-data . --repo-type=dataset --no-private --exclude "misc/*"
+```
+
 ## How to know that everything went fine?
 
 It is very important to ensure that before we start training and evaluation, the preprocessed data is correct and consistent. Below, I therefore list a few checks that need to be done to ensure that everything is fine.
