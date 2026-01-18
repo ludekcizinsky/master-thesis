@@ -1,0 +1,89 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+% General instructions:
+% Give an introduction to the topic you have worked on:
+
+% \begin{itemize}
+ % \item \textit{What is the rationale for your work?} Motivate the problem, \eg with a general description of the problem setting, narrowing down to the particular problem you have been working on in your thesis. Allow the reader to understand the problem setting. 
+ % \item \textit{What is the technical gap in existing work?} Briefly outline how this problem has been tackled before, and what the shortcomings of the existing solutions are.
+ % \item \textit{What is your work doing to fix it?} Given the above background, state briefly the focus of the work. 
+% \end{itemize}
+
+
+% Notes
+
+% Problem context
+% We want to focus on *dynamic* human centric scenes captured from monocular video that capture multiple humans interacting or performing complex motions. 
+% Our method is able to handle inputs from static as well as moving cameras, which is important for real world applications where the camera might be handheld. 
+
+% Motivation for my work
+% - I see two important applications of my work
+% - First: interactive media - we no longer have to rely on watching monocular feed, and instead can view the given video from any angle we want. This is especially useful in sports broadcasting, where the viewer can choose their own perspective. Here, the important aspect of the reconstruction is how accurate the extracted motion is, and how realistic the novel view renderings are.
+% - Second: With the recent advances in humanoid robotics, being able to precisely recover human motion from monocular videos can help extract training motion data for robots to imitate. Here, we only care about the accuracy of the recovered motion, and not so much about the visual quality of the renderings.
+
+
+% General challenges in dynamic scene reconstruction
+% - In general, 4D reconstruction from monocular video is highly ill-posed problem
+% - Apart from obtaining multi-view consistency from monocular video, we also have to ensure temporal consistency
+% - In addition, the system needs to be able to accurately disentangle the motion of camera and objects in the scene
+% - Further, we need to make sure we correctly separate dynamic and static parts of the scene - e.g. avoid having static background bleed into dynamic objects
+% - I would also say that depending on the scene, the video quaity may vary, especially motion blur can occur frequently in fast moving scenes - this is indeed bad signal for 3dgs
+
+
+% Specific challenges in human-centric reconstruction
+% - Humans are highly non-rigid objects, with complex articulations and deformations including clothing dynamics and hair motion
+% - Human motion is often fast and unpredictable, leading to motion blur and occlusions
+% - when we have multiple people in the scene, we have to deal with inter-person occlusions and interactions  
+
+
+% Gap in existing methods
+% - Majority of the existing human-centric scenes methods focues on mapping either single image, set of image or monocular video to parametric human model (SMPL, SMPL-X, etc.). These approaches assume clean video capture conditions and fail for the in the wild scenarios where we might have multiple people interacting and occluding each other. 
+% - In the last year or two, there has been a new wave of papers that deviate from the tradional 3D reconstruction methods, and instead, train a feedforward network to directly map the input image or video to the target set of modalities, usually depth maps and camera parameters. The main limitation of these approaches is that while at a first glance they give decent predictions, they are still much less acurrate than their more classical optimisation based counterparts. 
+% - In addition, the feed forward methods often only estimate point clouds or meshes, which are not ideal for photorealistic novel view synthesis due to their discrete nature. Similarly, it is impractical to extract accurate joint positions from these representations, which is crucial for many applications such as motion capture for robotics.
+% - While there have been previous attempts for monocular 4D reconstruction of dynamic human centric scenes, the main limitation of these approaches is that they require order of hours to days of training time per scene, making them impractical for real world applications. 
+
+
+% Contributions
+% - The main contribution of this work is a novel hybrid framework for monocular 4D reconstruction of dynamic human centric scenes that combines the best of both worlds - the speed and efficiency of feedforward networks, and the accuracy and quality of optimisation based approaches.
+% - As a result, we obtain the quality comparable to the state of the art methods that require hours to days of training time, while being able to reconstruct a scene in order of minutes.
+% - Our methods can not only obtain high quality novel view renderings, but also accurately recover human motion in the scene, making it suitable for a wide range of applications including interactive media and robotics
+% - We directly address to limitations mentioned in MultiPly: to introduice generative prior and also to use more expressive human model SMPLX
+% - We demonstrate our effectivness on our method on 4 tasks including human pose estimation, novel view synthesis, mesh reconstruction and segmentation 
+
+
+\chapter{Introduction}
+
+Reconstructing dynamic, human-centric scenes from monocular video is a long-standing problem in computer vision, with increasing relevance due to the growing demand for realistic 3D content creation and the rapid progress in embodied AI. In contrast to static scene reconstruction, dynamic settings require reasoning jointly about scene geometry, object motion, and camera motion over time. This is particularly challenging in human-centric scenarios, where the scene contains multiple articulated subjects undergoing complex non-rigid deformations, frequent inter-person occlusions, and rapid motion. In this thesis, we focus on monocular videos of dynamic scenes containing one or more interacting humans, captured under realistic conditions that may include camera motion and limited viewpoint diversity.
+
+A key advantage of monocular capture is its accessibility: a single consumer camera is sufficient to record rich human motion in everyday settings. However, this convenience comes at a fundamental cost. Recovering temporally consistent 4D scene structure from a single view is highly ill-posed because the 2D image formation process discards depth: different 3D shapes, depths, and camera trajectories can project to very similar images, especially under occlusion and motion blur. Beyond the inherent ambiguity of single-view reconstruction, dynamic monocular sequences introduce additional constraints. First, the reconstruction must remain consistent across time, preserving motion continuity while avoiding drift. Second, the system must accurately disentangle camera motion from object motion, especially in handheld recordings where the camera can move unpredictably. Third, dynamic and static parts of the scene must be separated reliably: failures often manifest as static background content “bleeding” into dynamic objects, or conversely as fragmented reconstructions where moving subjects are partially absorbed into the static scene representation. Finally, real-world footage often contains motion blur, compression artifacts, and illumination changes, all of which degrade the reliability of correspondence and photometric cues that many reconstruction methods rely on.
+
+Human-centric reconstruction poses a set of additional difficulties beyond general dynamic scene reconstruction. Humans are highly non-rigid and exhibit complex motion patterns involving large articulation, self-occlusion, and appearance variation. Clothing and hair introduce fine-scale deformations that are difficult to model explicitly, yet have a strong influence on the perceived realism of novel view renderings. In scenes with multiple people, interactions further increase the ambiguity: occlusions become more frequent, motion becomes harder to attribute to individual subjects, and contact events may violate assumptions of independent motion. These factors make high-quality monocular reconstruction substantially more difficult in the very scenarios that are most relevant for real-world applications.
+
+Accurate 4D reconstructions of human-centric scenes enable two major classes of applications. The first is interactive media and free-viewpoint video \cite{meta_hyperscape_blog}. Instead of being constrained to the original monocular viewpoint, the viewer can explore the recorded event from novel perspectives, which is particularly valuable in domains such as sports broadcasting and immersive storytelling. In this setting, reconstruction quality is measured not only by the geometric fidelity of the recovered motion, but also by the visual realism and spatial coherence of the novel view renderings. The second application is motion capture for robotics and embodied learning. Recent advances in humanoid robotics and imitation learning \cite{videomimic} have increased the demand for diverse motion datasets captured “in the wild”. In this use case, the primary requirement is accurate recovery of pose and motion trajectories, while rendering realism is of secondary importance. A practical reconstruction system should therefore support both novel view synthesis and motion extraction, depending on downstream objectives.
+
+Existing approaches address parts of this problem but fall short of the full set of requirements. A large body of work in human modeling focuses on estimating the parameters of a low-dimensional parametric body model from images or video, most commonly using SMPL-family models \cite{smpl,smplx}. These methods have proven effective under controlled conditions, but their robustness degrades in challenging real-world scenarios, especially when multiple people interact and occlude one another. Moreover, although parametric models provide a compact representation of motion, they do not by themselves yield realistic reconstructions of appearance, and they struggle to represent details such as clothing, hair, and object interactions without additional modeling.
+
+In parallel, recent progress in feed-forward monocular reconstruction has produced models that directly predict modalities such as depth maps \cite{depthanything3}, dynamic point maps \cite{dynamicpointmaps} camera parameters from an input image or video clip \cite{dust3r,mast3r}. These approaches offer high inference speed and have enabled scalable, general-purpose monocular geometry estimation. However, their predictions can remain less accurate than optimization-based pipelines in challenging settings, particularly when high precision is required. Further, existing feed-forward methods output point based representation of the scene which is suboptimal for use cases such as motion retargeting in humanoid robotics.
+
+At the other end of the spectrum, optimization-based monocular 4D reconstruction pipelines can reach very high reconstruction quality by refining scene structure and motion over long training or fitting procedures. While these approaches can produce compelling results, they often require hours to days of compute per scene, making them impractical for interactive workflows or real-world deployment. This creates a clear tension between accuracy and practicality: fast methods are often not precise enough, while high-quality methods are frequently too slow.
+
+This thesis proposes a hybrid reconstruction framework that aims to combine the strengths of both paradigms. The key idea is to use feed-forward estimates to obtain efficient human and camera priors, while retaining a targeted optimization stage that refines an explicit scene representation for novel view rendering. In doing so, we target a practical operating regime in which dynamic, human-centric scenes can be reconstructed on the order of tens of minutes rather than hours or days, while maintaining competitive quality on selected evaluation axes compared to strong optimization-based baselines \cite{multiply}.
+
+Concretely, we estimate per-frame camera and body parameters with Human3R \cite{chen2025human3r} and obtain instance masks with SAM3 \cite{carion2025sam3segmentconcepts}. We initialize a canonical per-person 3D Gaussian Splatting (3DGS) representation \cite{3dgs} using LHM \cite{qiu2025lhm} and densify training supervision by synthesizing additional views refined with DiFix \cite{wu2025difix3d}. We then optimize only the explicit 3DGS parameters while keeping cameras and body parameters fixed, which yields an efficient pipeline that remains compatible with standard rasterization-based rendering.
+
+In addition to improving efficiency, our framework is designed to better handle challenging human-centric dynamics. In particular, we aim to support both static and moving camera inputs, which is essential for handheld videos and unconstrained capture. We further incorporate stronger priors to improve plausibility in ambiguous regions and to reduce common artifacts such as drift, temporal inconsistency, and static-dynamic leakage. Finally, we adopt a more expressive human model to better represent complex human motion and shape, and to improve robustness in multi-person scenes with occlusions and interactions.
+
+We evaluate the proposed method across multiple complementary tasks in order to reflect the objectives in human-centric 4D reconstruction. Specifically, we assess performance in (i) human pose estimation, emphasizing motion recovery; (ii) novel view synthesis, emphasizing view-consistency; (iii) mesh reconstruction, emphasizing geometric fidelity; and (iv) segmentation, emphasizing reliable separation of dynamic humans from static content. We evaluate primarily on Hi4D \cite{yin2023hi4d} and additionally report reconstruction results on MMM following MultiPly \cite{multiply}. Together, these evaluations illustrate the trade-offs of the proposed hybrid approach in terms of speed, pose, rendering, and geometry quality.
+
+\paragraph{Contributions.} The main contributions of this thesis are:
+
+\begin{itemize}
+    \item A hybrid framework for monocular 4D reconstruction of dynamic human-centric scenes that combines feed-forward human and camera priors with targeted per-scene optimization of an explicit 3DGS representation.
+    \item A practical pipeline with end-to-end runtimes on the order of tens of minutes per scene in our setup, enabling faster iteration than optimization-heavy baselines while retaining strong rendering quality in controlled evaluations.
+    \item A reconstruction approach that supports novel view rendering and motion analysis by leveraging SMPL-X-driven deformations and an explicit, composable scene representation.
+    \item An experimental evaluation across human pose estimation, novel view synthesis, mesh reconstruction, and segmentation, highlighting strengths and remaining limitations of the proposed approach.
+\end{itemize}

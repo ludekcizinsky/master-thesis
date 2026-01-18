@@ -1,0 +1,18 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+\newpage
+\vspace{3cm}
+
+\chapter*{Abstract}
+Reconstructing dynamic scenes with multiple interacting people from a monocular video is highly ill-posed, yet it is an attractive setting for in-the-wild capture and practical applications such as novel view visualization and motion analysis. Existing approaches often trade off between fast feed-forward predictions that can lack precision in challenging interactions, and optimization-heavy pipelines that can achieve high quality but require hours to days of compute per scene.
+
+This thesis investigates a hybrid pipeline for monocular human-centric 4D reconstruction that combines pretrained human and camera priors with targeted per-scene optimization of an explicit, renderable representation. Given only RGB video, we estimate per-frame cameras and SMPL-X body parameters, obtain per-person instance masks, initialize a canonical per-person 3D Gaussian Splatting (3DGS) model, and densify supervision by synthesizing additional views. We then optimize only the explicit 3DGS parameters while keeping cameras and body parameters fixed, resulting in a practical end-to-end pipeline that runs on the order of tens of minutes per scene in our setup.
+
+We evaluate the approach on Hi4D and MMM across multiple axes: novel view synthesis, pose accuracy, instance segmentation, and mesh reconstruction quality obtained from extracting surfaces from the learned Gaussians. The results show that the method produces strong instance masks and competitive novel view synthesis in terms of structural similarity, while remaining significantly faster than optimization-heavy baselines. At the same time, we observe limitations in pose accuracy and especially in mesh reconstruction quality, which we attribute to sensitivity to fixed pose/camera errors and to the fact that 3DGS is optimized for rendering rather than watertight surface extraction.
+
+Overall, the thesis clarifies where an explicit 3DGS representation, driven by SMPL-X motion priors, is effective in sparse-view dynamic reconstruction, and where additional refinement (particularly of pose and surface extraction) is necessary to improve geometric fidelity in multi-person interactions.
+

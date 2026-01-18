@@ -257,7 +257,29 @@ class GS3DRenderer(nn.Module):
         self, gs_attr, query_points, smplx_data
     ):
         """
-        query_points: [N, 3]
+        The goal of this function is to take the input canonical 3D Gaussian attributes and
+        animate them to the target pose defined by the smplx_data. This means we have to 
+        define position and rotation of each Gaussian in the posed space.
+
+        To define position, we:
+        1. Take the query points defined in the neutral canonical space and add the learned offset_xyz
+        2. We then map these query points from the neutral canonical pose to the zero pose where we add the blendshapes offsets to account for spefic body shapes
+        3. Finally, given the precomputed skinning weights and the smplx pose parameters, we map the query points from the zero pose to the target posed space.
+
+        To define rotation, we:
+        1. Extract the rotation matrix that maps from the neutral canonical pose to the target posed space for each query point
+        2. Convert this rotation matrix to quaternion representation and normalize it to ensure valid rotation
+        3. We then apply then defined this rotation to a subset of 3dgs that are constrained to the body (e.g., torso, arms, legs) to avoid unwanted rotation artifacts,
+        for the rest of the 3dgs we keep the rotation as in the canonical space
+
+        Args:
+            gs_attr (GaussianModel): canonical 3D Gaussian attributes in neutral canonical pose
+            query_points (Tensor): query points in neutral canonical space, [N, 3]
+            smplx_data (dict): smplx parameters for the target pose
+
+        Returns:
+            posed_gs (GaussianModel): 3D Gaussian attributes in the target posed space
+            neutral_posed_gs (GaussianModel): 3D Gaussian attributes in the neutral canonical pose
         """
 
         device = gs_attr.offset_xyz.device

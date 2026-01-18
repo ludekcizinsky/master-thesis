@@ -1,0 +1,292 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+% -------- Instructions for writing the related work section:
+% The related work section has the following purposes: 
+
+% \begin{itemize}
+ % \item \textit{Is the overview concise?} Give an overview of the most relevant work to the needed extent. Make sure the reader can understand your work without referring to other literature.
+ % \item \textit{Does the compilation of work help to define the ``niche'' you are working in?} Another purpose of this section is to lay the groundwork for showing that you did significant work. The selection and presentation of the related work should enable you to name the implications, differences, and similarities sufficiently in the discussion section.
+% \end{itemize}
+
+
+\newpage
+\chapter{Related Work}
+This chapter reviews prior work on human-centric dynamic scene reconstruction, with an emphasis on monocular and sparse-view settings. We organize the discussion around (i) parametric body models and monocular human motion estimation, which provide the priors used in our pipeline, (ii) scene representation choices (implicit versus explicit) and their implications for efficiency, composability, and sparse-view generalization, and (iii) methods for view densification and dynamic reconstruction, ranging from per-scene optimization to recent feed-forward approaches.
+% ---------- Notes section
+
+% --------- body models
+% also called statistical body models
+
+% scope sentence: in our work, we rely on parametrric body model to a. anchor our explicit 3d representation and b. to define the deformation field over time.
+% clusters:
+% - 1. early body models before smpl: 
+% issues:
+% - traditional approach: model how vertices are related to the underlying skeleton via skinning weights -> while these approaches are supported by rendering engines, they generate unrealistic joint deformations 
+% - support limited variety of body shapes
+% - some are not compatible with with back then existing graphics pipeines and rendering engines
+
+% goals of smpl: make the model as simple as possible, as well as standardised so that it can be used by the community at large, and keep the realistic defomration and shapes learned from data
+
+% - 2. smpl and its variants (smplh, smplx)
+% in general, smpl divides the body modelling into two parts: 
+% a. shape model - the question is how to offset each vertex based on the shape parameters
+% b. pose model - you have predefined set of joints, and the question is how to rotate each of these joints - they use recursive kinematic tree with blend skinning weights to define how each vertex is influenced by the underlying joints
+
+% smpl stands for skinned multi-person linear model
+% smplx - prior works only focus either on body only or hands, not separately - except from an early attempts
+% ---Frank model - which however just stitched together seprarate hands, face and body models, this stitching result in unrealistic model
+% --- SMPL-H - extends smpl by adding articulated hands however it still does not model the face -> therefore they start from smpl-h and then add face model on top of it (FLAME)
+% in addition to smpl, smplx combines smpl body model with FLAME head model and MANO hand model
+
+% both smpl and smpl are models learned from large scale dataset of 3d body scans, smplx says 5586 scans 
+
+% FLAME in contrast to previous approaches that focus only on face models the entire head
+
+
+% - 3. modern approaches - annybody, meta momentum human rig (mhr)
+% mhr decouples skeletal pose from body shape to provide more control and higher interpretability -> they buiold this based on human momentum rig paper which is in turn based on ATLAS 
+% annybody - argues that smpl is trained on scans with limited population diversity, and therefore struggles to generalise to for instance children or elderly people. therefore they take scan free approach and learn the body priors instead from the community driven MakeHuman framework
+
+
+% why this section: in order to use smpl-x body model, we need to first estimate its parmaeters
+% from the monocular video
+% 22 methods: glamr
+% 23 methods: humans in 4d
+% 24 methods: wham, tram, pace
+% 25 methods: Hsfm, camera HMR, PromptHMR, GENMO, human3r, sam3d body
+
+% local human mesh recovery: 
+% - goal: estimate parameters for mesh based body model from a single image in the local camera frame
+% - multiple people:
+% -- you can use top down approach: first detect people via object detector, then crop each person and then run single person hmr method, e.g. Humans in 4D, camera hmr
+% -- bottom up approach: first estimate all keypoints in the image, then group them into people, then run single person hmr method on each person. This should address the problems with more crowded scenes where people are close to each other. e.g. multi-hmr
+
+% global human mesh recovery:
+% - goal: estimate parameters for mesh based body model from a monocular video in the global world frame
+% - by defintion, very ill constrained problem since neither the camera nor the human motion is known, and decoupling these is not trivial
+% - early methods such as glamr first estimate local human mesh for each frame, then use these as input to the predictor that estimate the translation of the person in the world frame, after this, there is some joint optimisation to refine the results
+
+% - later methods such as slahmr rely on SLAM to estimate camera poses in world frame, and then use these to guide the global human mesh recovery, later TRAM improves Slahmr by enhancing the camera pose estimates to be in meters
+% - in contrast to these offline methohds, more modern methods such as TRACE or WHAM take an end to end approach and regress directly the global human mesh parameters from the monocular video and making use of memory unit to store the past information about the scene 
+
+
+% human3r notes:
+% - key idea: to reconstrution human motion accurately, we need to understand their surroundings as well
+% x hsfm reconstructions humans and scene separately and then combines them via refinement under constraints
+% in general the main advantage of h3r is unified one stop solution that is fast, easy to install and deploy in contrast to more complxe multi stage pipelines
+
+% todo: possible also mention sam3d body here since it is from meta and it is quite recent as well
+
+% -------------------------
+
+
+% mayne i should write about the evolution of body models - since in 25, there have been new body models from naver labs as well as meta. the reason i am using smplx is because i can then estimate pose metrics more easily, not sure if i would be able to compare to smplx if i use meta's body model
+
+% I think another important topic crucial for realistic 4d reconstruction modelling are video diffusion models, so it may be good to somehow integrate this part into the thesis as well
+
+% One of the main themes we have also been seeing in the last year or so is the transition from 
+% per scene optimisation method to feedforward methods that can reconstruct the scene in a single forward pass.
+
+% Another trend I need to capture is the transition from implicit representations to explicit representations such as 3dgs 
+
+% Multi view dynamic scene reconstruction:
+% 1. Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+
+
+% Examples of state of the art method for lifting monocular video to multi view videos:
+% 1. Generative Camera Dolly (GCD) - trained on synthetic data only, if I am not mistaken, can only synthesise one novel video at a time. Also I did test it myself, and the quality of the model is not great.
+% 2. Cat4D - this is one of the earliest works. First of all, the model and the data is closed source which signifficantly limits any possible future research since it requites quite signifficant amount of resources to train. If I remember correctly, one of the limitations of this approach is A) it is mostly trained on synthetic data, and B) they show very limited novel view deviation - and this is where it indeed gets very difficult to hallucinate views which are on t he complete other side of the person for instance.
+% 3. SV4D - this is I would say open source version of Cat4d. The main problem with this method is that they assume: single object scenes with ideally no background and simple motion. So these are quite limiting constraints.
+% --- Also all these methods assume as input input from a **static** camera, which is quite limiting for real world applications.
+
+% Why do we even need explicit scene representation - can we just use diffusion models?
+% - I should try comment on this as well based on the 3dv talk from J.Barron
+
+% Notes on implicit formats:
+% - I think that it is important to mention NeRF paper which started this whole wave of implicit neural representations for 3D reconstruction. NeRF back then had two main limitatioshn which was the need for multi view inputs and also really slow training time.
+% - This sparked a new direction of papers that addressed these limitations espeically the training time, but still one of the problems with impliciti representation is it is quite hard to compose them where as with 3dgs you can easily train separate gaussians for different objects in the scene and then just combine them together. This also has to do with editability - you can easily move around gaussians in 3d space, whereas with implicit representations this is not so straightforward.
+% - Also one of the main issues with NeRF is still its rendering speed - ultimately, i thing in the last two years, we have seen transitiopn from implicit representations to explicit representations and various forms of 3DGS
+% - One thing where however implict representations still shines is its generalisation in sparse view settings. By defintin, the implciti model needs to learn a continuous function that maps from 3d space to color and density, so it can interpolate between the known views quite well. On the other hand, explicit representations such as 3dgs need to store all the information in the gaussians themselves, so if there is not enough gaussians to cover the space, it might lead to holes in the reconstruction or just weird artifacts, hence having dense set of views is crucial for good quality reconstruction.
+
+% Notes on dynamic explicit scene representations formats
+% - 1. Deformation field over canonical representation: have a canonical space and then then track deformations over time. Of course then the question becomes how to track this motion over time. For instance:
+% -- a. use point tracking and then use these points to guide the deformation field 
+% -- b. parametric human models (SMPL, SMPL-X, etc.) - however these are limited to humans only
+% -- I think it is important to note here that canonical representation's pro is that it can be animated from any motion that we can recover, whereas explicit time varying representation is limited to the motion seen during training only
+% - 2. Explicit time parametrisation - add time as an additional input to the representation. 
+% - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
+% I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
+
+% Notes on models that I have actually tried:
+% 1. Generative camera dolly - I think this one of the first papers to introduce explicit camera control for the novel view synthesis, however, the main limitation of their method was: 1. scope of data - very limited domain - trained on synthetic data - multiple objects 2. the farther from the original you go, the worse quality. When I tried their model on their own data, it did not work so well, and it did not work essentially at all on my football data
+% 2. Guess the unseen - the main limitation of this model is that they have to tune single SD1.5 for every person in the scene. And from what I have observed the model in addition to that hallucinated a lot - and I was only able to visualise the original view of the scene. Another issue with guess the unseen was their separation of dynamic and static background - their masking pipeline often failed and as a result you could see how static background is actually attached to the dynamic objects.
+% 3. Shape of motion - you can see with their demo on the website that the nvs from extreme viewpoints sucks
+% 4. LHM - this works pretty good in order to get initial results, but it only reasons about the canonical apperance and geometry. You have to separately model the motion, and this becomes an issue with state of the art pose estimatros - as of now. In addition, they still assume quite clean capture of the person to infer the canonical representation - therefore it is neccesary to be smart about how you choose the frames
+
+
+% Notes on tempalate based vs tracking methods for modelling motion
+% - Template based methods - e.g. SMPL, SMPL-X, etc. These methods are great because they provide a strong prior on human shape and motion, which helps to regularise the reconstruction. However, these methods are limited to the expressiveness of the underlying model, and often fail to capture clothing dynamics and other non-rigid deformations.
+
+% - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
+
+% I think another important aspect of my work is to highlight the differene between rasterisaton and ray tracing
+
+
+% nerf notes:
+    % at the time, there was a new trend to encode scene or 3d object as implicit neural representation (in practice a MLP net) - e.g. sign distance field (paper: A volumetric method for building complex models from range images)
+    % however at that time, these neural encoding techniques still lacked behing traditional methods, such as meshes or voxel grids,  in terms of the fidelty of the reconstructiona
+    % neural 3d shape representations review:
+    % - map xyz coordinates to signed distance values (e.g. deep sdf), or occupancy values (e.g. occupancy networks) -> both these examples required 3D supervision
+    % - later in the paper "Differentiable volumetric rendering: Learning implicit 3d representations without 3d supervision" they were first to show how to construct differentable rendering pipeline for implicit representations (before them some works showed this for explicit representations such as voxels or meshes), another work Scene Representation Networks learns a net that for each 3d world coordinate outoputs feature vector and rgb color
+    % - the prioblem with these techniques is that they were limited to only simple shapes - in contrast nerf showed how to reconstruct complex real world scenes with high fidelity
+    
+    % View synthesis and image-based rendering:
+    % - early techniques relied on light field sample interpolation (e.g. light field rendering, lumigraph) -> these require very very dense capture of images
+    % - therefore later methods focused on differentable rendering - one of the main directions focused on optimisation of mesh representation with apperance modeled via diffuse or view dependend apperance -> these did not succeed because apparantly optimising mesh from images is quite hard problem - difficult loss landscape 
+    % - therefore later works switched from meshes to volumetric representations - e.g. Deepview, local light field fusion - these approaches train deeped neural net on large number of scene datasets to predict sampled volumetric representation for novel scenes -> the main limit of these volumetric scenes is the resolution - to render higher resoliton iamges, you also need to have denser volumetric grids which quickly becomes infeasible in terms of memory consumption as well as sampling time
+    % - nerf overcomes this by using implicit continuous representation that can be sampled at arbitrary resolution, requires less storage, and yileds significantly better quality results
+
+
+% cat 3d notes:
+    % advances in photogammetry unlocked creation of high quality 3d assets from 2d inputs (images / videos) - more precisely NeRF and 3DGS have been the two most influential representations in this area
+    % both methods yield highly realistic results, however under the assumption that the input to these method is a dense capture of images  which is rare in real world scenarios
+    % so this is what spared interest in 
+    % key idea in cat3d paper:
+    % "This way, we reformulate a difficult ill-posed reconstruction problem as a generation problem: given any number of input images, generate a collection of consistent novel observations of the 3D scene"
+    % -> their solution to the problem: multi-view diffusion model that given arbitrary number of input images can generate novel view images of the scene from arbitrary camera viewpoints
+
+    % the key question in the 3d literature at the very start was how to make use of the fact that 2D data is abundant, whereas 3D data is scarce
+    % DreamFusion came up with a fundmental idea of score distlation sampling (SDS) that allows to distil knowledge from 2D diffusion models into 3D representations such as NeRF
+
+    % while this was a major step forward, DreamFusion lacked explicit camera control. This limitation was addressed by subsequent works such Zero123 or zero-nvs that introduced explicit camera conditioning into the diffusion models for 3D generation.
+
+    % another important aspect of 3d reconstruction methods is ensuring multi-view consistency, methods such as Image Dream or cat3d encode this by using 3D attention mechanism in their diffusion models, i believe also recon fusion is a good example here
+
+    % finally, in contrast to synthesise views and then fit NeRF or 3DGS to these views, there has been a new line of works focusing on feedforward 3d reconstruction that maps directly the input modality to the 3d representation.
+    % example of such methods in the 3d space include: lrm, dmv3d, instant3d, splatter image, gs-lrm
+    % while these methods are extremelly fast, they reconstruction quality is still lagging behind the optimisation based methods
+
+
+% cat 4d notes:
+    % similar to 3d recosntruction, under the right cappture conditions, we can reconstruct high quality 4d representations of dynamic scenes - e.g. 4dgs, free time gs, d-nerf, dynamic 3dgs
+    % while for both 3d and 4d, these capture conditions are quite limiting in real world scenarios, it is still feasible to do multi-view capture of a static scene e.g. just walk around with the smartphone. In contrast, 
+    % for 4d scene reconstruction, this is a different story - you literally need multiple cameras to capture the dynamic scene from different viewpoints at the same time - so the bar is much higher here
+
+    % the key idea behind cat4d paper is: learn 4d generative model based on the mix of synthetic and real world multi-view dynamic scene data, therefore, their model learns to transform an input monocular video
+    % into multi-view video, "Specifically, our model accepts any number of input images captured at different viewpoints and times, and synthesizes as output the scene’s appearance at any specified novel viewpoints and novel times"
+
+    % dynamic 3d scene reconstruction
+    % - methods assumes multi-view video capture as input: e.g. hexplane, k-planes, dynamic 3dgs, nerfies, hyper nerf, 4dgs
+    % - methods focus on monocular video input: e.g. Neural Scene Flow Fields,  Mosca, shape of motion or most recently HiMor -> they key idea behind these method is to use 3dgs or nerf as the underlying canonical static representation, and learn deformation field over time to model the motion -> the issue with these methods is that they cant reconstruct what has not been observed in the input video. This becomes especially problematic when using explicit representation such as 3dgs which becomes underoptimal in sparse view settings. of course another disadvantage of these methods is that they have to rely on other off the shelf modules 
+
+
+    % 4d generation:
+    % - early methods relied on score distilation sampling - e.g. DreamFusion for 3d, and text-to-4d dynamic scene generation for 4d
+    % - further advances in this field were driven by relying on pretrained multi-view (e.g. zero-1-to-3, mvdream) or video diffusion models (most promiment base video diffsion is stable video diffsion model), e.g. dreamgaussians4d, 4d-fy, consistent4d 
+
+    % most recent method drop the sds optimisation, and instead focus on generating multi-video, e.g. dimension-x, cat4d, vidid-zoo, efficient-4d, diffusion^2
+    % some methods take it even further and directly train feedforward 4d reconstruction models, e.g. l4gm
+    % why can not you use simple video to video diffusion models for 4d gen: no explicit multi-view consistency
+
+
+    % some notes on the initial score distaltion sampling idea:
+    % - the key idea of sds is as follows: render your 3d representation, and then ask diffusion model to refine it, and then backprop use the added vs predicted noise to guide the direction of the update
+    % - the problem with this is that the direction of the refiment depends on the input condition - in the vanila version of the sds formulation - this would be text - this is very weakly constraining signal for 3d reconstruction
+    % - another issue is that you have to keep prompting diffusion model during training which is quite computationally expensive
+
+% geometry informed video diffusion models
+% - e.g gen3c: predicted point clouds from the input image depth maps, and use these as input condition to the diffusion model
+% - viewcrafter - init point cloud, render, syntheseize novel views, and repeat
+
+% keep in mind the following writing rules:
+% 1. What problem dimension does this subsection cover, and why does it matter for my paper?
+% e.g. “This subsection reviews methods for monocular human reconstruction under occlusion, because occlusion is the main failure mode in our setting.”
+
+% 2. Start with a functional opening paragraph (not a polished one)
+% e.g. “A large body of work has studied [problem setting]. Existing approaches can be broadly grouped into [2–3 categories], which differ mainly in [key axis: representation, supervision, assumptions, etc.].”
+
+% 3. Write in “paper clusters,” not paper-by-paper
+% - Group papers before writing
+% - Write one sentence per group, not per paper
+
+% 4. End each subsection with a bridge sentence
+%  “What do all these approaches still fail to address that motivates the next section or my method?”
+
+
+% ---------- end of notes section
+
+\section{Parametric Body Models}
+
+Modeling the human body is a long-standing problem in computer vision and graphics. The Skinned Multi-Person Linear (SMPL) model \cite{smpl} is a foundational parametric model that represents a human as a triangulated mesh whose shape is controlled by low-dimensional parameters and whose pose is articulated by a kinematic skeleton. SMPL models shape variations via a learned PCA space and uses a fixed kinematic tree together with linear blend skinning to map joint rotations to deformed mesh vertices. This formulation is compatible with standard graphics pipelines and provides a strong, differentiable prior for downstream tasks.
+
+Several extensions improve expressiveness. SMPL-H adds articulated hands \cite{smplh}, and SMPL-X further integrates detailed hands and a face model based on FLAME \cite{smplx,flame}. More recent work targets limitations of the training data distribution of SMPL-style models, for example by improving population diversity \cite{annybody}, or by decoupling skeletal pose from body shape for more controllable rigs \cite{yang2025sam3dbody}. In our work, we use SMPL-X because it is predicted by our chosen HMR method and provides a convenient parameterization to drive deformations of our explicit 3D representation, while supplying a strong geometric prior on human shape.
+
+
+\section{Human Motion Estimation}
+
+
+Human mesh recovery (HMR) methods estimate the parameters of a parametric body model from images or videos. A useful distinction is between local HMR, which predicts pose and shape in a per-frame camera coordinate system from single images, and global HMR, which aims to recover temporally consistent motion and camera-aware trajectories in a shared world frame from monocular video.
+
+\paragraph{Local HMR methods.}
+Many local HMR pipelines follow a two-stage top-down approach: detect people, crop around each detection, and run a single-person regressor \cite{4dhumans,camerahmr}. While effective in many cases, top-down pipelines can degrade in crowded scenes due to missed detections, partial crops, and identity switches. Bottom-up alternatives instead detect keypoints and group them into individuals before fitting a body model, which can be more robust when people overlap \cite{multihmr}.
+
+\paragraph{Global HMR methods.}
+Early approaches estimate per-frame local HMR and then lift results to global motion with additional optimization, for example by estimating global translation and refining temporally \cite{glamr}. Subsequent work incorporates SLAM to obtain camera motion and improve global consistency \cite{slahmr,tram}. More recent methods regress global body model parameters end-to-end from monocular video, often using memory or recurrence to exploit temporal context \cite{wham,trace}. Despite strong progress, many methods still depend on multiple off-the-shelf estimators (for example, 2D keypoints, segmentation, and depth), which can harm temporal stability when these components fail. We use Human3R \cite{chen2025human3r} because it jointly reasons about humans and scene geometry and provides camera and body parameters in a consistent shared frame, which is important for our downstream reconstruction.
+
+
+\section{3D and 4D Reconstruction from Dense Input Capture}
+
+In this section, we review prior works that focus on 3D and 4D reconstruction of a given scene under the assumption of having as input a dense set of views or multi-view video capture. While these capture conditions are quite limiting (especially for the 4D case),
+they lay the foundation for the later works that focus on more practical real world capture settings with sparse input views or monocular videos, which we discuss in the next section.
+
+
+\paragraph{3D reconstruction methods.}
+Classical structure-from-motion pipelines such as COLMAP \cite{colmap} estimate camera poses and sparse geometry via feature matching, triangulation, and bundle adjustment, and can be extended with multi-view stereo to produce dense point clouds \cite{sfmrevisited,schoenberger2016mvs}. Neural scene representations provide a complementary route to continuous geometry and high-quality view synthesis. Early implicit shape representations such as DeepSDF \cite{park2019deepsdflearningcontinuoussigned} and Occupancy Networks \cite{mescheder2019occupancynetworkslearning3d} are commonly trained with 3D supervision, while differentiable volumetric rendering enables learning from images alone \cite{niemeyer2020differentiablevolumetricrenderinglearning,sitzmann2020scenerepresentationnetworkscontinuous}. NeRF \cite{mildenhall2020nerfrepresentingscenesneural} popularized implicit radiance fields for complex real-world scenes, but its representation is an implicit function that must be optimized per scene and evaluated along many samples per ray, which makes training and rendering computationally expensive. This motivated explicit representations such as 3D Gaussian Splatting (3DGS) \cite{3dgs}, which achieves fast rasterization-based rendering and efficient optimization. Follow-up work improves splatting and surface extraction \cite{2dgs,held2025meshsplattingdifferentiablerenderingopaque}. We adopt 3DGS as our underlying 3D representation due to its training and rendering efficiency.
+
+
+
+\paragraph{4D reconstruction methods.}
+4D reconstruction methods aim to recover a spatio-temporal representation from multi-view video. Early work often relied on RGB-D input and non-rigid registration to track deformations over time \cite{volumedeform,dynamicfusion}. More recent approaches build a canonical representation and model motion either via a learned deformation field \cite{som,lei2024moscadynamicgaussianfusion}, by explicitly conditioning the representation on time \cite{4dgs}, or by allowing topology changes such as appearing and disappearing primitives \cite{freetimegs}. In our work, we follow the canonical-space formulation but use a parametric human body model to define the deformation over time. This choice leverages strong human priors, is particularly well-suited to human-centric scenes, and aligns with a common practice in human reconstruction research.
+
+
+\section{3D and 4D reconstruction from Sparse Input Capture}
+
+In our work, we focus on a practical and challenging setting: 4D reconstruction from monocular video. We therefore review methods that address sparse-view 3D reconstruction and methods that extend these ideas to dynamic scenes.
+
+\subsection{3D methods}
+\paragraph{Optimisation based approaches.}
+Many sparse-view methods improve per-scene optimization by injecting additional priors. Some enforce multi-view consistency via geometric constraints and reprojection losses \cite{sparf,regnerf}, while others leverage monocular depth or normal predictors to guide reconstruction \cite{densedepthprior,sparsenerf,fsgs,monosdf,depthsupervisednerf}. A complementary direction synthesizes additional training views and uses them as supervision. Early approaches often relied on score distillation with pretrained text-to-image diffusion models \cite{dreamfusion,prolificdreamer}, which can be computationally expensive and weakly constrained by text prompts. More recent methods use geometry-aware video diffusion to generate novel views consistent with the input \cite{reconfusion,viewcrafter}, or decouple view synthesis from reconstruction by first generating views and then fitting a 3D representation \cite{cat3d,sv3d}. A further refinement-based line of work uses conditional image-to-image models to improve rendered novel views before adding them as training targets \cite{flowr,wu2025difix3d,3dgsenhancer}. In our method, we adopt DiFix \cite{wu2025difix3d} as a practical refiner to densify supervision without the high compute overhead of querying a diffusion model at every training step.
+
+\paragraph{Feedforward approaches.}
+Feed-forward approaches aim to predict 3D representations directly from one or more images, trading per-scene optimization for fast inference. Early work improved NeRF generalization by conditioning on image features and training across scenes \cite{mvsnerf,pixelnerf}. More recent methods predict explicit Gaussian representations from sparse views \cite{pixelsplat,mvsplat,mvsplat360,lgm}. Other lines focus on jointly estimating geometry and camera parameters from image pairs via dense correspondence priors \cite{dust3r,mast3r}, and on scaling inference to stronger single-image or multi-image 3D predictions \cite{vggt,bolt3d}. While these methods enable fast reconstruction, their quality in challenging settings often still lags behind optimization-based approaches, motivating hybrid pipelines that combine feed-forward estimates with targeted per-scene refinement.
+In addition, several feed-forward pipelines predict point-based geometry (for example, depth maps or point maps) that is not directly a coherent, continuous, renderable scene representation. This can make it harder to recover high-quality appearance and surfaces without additional modeling, which motivates our choice of optimizing an explicit 3DGS representation for novel view rendering.
+
+
+ 
+\subsection{4D methods}
+\paragraph{Optimisation based approaches.}
+For monocular 4D reconstruction, a common strategy is to densify supervision with synthesized views and then optimize a dynamic representation. Some methods follow a two-stage approach that first generates multi-view video and then fits a 4D representation \cite{cat4d,sv4d}, while others interleave view synthesis and reconstruction by alternating between the two \cite{bulletgen}. Our method follows the two-stage design: we synthesize novel training views using DiFix \cite{wu2025difix3d} and then optimize our 4D representation using these views. We adopt this design primarily for its simplicity and modularity. 
+
+\paragraph{Feedforward approaches.}
+Recent work also explores feed-forward 4D reconstruction from monocular video. Several approaches extend strong static-scene priors to the dynamic setting, for example by adapting DUST3R-style correspondence models \cite{monst3r} or by introducing point-map formulations that aim to be invariant across view and time \cite{dynamicpointmaps,st4rtrack}. Other methods recover and align per-frame depth and then rely on additional motion cues such as tracking or video diffusion \cite{align3r,cut3r,pi3,geo4d}. Any4D \cite{any4d} models motion via scene flow together with dense geometry predictions. While these methods are promising in terms of inference speed, their reconstruction quality in complex real-world scenes is still evolving. Our pipeline therefore uses a feed-forward motion estimator to obtain human priors and then performs targeted per-scene optimization of an explicit dynamic representation.
+
+\section{Monocular Human-centric 4D Reconstruction Methods}
+
+Previously reviewed methods did not make any specific assumption about the scene content. In contrast, human-centric 4D reconstruction methods leverage the strong prior knowledge about human body shape and motion to better constrain the reconstruction process from monocular videos.
+
+
+\subsection{Single Human approaches.}
+
+\paragraph{Video as input.}
+Early methods such as HumanNeRF \cite{humannerf}, NeuMan \cite{neuman}, and Vid2Avatar \cite{vid2avatar} reconstruct implicit neural representations of a single human from monocular video. While they can produce high-quality results, implicit representations typically require expensive per-subject optimization and can be slow to render. In addition, another disadvantage of the implicit representation is its poor composability. This motivated explicit Gaussian-based human avatars \cite{drivable3dgs,gauhuman,gaussianavatar,exavatar}, which improve efficiency and are easier to integrate into rasterization-based pipelines. However, monocular input still provides limited coverage of the subject, especially for in-the-wild videos with occlusions and fast motion. MV-Performer \cite{mvperformer} addresses view sparsity by leveraging multi-view video diffusion for view synthesis, but it focuses on single-person scenes. In contrast to these works, our method targets multi-person scenes. 
+
+\paragraph{Image or sparse set of images as input.}
+Other approaches reconstruct a canonical human from a single image or a sparse set of images. Some methods use video diffusion models to synthesize additional canonical views \cite{anigs,gas}. LHM \cite{qiu2025lhm} instead predicts a canonical 3DGS avatar in a feed-forward manner that can be animated using SMPL-X. We use LHM for per-person initialization because it provides fast and high-quality canonical reconstructions. However, it was designed for single-person inputs and does not estimate motion, so multi-person scenes can require additional refinement to avoid interpenetrations and to recover details that are not visible in the initialization view.
+
+
+\subsection{Multiple Human approaches}
+Compared to single-person settings, the literature on multi-person 4D reconstruction from monocular video is more limited. Guess the Unseen \cite{gtu} addresses view sparsity by fine-tuning a diffusion model per person and using it to synthesize additional views, which can be time consuming and scales poorly with the number of people. MultiPly \cite{multiply} tackles multi-person interactions and occlusions by optimizing an implicit signed distance field representation, but reports high computational cost due to per-person optimization. Our work follows the same goal of reconstructing interacting people in monocular video, but uses an explicit 3DGS representation for efficiency and introduces generative priors via DiFix \cite{wu2025difix3d} to mitigate the sparse-view setting.

@@ -1,0 +1,583 @@
+\PassOptionsToPackage{authoryear,round}{natbib}
+\documentclass[11pt]{article}
+\usepackage{thesis}
+
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{siunitx}        % number alignment in tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{titling}
+\usepackage{caption}
+\captionsetup{labelsep=period}
+%\usepackage[font=small]{caption}
+\setlength{\droptitle}{-40pt}  % Adjust as needed
+
+\usepackage{titlesec}
+
+\sisetup{
+  detect-weight = true,
+  detect-family = true,
+  table-number-alignment = center
+}
+
+\titlespacing{\section}
+  {0pt}    % left margin
+  {0.7ex plus 0.5ex minus .2ex}  % space before section title
+  {0.7ex plus .2ex}  % space after section title (before paragraph)
+
+\titlespacing{\subsection}
+  {0pt}
+  {1.2ex plus 0.3ex minus .2ex}
+  {0.6ex plus .1ex}
+
+\title{\vspace{-1em}{\Large\textbf{Monocular 4D Reconstruction of (in-the-wild) Scenes with Multiple People}}\vspace{-1em}}
+
+\author{
+  \begin{tabular}{c c}
+  Ludek Cizinsky \\
+  \texttt{ludek.cizinsky@epfl.ch} \\
+  EPFL
+  \end{tabular}
+}
+
+\begin{document}
+
+\date{}
+\maketitle
+
+\begin{abstract}
+% Brief summary of the problem, method, and results (to be written last)
+\end{abstract}
+
+
+\section{Introduction}
+% Problem context
+% We want to focus on *dynamic* human centric scenes captured from monocular video that capture multiple humans interacting or performing complex motions. 
+% Our method is able to handle inputs from static as well as moving cameras, which is important for real world applications where the camera might be handheld. 
+
+% Motivation for my work
+% - I see two important applications of my work
+% - First: interactive media - we no longer have to rely on watching monocular feed, and instead can view the given video from any angle we want. This is especially useful in sports broadcasting, where the viewer can choose their own perspective. Here, the important aspect of the reconstruction is how accurate the extracted motion is, and how realistic the novel view renderings are.
+% - Second: With the recent advances in humanoid robotics, being able to precisely recover human motion from monocular videos can help extract training motion data for robots to imitate. Here, we only care about the accuracy of the recovered motion, and not so much about the visual quality of the renderings.
+
+
+% General challenges in dynamic scene reconstruction
+% - In general, 4D reconstruction from monocular video is highly ill-posed problem
+% - Apart from obtaining multi-view consistency from monocular video, we also have to ensure temporal consistency
+% - In addition, the system needs to be able to accurately disentangle the motion of camera and objects in the scene
+% - Further, we need to make sure we correctly separate dynamic and static parts of the scene - e.g. avoid having static background bleed into dynamic objects
+% - I would also say that depending on the scene, the video quaity may vary, especially motion blur can occur frequently in fast moving scenes - this is indeed bad signal for 3dgs
+
+
+% Specific challenges in human-centric reconstruction
+% - Humans are highly non-rigid objects, with complex articulations and deformations including clothing dynamics and hair motion
+% - Human motion is often fast and unpredictable, leading to motion blur and occlusions
+% - when we have multiple people in the scene, we have to deal with inter-person occlusions and interactions  
+
+
+% Gap in existing methods
+% - Majority of the existing human-centric scenes methods focues on mapping either single image, set of image or monocular video to parametric human model (SMPL, SMPL-X, etc.). These approaches assume clean video capture conditions and fail for the in the wild scenarios where we might have multiple people interacting and occluding each other. 
+% - In the last year or two, there has been a new wave of papers that deviate from the tradional 3D reconstruction methods, and instead, train a feedforward network to directly map the input image or video to the target set of modalities, usually depth maps and camera parameters. The main limitation of these approaches is that while at a first glance they give decent predictions, they are still much less acurrate than their more classical optimisation based counterparts. 
+% - In addition, the feed forward methods often only estimate point clouds or meshes, which are not ideal for photorealistic novel view synthesis due to their discrete nature. Similarly, it is impractical to extract accurate joint positions from these representations, which is crucial for many applications such as motion capture for robotics.
+% - While there have been previous attempts for monocular 4D reconstruction of dynamic human centric scenes, the main limitation of these approaches is that they require order of hours to days of training time per scene, making them impractical for real world applications. 
+
+
+% Contributions
+% - The main contribution of this work is a novel hybrid framework for monocular 4D reconstruction of dynamic human centric scenes that combines the best of both worlds - the speed and efficiency of feedforward networks, and the accuracy and quality of optimisation based approaches.
+% - As a result, we obtain the quality comparable to the state of the art methods that require hours to days of training time, while being able to reconstruct a scene in order of minutes.
+% - Our methods can not only obtain high quality novel view renderings, but also accurately recover human motion in the scene, making it suitable for a wide range of applications including interactive media and robotics
+% - We directly address to limitations mentioned in MultiPly: to introduice generative prior and also to use more expressive human model SMPLX
+% - We demonstrate our effectivness on our method on 4 tasks including human pose estimation, novel view synthesis, mesh reconstruction and segmentation 
+
+\section{Related Work}
+\subsection{Static Scene Reconstruction}
+% Goal: establish representational and optimization foundations
+% Organizing axis: view density and prior strength
+
+\subsubsection{Dense Multi-View Reconstruction}
+% NeRF-style methods assuming many views and static geometry
+
+\subsubsection{Sparse-View Reconstruction with Priors}
+% Methods that compensate for limited views using learned or geometric priors
+
+
+\subsection{Dynamic Scene Reconstruction}
+% Goal: extend static assumptions to time-varying geometry
+% Organizing axis: how dynamics are modeled and constrained
+
+\subsubsection{Multi-View Dynamic Reconstruction}
+% Dense-view dynamic methods, often extensions of static representations
+
+\subsubsection{Sparse-View and Monocular Dynamic Reconstruction}
+% Methods requiring temporal, motion, or semantic priors
+
+
+\subsection{Human-Centric Reconstruction}
+% Goal: introduce strong semantic structure as an explicit modeling choice
+
+\subsubsection{Parametric Human Models}
+% SMPL / SMPL-X based approaches
+
+\subsubsection{Human-Centric Dynamic Scene Reconstruction}
+% Multi-person, interaction-aware, or scene-integrated methods
+
+
+% ---------- Notes section
+% I think another important topic crucial for realistic 4d reconstruction modelling are video diffusion models, so it may be good to somehow integrate this part into the thesis as well
+
+% One of the main themes we have also been seeing in the last year or so is the transition from 
+% per scene optimisation method to feedforward methods that can reconstruct the scene in a single forward pass.
+
+% Another trend I need to capture is the transition from implicit representations to explicit representations such as 3dgs 
+
+% Multi view dynamic scene reconstruction:
+% 1. Free Time GS has shown that under the assumption we have access to a multi-view video of a dynamic scene with complex motions, we can reconstruct high-quality 4D representation of the scene in order of hours to days of training time. However, the main limitation of this approach is that it requires multi-view video capture, which is not always feasible. Therefore, then one might argue is that the problem boilds down to coming up with a video diffusion model that can based on the monocular video input generate novel view videos.
+
+
+% Examples of state of the art method for lifting monocular video to multi view videos:
+% 1. Generative Camera Dolly (GCD) - trained on synthetic data only, if I am not mistaken, can only synthesise one novel video at a time. Also I did test it myself, and the quality of the model is not great.
+% 2. Cat4D - this is one of the earliest works. First of all, the model and the data is closed source which signifficantly limits any possible future research since it requites quite signifficant amount of resources to train. If I remember correctly, one of the limitations of this approach is A) it is mostly trained on synthetic data, and B) they show very limited novel view deviation - and this is where it indeed gets very difficult to hallucinate views which are on t he complete other side of the person for instance.
+% 3. SV4D - this is I would say open source version of Cat4d. The main problem with this method is that they assume: single object scenes with ideally no background and simple motion. So these are quite limiting constraints.
+% --- Also all these methods assume as input input from a **static** camera, which is quite limiting for real world applications.
+
+% Why do we even need explicit scene representation - can we just use diffusion models?
+% - I should try comment on this as well based on the 3dv talk from J.Barron
+
+% Notes on implicit formats:
+% - I think that it is important to mention NeRF paper which started this whole wave of implicit neural representations for 3D reconstruction. NeRF back then had two main limitatioshn which was the need for multi view inputs and also really slow training time.
+% - This sparked a new direction of papers that addressed these limitations espeically the training time, but still one of the problems with impliciti representation is it is quite hard to compose them where as with 3dgs you can easily train separate gaussians for different objects in the scene and then just combine them together. This also has to do with editability - you can easily move around gaussians in 3d space, whereas with implicit representations this is not so straightforward.
+% - Also one of the main issues with NeRF is still its rendering speed - ultimately, i thing in the last two years, we have seen transitiopn from implicit representations to explicit representations and various forms of 3DGS
+% - One thing where however implict representations still shines is its generalisation in sparse view settings. By defintin, the implciti model needs to learn a continuous function that maps from 3d space to color and density, so it can interpolate between the known views quite well. On the other hand, explicit representations such as 3dgs need to store all the information in the gaussians themselves, so if there is not enough gaussians to cover the space, it might lead to holes in the reconstruction or just weird artifacts, hence having dense set of views is crucial for good quality reconstruction.
+
+% Notes on dynamic explicit scene representations formats
+% - 1. Deformation field over canonical representation: have a canonical space and then then track deformations over time. Of course then the question becomes how to track this motion over time. For instance:
+% -- a. use point tracking and then use these points to guide the deformation field 
+% -- b. parametric human models (SMPL, SMPL-X, etc.) - however these are limited to humans only
+% -- I think it is important to note here that canonical representation's pro is that it can be animated from any motion that we can recover, whereas explicit time varying representation is limited to the motion seen during training only
+% - 2. Explicit time parametrisation - add time as an additional input to the representation. 
+% - 3. Topology chaning representations - e.g. free time gs where gaussians can appear and disappear over time.
+% I think the important thing to note here is that choice of different representtion formats then also influences how difficult is to for instance obtain mesh extraction, or how well the representation can handle topology changes.
+
+% Notes on models that I have actually tried:
+% 1. Generative camera dolly - I think this one of the first papers to introduce explicit camera control for the novel view synthesis, however, the main limitation of their method was: 1. scope of data - very limited domain - trained on synthetic data - multiple objects 2. the farther from the original you go, the worse quality. When I tried their model on their own data, it did not work so well, and it did not work essentially at all on my football data
+% 2. Guess the unseen - the main limitation of this model is that they have to tune single SD1.5 for every person in the scene. And from what I have observed the model in addition to that hallucinated a lot - and I was only able to visualise the original view of the scene. Another issue with guess the unseen was their separation of dynamic and static background - their masking pipeline often failed and as a result you could see how static background is actually attached to the dynamic objects.
+% 3. Shape of motion - you can see with their demo on the website that the nvs from extreme viewpoints sucks
+% 4. LHM - this works pretty good in order to get initial results, but it only reasons about the canonical apperance and geometry. You have to separately model the motion, and this becomes an issue with state of the art pose estimatros - as of now. In addition, they still assume quite clean capture of the person to infer the canonical representation - therefore it is neccesary to be smart about how you choose the frames
+
+
+% Notes on tempalate based vs tracking methods for modelling motion
+% - Template based methods - e.g. SMPL, SMPL-X, etc. These methods are great because they provide a strong prior on human shape and motion, which helps to regularise the reconstruction. However, these methods are limited to the expressiveness of the underlying model, and often fail to capture clothing dynamics and other non-rigid deformations.
+
+% - Tracking based methods - these methods do not rely on a predefined template, and instead track points or features over time to capture motion. These methods are more flexible and can capture a wider range of motions and deformations, but they are also more prone to drift and errors over time. Also for a monocular setting, as they argue in MVTracker, these methods often require multi-view input to obtain reliable tracking.
+
+% I think another important aspect of my work is to highlight the differene between rasterisaton and ray tracing
+
+% ---------- end of notes section
+
+
+\section{Preliminary}
+\subsection{SMPLX Body Model}
+% - brief overview of SMPLX model
+% - parameters: shape, pose, expression, global translation
+% - forward kinematics and linear blend skinning
+
+\subsection{3D Gaussians}
+% - representation of 3D scene using 3D Gaussians
+% - parameters: position, covariance, color, opacity, etc.
+% - volume rendering with 3D Gaussians and camera parameters
+
+
+\section{Method}
+\subsection{Problem Definition}
+% - Input and output specification
+% Input: unposed monocular video of dynamic human centric scene, captured from either static or moving camera
+% Output: 4D representation of the scene: a. canonical 3dgs b. smplx parameters over time c. camera parameters over time
+% d. if needed 3dgs can be converted to mesh representation for easier visualisation. Everything is meters and in world coordinate system.
+
+% - Assumptions
+% - we currently do not account for blurry images - so we assume that the input video is of decent quality with minimal motion blur
+
+% - Scope and evaluation goals
+% - Our goal is to obtain high rendering quality for novel view synthesis, as well as accurate recovery of human motion in the scene. We evaluate our method on both quantitative metrics such as PSNR, SSIM, LPIPS for novel view synthesis
+% - We also want to obtain high pose quality which we measure using MPJPE, MVE, Contact Distance and Percentage of Correct Depth relations
+% - As another proxy for quality of extracted geometry, we also measure mesh reconstrution quality using V-IoU, Chamfer Distance, P2S and Normal Consistency
+% - Finally, we also evaluate the segmentation quality using IoU, F1 and Recall metrics - segmentation is important for being able to distenghuish dynamic and static parts of the scene
+
+We expect as input unposed monocular video of a scene with multiple humans interacting or performing complex motions. The video can be captured from either a static or moving camera. Our method outputs a 4D representation of the scene consisting of: (a) a canonical 3D Gaussian Splatting (3DGS) representation, (b) SMPLX parameters over time for each human, and (c) camera parameters over time. If needed, the 3DGS can be converted to a mesh representation for easier visualization. All outputs are represented in meters and in the world coordinate system. We assume that the video sequence does not contain significant motion blur, ensuring that the input frames are of sufficient quality for accurate reconstruction. Further, we assumes that there are no objects that would signifficantly occlude the humans in the scene. In addition, reconstruction of the static components of the scene as well as dynamic objects (except from humans indeed) is out of the scope of this work. Finally, our method has been only tested on short videos sequences of up to 10 seconds in length.
+
+First, our goal is to obtain realistic motion and geometry. Therefore, we will evaluate our method on 3D pose estimation and mesh reconstruction. Second, we want to ensure high rendering quality for novel view synthesis, even from extreme viewpoints, therefore to this end we will evaluate our method on novel view synthesis task. Finally, we want to be able to accurately distengle the static part of the scene from the dynamic humans. We will evaluate this by segmentation metrics.
+
+
+\subsection{Preprocessing}
+% 1. Estimate SMPLX parameters for each frame using feed forward model Human3R and obtain SMPLX parameters in world coordiantes along with camera parameters
+% 2. Estimate the humans using sam3 (video model) and prompt "a person"
+% 3. Then use the estimated masks for each human and select the first frame, and feed the masked image for each human to LHM to obtain canonical 3dgs for each human 
+
+First, we start with obtaining SMPLX parameters \cite{smplx} using Human3R \cite{chen2025human3r} which is a feed forward model capable of jointly estimating not only SMPLX parameters, but also camera parameters and static point cloud all in a shared world frame and in meters. Next, we use SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmentation masks for each human in the scene. We simply prompt the model with "a person" and use the video model to ensure temporal consistency. Finally, we select a representative frame for each human, mask out the rest of the image using the estimated segmentation masks, and feed the masked images to LHM \cite{qiu2025lhm} to obtain canonical 3DGS representation for each human.
+
+
+\subsection{Novel Training View Synthesis with DiFix}
+
+% inclue this figure here:
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/novel_view_gen_overview.drawio.png}
+    \caption{Overview of our novel training view synthesis pipeline using DiFix. We start with the monocular video and the estimated SMPLX parameters to render initial novel views of the humans using the canonical 3DGS obtained from LHM during preprocessing. These initial renderings are then refined using DiFix to ensure multi-view and temporal consistency. The refined novel views are then used as input to our main training pipeline.}
+    \label{fig:novel_view_synthesis_difix}  
+\end{figure}
+
+
+% explain how DiFix works
+Our explicit scene representation is sensitive to the number of input views, and easily overfits to the training views, while for unseen views, we get blurry artifacts and holes in the reconstruction. For this reason, it is crucial to lift the monocular video to a set of multi-view videos to provide multi-view guidance during trainig and avoid the before mentioned issues.
+
+Synthesising novel training videos from monocular video is indeed highly ill posed problem. The key challenge is to produce novel videos that are both multi-view as well as temporally consistent. Therefore, to make the problem simpler, we make use of the following two insights. First, it is much simpler to synthesie novel views which are close to the original view. In other words, we can recursively synthesie novel views that are slightly offset from the original view, and then use these novel views as input to synthesie further novel views. Second, it is much easier to synthesie apperance of the person if we already have a initial good estimate. For this reason, we make use of the canonical 3DGS obtained from LHM during preprocessing to render initial novel views of the person, and then use these renderings as input to DiFix \cite{wu2025difix3d} to refine the renderings and ensure multi-view and temporal consistency.
+
+
+% explain the algorithm for synthesising novel training views
+Figure \ref{fig:novel_view_synthesis_difix} shows an overview of our algorithm for obtaining novel view videos based on the source monocular video. First, DiFix is image-to-image diffusion model (finetuned version of Stable Diffusion) that expects three inputs: a. reference image b. image to refine c. prompt.
+We use the default prompt from the original paper which is "remove degradation". The first row of Figure \ref{fig:novel_view_synthesis_difix} shows how we obtain novel views which are progressively farther from the original view. For instance, in the first step, our goal is to synthesise novel views for cameras with IDs 16 and 88 (hence orange color). We therefore use as the reference view the source camera with the ID 4 (blue color). The second row of Figure \ref{fig:novel_view_synthesis_difix} shows the actual process of obtaining the novel views for selected camera frame by frame. For instance, to synthesise novel view for camera 88 whose reference camera is camera 4, we follow these steps to synthesise the novel view at frame $t$:
+
+\begin{enumerate}
+  \item Sample frame $t$ from the reference camera 4
+  \item Render frame $t$ from target camera 88 using the canonical 3DGS obtained from LHM during preprocessing. This gives us an initial estimate of the novel view.
+  \item Feed both images to DiFix to obtain the refined novel view for camera 88 at frame $t$.
+\end{enumerate}
+
+We repeat the above process for all frames in the video sequence to obtain the full novel view video for camera 88. We repeat the entire process for all target cameras to obtain a set of novel view videos that are then used as input to our main training pipeline. Figure \ref{fig:trn_nv_cam_gen_3d_vis} shows a 3D visualisation of the generated novel training view cameras around the original scene. We generate this circle of novel training cameras before starting the DiFix synthesis process. Cameras are generated in such a way that they are evenly distribured in a circle around the scene such that across all frames, the estimated SMPLX humans are always in the field of view of all cameras.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/trn_view_cam_gen_in_3d.png}
+    \caption{Visualisation of the generated generated training view cameras around the original scene. The generated cameras are in orange, while the original camera trajectory is in blue. We use Viser \cite{yi2025viser} to obtain this visualisation.}
+    \label{fig:trn_nv_cam_gen_3d_vis}  
+\end{figure}
+
+
+\subsection{3DGS-based Dynamic Representation}
+
+% Terminology definitions:
+% 1. Neutral pose - our own pose definition which is similar to A pose (have to double check this)
+% 2. Zero pose - SMPLX zero pose definition (all pose parameters set to zero)
+% 3. Target frame pose - estimated SMPLX pose for a given frame in the video sequence
+% 4. N = number of 3dgs vertices after upsampling = 40k
+
+% We define the neutrally posed upsampled mesh vertex as follows:
+% 1. We first define a neutral pose for the SMPLX model - this is similar to A-pose
+% 2. We then obtain the neutral pose mesh vertices - approximately 10k vertices
+% 3. We upsample these vertices to 40k vertices using the body/face ratio: 3 -> we therefore end up with around 30k body vertices and 10k face vertices
+% 4. For each upsampled vertex, we also obtain the corresponding LBS weights for all 55 joints by finding the closest original vertex from the original 10k vertices -> we get 40k x 55 LBS weights matrix
+% In addition, we store the transformation that takes us from the neutral pose back to the zero -> matrix of shape (55, 4, 4)
+
+
+% LHM then predicts the canonical 3DGS parameters in the neutral pose space:
+% 1. mean offsets from the neutral pose vertices, shape Nx3
+% 2. rotation represented as quarternions, shape Nx4
+% 3. scales represented as diagonal covariance matrices, with shape Nx3, therefore each of the 3 dims defines the variance along the corresponding axis
+% 4. opacity, shape Nx1
+% 5. colors in RGB space, shape Nx3
+
+% Deformation from the neutral pose to the target frame pose then works as follows.
+% On a high level, we need to determine the translation and rotation for each gaussian from the neutral pose to the target frame pose.
+% For the translation, our goal is to therefore determine the position of each gaussian in the target frame pose:
+  % 1. Take the query points defined in the neutral canonical space and add the learned offset_xyz
+  % 2. We then map these query points from the neutral canonical pose to the zero pose where we add the blendshapes offsets to account for spefic body shapes
+  % 3. Finally, given the precomputed skinning weights and the smplx pose parameters, we map the query points from the zero pose to the target posed space
+% As a result, we obtain the xyz position of each gaussian in the target frame pose
+
+%  For the rotation, we do the following:
+  % 1. Extract the rotation matrix that maps from the neutral canonical pose to the target posed space for each query point
+  % 2. Convert this rotation matrix to quaternion representation and normalize it to ensure valid rotation
+  % 3. We then apply then defined this rotation to a subset of 3dgs that are constrained to the body (e.g., torso, arms, legs) to avoid unwanted rotation artifacts, 
+  % for the rest of the 3dgs we keep the rotation as in the canonical spacea
+% As a result, we obtain rotatatio from the neutral pose to the target frame pose for each gaussian in the form of quaternions
+
+% We then render the posed 3dgs into images using differentiable rendering via gsplat library.
+
+% Benefits of my design choices:
+% 1. the 3DGS is free to learn the offset from the SMPLX surface, so in theory it can learn clothing dynamics and other non-rigid deformations that are not captured by the SMPLX model itself
+% 2. i should explain why do we actually have "special" neutral space - not just because that's what LHM does...
+
+We use a human-centric dynamic scene representation that combines a parametric body model (SMPL-X) with 3D Gaussian Splatting (3DGS). Throughout this section, we distinguish three poses: (i) the \emph{zero pose}, where all SMPL-X pose parameters are set to zero; (ii) a fixed \emph{neutral pose} (an A-pose-like configuration used to define our canonical space); and (iii) the \emph{target frame pose}, i.e., the estimated SMPL-X parameters for a particular video frame.
+
+\paragraph{Neutrally posed query points and skinning weights.}
+We start by constructing a dense set of $N$ query points on the SMPL-X surface in the neutral pose (in our experiments, $N=40{,}000$). Concretely, we use a precomputed dense point set and assign a body/face split by a fixed ratio (e.g., ratio $3$ yields approximately $30{,}000$ body points and $10{,}000$ face points). To deform these points with SMPL-X, we require linear blend skinning (LBS) weights. For each dense point, we find its nearest neighbor on the SMPL-X template mesh and copy the corresponding template vertex LBS weights, resulting in a per-point weight matrix of shape $N\times 55$ (55 SMPL-X joints in our setup). Finally, we compute and store a per-joint transformation that maps between the neutral-pose space and the SMPL-X zero-pose space, represented as a matrix of shape $(55,4,4)$; this transform is later converted into per-point transforms via the LBS weights.
+
+\paragraph{Canonical 3DGS per person.}
+For each person, we represent appearance and geometry in the neutral pose using a set of $N$ Gaussians. Each Gaussian stores its center offset relative to the neutral query point ($\Delta\mathbf{x}\in\mathbb{R}^{N\times 3}$), a rotation quaternion ($\mathbf{q}\in\mathbb{R}^{N\times 4}$), anisotropic scaling ($\mathbf{s}\in\mathbb{R}^{N\times 3}$), opacity ($\alpha\in\mathbb{R}^{N\times 1}$), and per-Gaussian color (RGB in our current implementation). Intuitively, anchoring Gaussians to the SMPL-X surface provides a strong prior for multi-person scenes, while the learned offsets allow the representation to deviate from the parametric surface (e.g., to capture clothing and other non-rigid details).
+
+\paragraph{Deforming Gaussians to a target frame.}
+Given SMPL-X parameters for a target frame, we deform the canonical Gaussians from the neutral pose to the target posed space. For the translation, we first form canonical Gaussian centers by adding the learned offsets to the neutral query points. We then map these centers from the neutral pose to the SMPL-X zero pose using the precomputed neutral-to-zero transforms (blended per point with LBS weights). In the zero-pose space, we apply SMPL-X blendshape offsets (from the subject-specific shape parameters) and finally warp the points from the zero pose to the target pose using standard SMPL-X forward kinematics and LBS. This produces the posed Gaussian centers $\mathbf{x}_t$ for the frame.
+
+For the rotation, we extract the per-point rigid rotation component of the neutral-to-posed transform and convert it to unit quaternions. We then compose this rotation with each Gaussian's canonical quaternion to obtain the posed Gaussian orientations. In addition, for a subset of Gaussians associated with constrained body regions, we optionally suppress the additional rotation to avoid undesirable orientation artifacts.
+
+\paragraph{Rendering.}
+For each view, we deform each person independently, concatenate all posed Gaussians in the scene, and render RGB, mask, and depth using a differentiable 3DGS renderer (gsplat).
+
+\subsection{Training objectives}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/trn_pip_overview.drawio.png}
+    \caption{Overview of our training pipeline.}
+    \label{fig:trn_pip_overview}  
+\end{figure}
+
+% High level process:
+% 1. We sample a batch of frames from different views (source camera + generated novel views)
+% 2. Using the view camera parameters and the per-frame SMPLX parameters, we deform the canonical 3DGS to the posed space 
+%   for each frame in the batch and render the images using differentiable rendering via gsplat library.
+% 3. We then compute the losses between the rendered images and the ground truth images using the foreground masks to focus only on the humans in the scene.
+% We have the following losses:
+  % a. RGB reconstruction loss (masked MSE + SSIM)
+  % b. Silhouette loss (only on source camera view since this is where we have the most reliable masks)
+  % c. Canonical regularization losses (ASAP/ACAP) to encourage plausible geometry in the canonical space, formulas:
+  % 1. scales_pos = torch.exp(scales)
+  %    asap = ((scales_pos - scales_pos.mean(dim=-1, keepdim=True)) ** 2).sum(dim=-1).mean()
+  % 2. acap = torch.clamp(offsets.norm(dim=-1) - self.cfg.regularization['acap_margin'], min=0.0).mean() where we use by default acap_margin = 0.01 (1cm)
+
+
+% things to improve here:
+% 1. use paragraph stle to split the these explanation into: photometric loss, silhouette loss, canonical regularization losses
+% 2. At the end, we should mention the full objectie and mention that empirically we found the following weights to work the best for each loss term: 
+% loss_weights:
+  % rgb: 20.0
+  % sil: 4.0
+  % ssim: 0.4
+  % depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
+
+% regularization:
+  % asap_w: 200.0
+  % acap_w: 200.0
+  % acap_margin: 0.01 # meters (1 cm)
+
+% 3. we need to acknowledge that the regularisaton terms are adopted from the lhm paper, therefore use
+% \cite{qiu2025lhm} to cite them. The ASAP stands for as spheric as possible, and ACAP stands for as close as possible (both of these terms were introduced in LHM paper. We should paraphrase the explanations from LHM paper about these terms and logic behind them:
+% a. ASAP term is to encourage isotropic scales for each gaussian - in the lhm paper, they found that this term removed weird blurry edges in the reconstruction
+% b. ACAP term is to encourage the gaussians to stay close to the smplx surface - in the lhm paper, they found that this term prevented gaussians from drifting too far away from the smplx surface which would lead to artifacts in the reconstruction 
+
+
+Our training objective follows the pipeline shown in Figure \ref{fig:trn_pip_overview}. At each iteration, we sample a mini-batch of frames from a mixture of views (the source camera and the synthesized novel training views). Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image (and auxiliary outputs) using differentiable Gaussian splatting.
+
+\paragraph{Photometric loss.}
+We supervise the rendered RGB with foreground masks to focus the objective on the humans and reduce the influence of the static background. Our photometric objective combines a masked RGB reconstruction loss (mean squared error) with a perceptual structural term based on SSIM computed on the masked images.
+
+\paragraph{Silhouette loss.}
+We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
+
+\paragraph{Canonical regularization.}
+We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.
+
+For ASAP, let $\mathbf{s}\in\mathbb{R}^{N\times 3}$ denote the (log-)scales and $\mathbf{s}^+=\exp(\mathbf{s})$ their positive version; we compute
+\begin{equation}
+  \mathcal{L}_{\mathrm{ASAP}} = \frac{1}{N}\sum_{i=1}^{N}\left\lVert \mathbf{s}^+_i - \mathrm{mean}(\mathbf{s}^+_i)\mathbf{1}\right\rVert_2^2.
+\end{equation}
+For ACAP, we penalize large offset magnitudes beyond a margin $m$ (we use $m=0.01$m), where $\Delta\mathbf{x}_i$ denotes the learned offset of Gaussian $i$:
+\begin{equation}
+  \mathcal{L}_{\mathrm{ACAP}} = \frac{1}{N}\sum_{i=1}^{N}\max\left(0, \lVert \Delta\mathbf{x}_i \rVert_2 - m\right).
+\end{equation}
+
+Putting everything together, our total objective is a weighted sum of the above terms:
+\begin{equation}
+  \mathcal{L} =
+  w_{\mathrm{rgb}}\mathcal{L}_{\mathrm{rgb}} +
+  w_{\mathrm{ssim}}\mathcal{L}_{\mathrm{ssim}} +
+  w_{\mathrm{sil}}\mathcal{L}_{\mathrm{sil}} +
+  w_{\mathrm{asap}}\mathcal{L}_{\mathrm{ASAP}} +
+  w_{\mathrm{acap}}\mathcal{L}_{\mathrm{ACAP}}.
+\end{equation}
+Empirically, we found the following weights work best $w_{\mathrm{rgb}}=20.0$, $w_{\mathrm{ssim}}=0.4$, $w_{\mathrm{sil}}=4.0$, $w_{\mathrm{asap}}=200.0$, and $w_{\mathrm{acap}}=200.0$.
+
+\section{Experimental Setup}
+
+\subsection{Datasets}
+% Datasets
+% Hi4d - two humans performing complex interactions - dance, hug etc., in door capture, multiple static cameras, access to ground truth meshes and poses, and also multi view videos for eval.
+% MMM - 3-4 humans per scene performing complex interactions, in door capture, capture via singly dynamic camera (smartphone), access to ground truth meshes and camera poses only - hence we only eval mesh reconstruction using this dataset
+% We also use one in the wild video to validate that our method works in real world scenarios 
+
+
+% Some notes on the evaluation
+% At the start, of the thesis, I still thought I am going to use football videos
+% So my approach was similar to Neuman paper split monovideo into train and val frames
+\paragraph{Hi4D.}
+We evaluate on Hi4D, an indoor multi camera dataset with two interacting people performing complex motions. Hi4D provides multi view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction.
+
+\paragraph{MMM.}
+To also evaluate our method on scenes with more than two persons and dynamic camera motion, we also
+evaluate our method on the MMM dataset \cite{multiply}. MMM contains scenes with three to four people and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. Similar to Hi4D, MMM is captured in an indoor setup with people performing complex interactions.
+
+\paragraph{In the wild.}
+Finally, we include one in the wild monocular video to qualitatively validate that the pipeline can be applied outside of curated datasets.
+
+\subsection{Evaluation Metrics}
+% - Novel View Synthesis: PSNR, SSIM, LPIPS. We use the ground truth camera and smpl parameters to render the ground truth images for the novel views. Side note: since our method expects smplx, we use the official SMPLX fitting code to fit smplx to the ground truth meshes to obtain smplx parameters for rendering the ground truth images.
+% - Pose Estimation: MPJPE (mm), MVE (mm), Contact Distance, Percentage of Correct
+% - Mesh Reconstruction: V-IoU, Chamfer Distance (cm), P2S (cm), Normal Consistency. We use marching cubes algorithm to extract meshes from the 3dgs representation for evaluation.
+% - Segmentation: IoU, F1, Recall
+\paragraph{Novel view synthesis.}
+We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (lower is better). When ground truth camera parameters and SMPL parameters are available, we render the corresponding ground truth images for evaluation. Since our pipeline uses SMPL-X, we fit SMPL-X to the ground truth meshes when needed to obtain compatible parameters using the official transfer code \cite{smplx}.
+
+\paragraph{Pose estimation.}
+We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction focused metrics: contact distance (CD, mm) and percentage of correct depth relations (PCDR) with a threshold of $0.15$m.
+
+\paragraph{Mesh reconstruction.}
+To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$, cm), point to surface distance (P2S, cm), and normal consistency (NC). For this evaluation, we extract meshes from the 3DGS representation using marching cubes.
+
+\paragraph{Instance segmentation.}
+Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection over union (IoU), recall, and F1 score.
+
+\subsection{Implementation Details}
+% - training details: 
+% -- optimizer AdamW 
+% -- learning rate 1e-5
+% -- batch size 5
+% -- for differentable rasterisation, we are using gsplat library 
+% -- number of iterations = 15 epochs
+% -- nuber of views = 8, subsample original frames by factor of 5, so 100 frames -> 20 training views
+% --> so in total 8*20 = 160 novel training views
+% - preprocessing time - around 10-15 minutes per scene
+% - training time - around 15 minutes per scene on single V100 GPU
+We optimize all 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 8 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps). For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
+
+\section{Results}
+% My main baseline is MultiPly, however each subsection has also corresponding baselines specific to the task which will be explained there
+
+\subsection{Reconstruction Comparisons}
+% In addition to MultiPly, here we are comparing to: ECON and Vid2Avatar
+% We evaluate the mesh reconstruction quality on two datasets: Hi4D and MMM
+\begin{table}[!ht]
+  \centering
+  \caption{Human mesh reconstruction results on Hi4D and MMM. We report volumetric IoU (V-IoU), Chamfer distance (C-$\ell_2$) [cm], point-to-surface distance (P2S) [cm], and normal consistency (NC). Best results per dataset and metric are in bold.}
+  \label{tab:reconstruction_results}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{ll
+      S[table-format=1.3]
+      S[table-format=1.2]
+      S[table-format=1.2]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Dataset} & \textbf{Method} & \multicolumn{1}{c}{\textbf{V-IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{C-$\ell_2$} $\downarrow$} & \multicolumn{1}{c}{\textbf{P2S} $\downarrow$} & \multicolumn{1}{c}{\textbf{NC} $\uparrow$} \\
+    \midrule
+    Hi4D & ECON & 0.787 & 3.72 & 3.59 & 0.746 \\
+     & V2A & 0.783 & 3.02 & 2.46 & 0.775 \\
+     & MultiPly & \textbf{0.816} & \textbf{2.53} & \textbf{2.34} & \textbf{0.789} \\
+     & Ours & 0.560 & 4.63 & 2.86 & 0.733 \\
+    \midrule
+    MMM & ECON & 0.760 & 4.17 & 3.71 & 0.705 \\
+     & V2A & 0.812 & 3.34 & 2.68 & 0.735 \\
+     & MultiPly & \textbf{0.826} & \textbf{2.89} & \textbf{2.40} & \textbf{0.757} \\
+     & Ours & 0.377 & 6.33 & 3.86 & 0.641 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Instance Segmentation Comparisons}
+% We compare our segmentation quality to MultiPly's initial version (SAM1), to MultiPly's final versin using progressive masking with SAM1, and then ours using SAM3 video model
+\begin{table}[!ht]
+  \centering
+  \caption{Human instance segmentation results on Hi4D. We report intersection-over-union (IoU), recall, and F1 score. Best results are in bold.}
+  \label{tab:segmentation_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=1.3]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
+    \midrule
+    SCHP & 0.937 & 0.983 & 0.982 \\
+    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
+    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
+    Ours & \textbf{0.974} & 0.982 & 0.987 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\subsection{Novel View Synthesis Comparisons}
+% We use MultiPly and in addition also the result from strong multi view baseline model
+\begin{table}[!ht]
+  \centering
+  \caption{Novel view synthesis results on Hi4D. We report PSNR and SSIM (higher is better) and LPIPS (lower is better). Best results are in bold.}
+  \label{tab:nvs_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{l
+      S[table-format=1.3]
+      S[table-format=2.1]
+      S[table-format=1.4]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
+    \midrule
+    Shuai et al. & 0.898 & 19.6 & 0.1099 \\
+    MultiPly & 0.915 & \textbf{20.7} & \textbf{0.0798} \\
+    Ours & \textbf{0.926} & 20.2 & 0.0872 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Pose Estimation Comparisons}
+% We compare our pose estimation quality to MultiPly, we use Human3R without any 2D refinement as MultiPly does
+% ideally, I would also compare how this improves after tuning the params during training
+\begin{table}[!ht]
+  \centering
+  \caption{Human pose estimation results on Hi4D. We report MPJPE [mm], MVE [mm], contact distance (CD) [mm], and percentage of correct depth relations (PCDR) with threshold $0.15$m. Best results are in bold.}
+  \label{tab:pose_results_hi4d}
+  \small
+  \setlength{\tabcolsep}{6pt}
+  \begin{tabular}{l
+      S[table-format=2.1]
+      S[table-format=3.1]
+      S[table-format=3.1]
+      S[table-format=1.3]}
+    \toprule
+    \textbf{Method} & \multicolumn{1}{c}{\textbf{MPJPE} $\downarrow$} & \multicolumn{1}{c}{\textbf{MVE} $\downarrow$} & \multicolumn{1}{c}{\textbf{CD} $\downarrow$} & \multicolumn{1}{c}{\textbf{PCDR} $\uparrow$} \\
+    \midrule
+    CLIFF & 85.7 & 102.1 & 351.7 & 0.606 \\
+    TRACE & 95.6 & 115.7 & 249.4 & 0.603 \\
+    MultiPly & \textbf{69.4} & 83.6 & 218.4 & \textbf{0.709} \\
+    Ours & 93.9 & \textbf{77.7} & \textbf{195.8} & 0.647 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ablation Studies}
+% - No LHM init: train from scratch without LHM initialisation, after few epochs, generate novel training views using DiFix and continue training
+% - No DiFix refinement: init from LHM, but do not refine the novel training views using DiFix
+% - NO LHM + No DiFix: train from scratch without LHM initialisation and without DiFix refinement of novel training views
+
+% I could also show ablations on using ACAP and ASAP regularisation losses as they do in LHM
+
+\section{Discussion}
+% - What was surprisingly hard
+% -- explicit methods are really bad for sparse view settings and unlike implicit methods, they cannot really interpolate well between the known views
+% -- even state of the art pose estimators still struggle with complex interactions and occlusions
+% -- I expected DiFix to be better it seems that the model is simply lackign human priors
+% -- Overall, comin up with good preprocessing pipeline was really challenging and time consuming, I started with 4D humans to realise that this gives me only local poses and also only SMPL
+
+\section{Limitations}
+% - Failure cases
+% - Assumptions that do not hold
+% Scalability and generalization limits
+% - in general, the method is still quite slow, taking between 15 to 30 minutes to run whole pipleine 
+% - also since it is multi step pipeline, there are many interdependent components, and installing all the environment dependencies can be quite challenging
+
+
+\section{Conclusion}
+% - Summary of contributions
+% - Key findings
+% - Future work
+
+
+\newpage
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
