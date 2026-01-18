@@ -15,7 +15,8 @@ from tqdm import tqdm
 import trimesh
 import tyro
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT))
 
 from submodules.smplx import smplx
 

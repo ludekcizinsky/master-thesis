@@ -61,7 +61,7 @@ Once the preprocessing is done, then for each scene, do the following manual che
 2. if the mask and pose estimation went smoothly, and there are not any mismatches in the number of tracks etc. you can skip this step. Else, after the cleanup, run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
 
 ```bash
-python preprocess/custom/helpers/check_h3r_data.py --scene_dir <path_to_scene_dir>
+bash  preprocess/custom/check_h3r_output.sh --scene_dir <path_to_scene_dir>
 ```
 
 3. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
