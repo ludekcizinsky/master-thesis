@@ -56,16 +56,15 @@ This script will schedule in parallel the preprocessing for all scenes listed in
 2. estimate the human masks using sam3
 3. estimate the depth maps using depth anything 3
 
-Once the preprocessing is done, then for each scene, do the following manual checks and fixes:
-1. check the human motion dir, and make sure that
-a. the number of tracks is correct and delete any unwanted tracks
-b. if the mask and pose estimation went smoothly, and there are not any mismatches in the number of tracks etc. you can skip this step. Else, after the cleanup, run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
+Once the preprocessing is done, then for each scene, do the following manual checks and fixes. Check the human motion dir, and make sure that
+1. the number of tracks is correct and delete any unwanted tracks
+2. if the mask and pose estimation went smoothly, and there are not any mismatches in the number of tracks etc. you can skip this step. Else, after the cleanup, run the check h3r script to make sure that the data in human motion dir is correct, this script will autiomatically generate skip frames csv as well
 
 ```bash
 python preprocess/custom/helpers/check_h3r_data.py --scene_dir <path_to_scene_dir>
 ```
 
-c. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
+3. if you are preprocessing hi4d, then check that the gt segmentation matches sam3 masks tracks and motion tracks. If there is no gt segmentation, then make sure that masked tracks match motion tracks
 
 
 Once everything is checked, we proceed to schedule the second part of the preprocessing:
