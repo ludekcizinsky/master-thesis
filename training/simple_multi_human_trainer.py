@@ -249,27 +249,9 @@ class MultiHumanTrainer:
 
         # Initialize difix
         self._init_nv_generation()
+        self.nv_gen_done = False
 
-        # Generate novel views 
-        is_nv_gen_done = False
-        n_its_nv_gen = 0
-        while not is_nv_gen_done:
-            is_nv_gen_done = self.novel_view_generation_step()
-            n_its_nv_gen += 1
-            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
-
-        # Prepare training dataset from all the new cameras
-        for cam_id in self.difix_cam_ids_all:
-            scene_ds = SceneDataset(
-                self.trn_data_dir,
-                int(cam_id),
-                use_depth=self.cfg.use_depth,
-                device=self.tuner_device,
-                sample_every=1,
-            )
-            self.trn_datasets.append(scene_ds)
-        self.trn_dataset = ConcatDataset(self.trn_datasets)
-
+    
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
 
@@ -292,20 +274,21 @@ class MultiHumanTrainer:
         skip_frames = load_skip_frames(self.trn_data_dir)
 
         # Create training dataset
+        # Note: sample every = 1 because until we augment the data, we assume we use only the input monocular video, and therefore we want to use all the available frames
         self.trn_datasets = list() 
         trn_ds = SceneDataset(
             self.trn_data_dir, 
             src_cam_id, 
             use_depth=self.cfg.use_depth, 
             device=self.tuner_device, 
-            sample_every=self.sample_every,
+            sample_every=1,
             skip_frames=skip_frames,
         )
         self.curr_trn_frame_paths = trn_ds.frame_paths
         self.trn_datasets.append(trn_ds)
         self.trn_dataset = trn_ds
         self.trn_render_hw = self.trn_dataset.trn_render_hw
-        print(f"Training dataset initialised at {self.trn_data_dir} with {len(self.trn_dataset)} images.")
+        print(f"Source Camera Training dataset initialised at {self.trn_data_dir} with {len(self.trn_dataset)} images.")
 
     def _init_test_scene_dir(self):
 
@@ -348,7 +331,31 @@ class MultiHumanTrainer:
         # Load Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
         self.gs_model_list = torch.load(root_gs_model_dir / "union" / "human3r_gs.pt", map_location=self.tuner_device, weights_only=False)
-        
+
+        if getattr(self.cfg, "use_random_init", False):
+            self._randomize_gs_attributes()
+
+    def _randomize_gs_attributes(self) -> None:
+        offset_std = 0.002
+        scale_min, scale_max = 0.005, 0.02
+        opacity_min, opacity_max = 0.05, 0.1
+        rgb_min, rgb_max = 0.45, 0.55
+
+        with torch.no_grad():
+            for gauss in self.gs_model_list:
+                gauss.offset_xyz = torch.randn_like(gauss.offset_xyz) * offset_std
+
+                rotation = torch.zeros_like(gauss.rotation)
+                rotation[:, 0] = 1.0
+                gauss.rotation = rotation
+
+                gauss.scaling = torch.empty_like(gauss.scaling).uniform_(scale_min, scale_max)
+                gauss.opacity = torch.empty_like(gauss.opacity).uniform_(opacity_min, opacity_max)
+
+                if gauss.use_rgb:
+                    gauss.shs = torch.empty_like(gauss.shs).uniform_(rgb_min, rgb_max)
+                else:
+                    gauss.shs = torch.zeros_like(gauss.shs)
 
     # ---------------- Training utilities ----------------
     def _trainable_tensors(self) -> List[torch.Tensor]:
@@ -481,6 +488,13 @@ class MultiHumanTrainer:
 
         # Training loop
         for epoch in range(self.cfg.epochs):
+
+            # If we augmented the training data this epoch, rebuild the dataloader
+            # using the augmented dataset (with more cameras)
+            if self._maybe_augment_training_data(epoch):
+                trn_loader = self._build_loader(self.trn_dataset)
+                trn_iter = self._infinite_loader(trn_loader)
+
             trn_ds_size = len(self.trn_dataset)
             total_ds_size = trn_ds_size 
             n_batches_per_current_epoch = total_ds_size // self.cfg.batch_size
@@ -669,6 +683,57 @@ class MultiHumanTrainer:
             self.wandb_run.finish()
 
     # ---------------- Novel view generation -------------------
+    def _maybe_augment_training_data(self, epoch: int) -> bool:
+        nv_gen_epoch = getattr(self.cfg, "nv_gen_epoch", 0)
+        if self.nv_gen_done or nv_gen_epoch < 0 or epoch != nv_gen_epoch:
+            return False
+
+        self._augment_training_data()
+        return True
+
+    def _augment_training_data(self) -> None:
+
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        skip_frames = load_skip_frames(self.trn_data_dir)
+
+        # Re-build the trn dataset -> this time using sample_every from config 
+        self.trn_datasets = list() 
+        trn_ds = SceneDataset(
+            self.trn_data_dir, 
+            src_cam_id, 
+            use_depth=self.cfg.use_depth, 
+            device=self.tuner_device, 
+            sample_every=self.sample_every,
+            skip_frames=skip_frames,
+        )
+        self.curr_trn_frame_paths = trn_ds.frame_paths
+        self.trn_datasets.append(trn_ds)
+        self.trn_dataset = trn_ds
+
+        # Generate novel views
+        is_nv_gen_done = False
+        n_its_nv_gen = 0
+        while not is_nv_gen_done:
+            is_nv_gen_done = self.novel_view_generation_step()
+            n_its_nv_gen += 1
+            print(f"Just completed novel view generation step {n_its_nv_gen}. Are we done: {is_nv_gen_done}")
+
+
+        # Prepare training dataset from all the new cameras
+        for cam_id in self.difix_cam_ids_all:
+            scene_ds = SceneDataset(
+                self.trn_data_dir,
+                int(cam_id),
+                use_depth=self.cfg.use_depth,
+                device=self.tuner_device,
+                sample_every=1,
+            )
+            self.trn_datasets.append(scene_ds)
+        self.trn_dataset = ConcatDataset(self.trn_datasets)
+        self.nv_gen_done = True
+
+        print(f"Training dataset augmented with novel views from cameras: {self.difix_cam_ids_all}. Currently has {len(self.trn_dataset)} images from {len(self.trn_datasets)} cameras.")
+
     def _init_nv_generation(self):
         src_cam_id = self.cfg.nvs_eval.source_camera_id
         self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id

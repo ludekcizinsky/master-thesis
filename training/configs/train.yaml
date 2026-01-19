@@ -21,6 +21,8 @@ train_params:
 use_bbox_crop: true
 bbox_pad: 50
 apply_mask_to_render_for_nvs: false
+use_random_init: false
+nv_gen_epoch: 0 # set to -1 to disable training data augmentation
 
 # train
 cameras_scene_dir: ${root_gt_dir_path}
