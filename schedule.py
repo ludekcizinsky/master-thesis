@@ -7,6 +7,7 @@ from typing import List
 import os
 import subprocess
 import sys
+import time
 
 import tyro
 
@@ -56,6 +57,7 @@ class ScheduleConfig:
     slurm_script: str = "train.slurm"
     scene_name_includes: str | None = None
     dry_run: bool = False
+    submit_sleep_s: float = 2.0
     scenes: List[Scene] = field(
         default_factory=lambda: [
             Scene(
@@ -201,8 +203,14 @@ def main() -> None:
     if not scenes:
         print("No scenes provided.")
         sys.exit(1)
-    for scene in scenes:
+    for scene_idx, scene in enumerate(scenes):
         submit_scene(cfg, scene)
+        if (
+            not cfg.dry_run
+            and cfg.submit_sleep_s > 0
+            and scene_idx < (len(scenes) - 1)
+        ):
+            time.sleep(cfg.submit_sleep_s)
 
 
 if __name__ == "__main__":
