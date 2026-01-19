@@ -128,10 +128,19 @@ cd /home/cizinsky/master-thesis
 
 
 # ------ Visualise normal maps of posed meshes in 2D
-# -- MMM lift
-exp_name=v204_save_individual_meshes_eval_pretrain
-exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0000
-inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/$exp_name
-cam_id=0
+
+# -- Hi4d pair17 dance
+exp_name=v202_white_bg
+exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair17_dance/evaluation/$exp_name/epoch_0000
+inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair17_dance/$exp_name
+cam_id=28
 max_frames=10
 bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
+
+# -- MMM lift
+# exp_name=v204_save_individual_meshes_eval_pretrain
+# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0000
+# inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/$exp_name
+# cam_id=0
+# max_frames=10
+# bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames

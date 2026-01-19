@@ -202,6 +202,7 @@ class GS3DRenderer(nn.Module):
         self,
         gs: GaussianModel,
         viewpoint_camera: Camera,
+        background_rgb: Optional[Tensor] = None,
     ):
 
         # Prepare inputs for rasterization
@@ -226,6 +227,19 @@ class GS3DRenderer(nn.Module):
         y_min, y_max = cam_pts[:, 1].min().item(), cam_pts[:, 1].max().item()
 
         # Perform rasterization
+        raster_kwargs = {
+            "near_plane": near_plane,
+            "far_plane": far_plane,
+            "render_mode": render_mode,
+            "packed": False,
+        }
+        if background_rgb is not None:
+            if not torch.is_tensor(background_rgb):
+                background_rgb = torch.tensor(background_rgb)
+            background_rgb = background_rgb.to(device=means.device, dtype=means.dtype)
+            if background_rgb.ndim == 1:
+                background_rgb = background_rgb.unsqueeze(0)
+            raster_kwargs["backgrounds"] = background_rgb
         renders, alphas, _ = rasterization(
             means,
             quats,
@@ -236,10 +250,7 @@ class GS3DRenderer(nn.Module):
             Ks,
             width,
             height,
-            near_plane=near_plane,
-            far_plane=far_plane,
-            render_mode=render_mode,
-            packed=False,
+            **raster_kwargs,
         )
 
 
@@ -403,7 +414,8 @@ class GS3DRenderer(nn.Module):
         c2w,
         intrinsic,
         height,
-        width
+        width,
+        background_rgb: Optional[Tensor] = None,
     ):
         n_persons = len(gs_attr_list)
 
@@ -439,6 +451,7 @@ class GS3DRenderer(nn.Module):
         render_result = self.forward_single_view_gsplat(
             merged_humans,
             Camera.from_c2w(c2w, intrinsic, height, width),
+            background_rgb=background_rgb,
         )
 
 

@@ -373,7 +373,7 @@ class MultiHumanTrainer:
         return params
 
 
-    def forward(self, batch):
+    def forward(self, batch, background_rgb: Optional[torch.Tensor] = None):
 
         # Parse batch data
         Ks = batch["K"] # [B, 4, 4],
@@ -394,6 +394,7 @@ class MultiHumanTrainer:
                 Ks[view_idx],
                 render_h,
                 render_w,
+                background_rgb=background_rgb,
             )
             render_res_list.append(render_res)
 
@@ -1181,6 +1182,14 @@ class MultiHumanTrainer:
                 for i in range(joined.shape[0]):
                     save_path = render_vs_gt_dir / Path(frame_paths[i]).name
                     save_image(joined[i].permute(2, 0, 1), str(save_path))
+
+                # Save renders on white background for visualization
+                render_white_bg_dir = save_dir / "render_white_bg"
+                render_white_bg_dir.mkdir(parents=True, exist_ok=True)
+                renders_white_bg, _, _ = self.forward(batch, background_rgb=(1.0, 1.0, 1.0))
+                for i in range(renders_white_bg.shape[0]):
+                    save_path = render_white_bg_dir / Path(frame_paths[i]).name
+                    save_image(renders_white_bg[i].permute(2, 0, 1), str(save_path))
 
                 # Before evaluation, apply downsampling if needed
                 if self.cfg.nvs_eval.downscale_factor > 1:
