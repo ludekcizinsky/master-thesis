@@ -183,12 +183,13 @@ def align_pred_meshes_icp(
     n_samples: int = 50000,
     max_iterations: int = 20,
     threshold: float = 1e-5,
-) -> List[Tuple[np.ndarray, np.ndarray]]:
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[np.ndarray]]:
     """
     Align each predicted mesh to GT mesh using rigid ICP.
-    Returns the same list structure as pred_meshes (per-frame meshes).
+    Returns the aligned meshes and per-frame transforms (pred -> aligned).
     """
     aligned = []
+    transforms = []
 
     if cameras is not None:
         pred_c2ws, gt_c2ws = cameras
@@ -199,10 +200,12 @@ def align_pred_meshes_icp(
         gt_v, gt_f = gt_frame
         if pred_v.size == 0 or pred_f.size == 0 or gt_v.size == 0 or gt_f.size == 0:
             aligned.append(pred_frame)
+            transforms.append(np.eye(4, dtype=np.float32))
             continue
 
 
         pred_v_init = pred_v.astype(np.float64)
+        T_align = np.eye(4, dtype=np.float64)
         if cameras is not None:
             print(f"Aligning frame {i} with camera-based initialization.")
             T_align, R_align, t_align = compute_world_align_from_gt_c2w_and_pred_c2w(
@@ -219,8 +222,9 @@ def align_pred_meshes_icp(
             threshold=threshold,
         )
         aligned.append((aligned_v, aligned_f))
+        transforms.append(compose(_matrix, T_align).astype(np.float32))
         i += 1
-    return aligned
+    return aligned, transforms
 
 
 def _nearest_distances(points_a: np.ndarray, points_b: np.ndarray) -> np.ndarray:

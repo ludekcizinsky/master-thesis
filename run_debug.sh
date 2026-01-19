@@ -129,8 +129,9 @@ cd /home/cizinsky/master-thesis
 
 # ------ Visualise normal maps of posed meshes in 2D
 # -- MMM lift
-exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/v1_all_scenes_tune_after_hi4d_reprocess/epoch_0015
-inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/v1_all_scenes_tune_after_hi4d_reprocess
+exp_name=v204_save_individual_meshes_eval_pretrain
+exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0000
+inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/$exp_name
 cam_id=0
-max_frames=20
+max_frames=10
 bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames

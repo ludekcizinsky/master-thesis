@@ -58,6 +58,7 @@ from training.helpers.eval_metrics import (
     merge_mesh_dict,
     posed_gs_list_to_serializable_dict,
     align_pred_meshes_icp,
+    apply_se3_to_points,
     save_aligned_meshes,
     compute_chamfer_distance,
     compute_p2s_distance,
@@ -1676,13 +1677,13 @@ class MultiHumanTrainer:
                 gt_c2ws.append(sample_dict["c2w"].detach().cpu().numpy())
 
             # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
+            n_persons = len(self.gs_model_list)
             pred_meshes = []
+            pred_meshes_by_person = []
             for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
 
                 # -- Pose 3dgs
                 smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
-                n_persons = len(self.gs_model_list)
-
                 all_posed_gs_list = []
                 for person_idx in range(n_persons):
                     person_canon_3dgs = self.gs_model_list[person_idx]
@@ -1710,6 +1711,7 @@ class MultiHumanTrainer:
                     overwrite=mesh_overwrite,
                     write_meshes=False,
                 )
+                pred_meshes_by_person.append(meshes_for_frame)
                 merged_mesh = merge_mesh_dict(meshes_for_frame)
                 pred_meshes.append(merged_mesh)
                 merged_path = save_dir_posed_meshes / f"{fname_str}.obj"
@@ -1718,7 +1720,7 @@ class MultiHumanTrainer:
 
 
             # - Before metric computation, perform ICP alignment (similarity).
-            pred_meshes_aligned = align_pred_meshes_icp(
+            pred_meshes_aligned, pred_meshes_align_T = align_pred_meshes_icp(
                 pred_meshes,
                 gt_meshes,
                 cameras=(pred_c2ws, gt_c2ws),
@@ -1727,6 +1729,29 @@ class MultiHumanTrainer:
                 threshold=icp_cfg.get("threshold", 1e-5),
             )
             save_aligned_meshes(pred_meshes_aligned, save_dir_aligned_meshes, fnames)
+
+            # - Save aligned per-person meshes (per frame).
+            for frame_idx, (meshes_for_frame, T_align) in enumerate(
+                zip(pred_meshes_by_person, pred_meshes_align_T)
+            ):
+                frame_name = str(fnames[frame_idx])
+                if frame_name.isdigit():
+                    frame_name = f"{int(frame_name):06d}"
+                for person_idx in range(n_persons):
+                    person_dir = save_dir_aligned_meshes / f"{person_idx:02d}"
+                    person_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = person_dir / f"{frame_name}.obj"
+
+                    mesh = meshes_for_frame.get(person_idx)
+                    if mesh is None:
+                        out_path.write_text("")
+                        continue
+                    vertices, faces = mesh
+                    if vertices.size == 0 or faces.size == 0:
+                        out_path.write_text("")
+                        continue
+                    aligned_vertices = apply_se3_to_points(T_align, vertices)
+                    trimesh.Trimesh(vertices=aligned_vertices, faces=faces, process=False).export(out_path)
 
             # - Compute metrics
             v_iou = compute_volumetric_iou(
