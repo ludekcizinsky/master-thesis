@@ -1326,6 +1326,10 @@ class MultiHumanTrainer:
         metrics_per_frame = []
         for tgt_cam_id in tgt_cam_ids:
 
+            # Only eval source camera masks
+            if tgt_cam_id != src_cam_id:
+                continue
+
             # Init save directory for this cam
             cam_save_dir : Path = save_dir / f"{tgt_cam_id}"
             cam_save_dir.mkdir(parents=True, exist_ok=True)
