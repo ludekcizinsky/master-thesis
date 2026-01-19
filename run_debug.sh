@@ -91,7 +91,7 @@ cd /home/cizinsky/master-thesis
 # # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 false
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 false
-bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
+# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 
@@ -112,7 +112,8 @@ bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
 # path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
 # python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
-# root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/v1_all_scenes_tune_after_major_refactor/epoch_0000
+# exp_name=v1_all_scenes_tune_after_hi4d_reprocess
+# root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0015
 # path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
 # path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
 # path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift/meshes
@@ -123,3 +124,13 @@ bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
 # path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
 # path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance/meshes
 # python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
+
+
+
+# ------ Visualise normal maps of posed meshes in 2D
+# -- MMM lift
+exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/v1_all_scenes_tune_after_hi4d_reprocess/epoch_0015
+inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/v1_all_scenes_tune_after_hi4d_reprocess
+cam_id=0
+max_frames=20
+bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
