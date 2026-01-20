@@ -61,6 +61,13 @@ For preprocessing, we use the original Hi4D image resolution, while for MMM we d
 % 1. trying to see if i have access to faces apart from the upsampled points could make these much better
 % 2. also i guess if improve pose i would think these results should improve as well
 \subsection{Reconstruction Comparisons}
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=1.0\textwidth]{figures/qual_recon_comp.drawio.png}
+    \caption{\textbf{Qualitative reconstruction comparison}. We show qualitative comparison to the relevant baselines on chosen scenes from Hi4D.}
+    \label{fig:qual_recon_comp}  
+\end{figure}
+
 \begin{table}[!ht]
   \centering
   \small
@@ -200,6 +207,14 @@ In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a m
 
 
 \subsection{Ablation Studies}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=1.0\textwidth]{figures/qual_difix_comp.drawio.png}
+    \caption{\textbf{Qualitative comparison of novel training view synthesis}. We show comparison of novel view synthesis strategies along the following axis: (i) LHM initialization vs. random initialization, and (ii) DiFix refinement using source view vs. previous view.}
+    \label{fig:qual_difix_comp}  
+\end{figure}
+
 An ablation study will be conducted to isolate the effect of key components, in particular (i) LHM initialization and (ii) DiFix-based view refinement. This requires rerunning per-scene optimization under matched settings and reporting results using the same evaluation protocol as in Tables~\ref{tab:nvs_results_hi4d}--\ref{tab:reconstruction_results}. The goal is to quantify which components primarily drive novel view synthesis improvements versus the remaining gap in mesh reconstruction.
 
 \begin{table}[!ht]
