@@ -210,13 +210,6 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
 
 \subsection{Ablation Studies}
 
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_difix_comp.drawio.png}
-    \caption{\textbf{Qualitative comparison of novel training view synthesis}. We show comparison of novel view synthesis strategies along the following axis: (i) LHM initialization vs. random initialization, and (ii) DiFix refinement using source view vs. previous view.}
-    \label{fig:qual_difix_comp}  
-\end{figure}
-
 \paragraph{Novel Training View Synthesis.}
 
 \begin{table}[!ht]
@@ -241,16 +234,29 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
     $\checkmark$ & $\checkmark$ & Previous & \textbf{0.926} & \textbf{20.2} & 0.0872 \\
     \bottomrule
   \end{tabular}
-  \caption{\textbf{Ablation study on novel view synthesis.} Results will be reported under the same evaluation protocol as Table~\ref{tab:nvs_results_hi4d}. $\checkmark$ enabled, $\times$ disabled. Best results are in bold.}
+  \caption{\textbf{Ablation study on novel view synthesis.} Results are reported under the same evaluation protocol as Table~\ref{tab:nvs_results_hi4d}. $\checkmark$ enabled, $\times$ disabled. Best results are in bold.}
   \label{tab:ablation_nvs}
 \end{table}
 
+\noindent Table~\ref{tab:ablation_nvs} isolates the impact of (i) LHM initialization, (ii) DiFix-based refinement of synthesized novel training views, and (iii) the choice of reference camera for DiFix (source view versus the previously synthesized view). Training without LHM initialization and without any view synthesis performs worst, highlighting that learning a renderable representation from strictly monocular supervision is challenging under our compute budget. Adding novel training views that are rendered from the partially trained model and refined with DiFix yields only a modest improvement in this setting.
+
+\noindent LHM initialization is the dominant factor: simply initializing from LHM (without DiFix) substantially improves all metrics and provides the best LPIPS in our ablation. Adding DiFix refinement on top of LHM leads to only marginal changes: SSIM and PSNR improve slightly, while LPIPS becomes worse. Figure~\ref{fig:qual_difix_comp} provides an explanation for this behavior. Without LHM initialization, the intermediate renders are substantially degraded, which gives DiFix too much freedom during refinement; in both reference strategies, this leads to implausible hallucinations, such as an incorrect rotation of the head. With LHM initialization, the renders are already significantly closer to the target view, and DiFix mainly acts as a detail enhancement module, sharpening local texture without correcting higher-level geometric errors. Finally, using the source camera versus the previous synthesized camera as the DiFix reference yields very similar results, with a slight advantage for the source-reference strategy, suggesting that potential error accumulation in the chained (previous-reference) strategy can offset the benefit of higher overlap. Despite the small advantage of the source-reference strategy in this ablation, we use the previous-reference strategy in our main pipeline, as we expect it to benefit more from the higher inter-view overlap when the refinement model is stronger and produces less drift.
+
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_diff_trn_nv_strategies.drawio.png}
-    \caption{\textbf{Qualitative comparison of synthesised novel views based on different novel view training strategies}. First row: no training novel cameras synthesised, novel training cameras synthesised using either source or previous camera as reference. Second row: synthesised view of the LHM initialized 3DGS, novel training cameras synthesised using either source or previous camera as reference.}
-    \label{fig:qual_comp_trn_nvs_strategies}  
+    \includegraphics[width=1.0\textwidth]{figures/qual_difix_comp.drawio.png}
+    \caption{\textbf{Qualitative comparison of novel training view synthesis}. We show comparison of novel view synthesis strategies along the following axis: (i) LHM initialization vs. random initialization, and (ii) DiFix refinement using source view vs. previous view. In total, we show four possible configurations. In each configuration, we show the reference view (left column), the rendered view to be refined (middle column), and the refined view by DiFix (right column).}
+    \label{fig:qual_difix_comp}  
 \end{figure}
+
+
+% We will skip this for now since it adds little value compared to the table and the other fig
+% \begin{figure}[!ht]
+    % \centering
+    % \includegraphics[width=1.0\textwidth]{figures/qual_diff_trn_nv_strategies.drawio.png}
+    % \caption{\textbf{Qualitative comparison of synthesised novel views based on different novel view training strategies}. First row: no training novel cameras synthesised, novel training cameras synthesised using either source or previous camera as reference. Second row: synthesised view of the LHM initialized 3DGS, novel training cameras synthesised using either source or previous camera as reference.}
+    % \label{fig:qual_comp_trn_nvs_strategies}  
+% \end{figure}
 
 
 \paragraph{Number of training cameras.}
