@@ -11,12 +11,14 @@ import time
 
 import tyro
 
-
+# - Target camera IDs for novel view eval
 HI4D_TARGET_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
+# - Training and novel view generation camera IDs
 HI4D_TRN_NV_GEN_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
+HI4D_PAIR17_TRN_NV_GEN_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
 MMM_TRN_NV_GEN_CAM_IDS = [0, 100, 101, 102, 103, 104, 105, 107]
+# - Preprocessing directory path
 PREPROCESSING_DIR = "/scratch/izar/cizinsky/thesis/preprocessing"
-
 
 
 @dataclass
@@ -82,7 +84,7 @@ class ScheduleConfig:
                 "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17",
                 2,
                 list(HI4D_TARGET_CAM_IDS),
-                list(HI4D_TRN_NV_GEN_CAM_IDS),
+                list(HI4D_PAIR17_TRN_NV_GEN_CAM_IDS),
             ),
             Scene(
                 "hi4d_pair19_piggyback",

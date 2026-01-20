@@ -91,13 +91,13 @@ cd /home/cizinsky/master-thesis
 # # 2. check in 3D
 # bash preprocess/vis/check_scene_in_3d.sh hi4d_pair15_fight 4 false
 # bash preprocess/vis/check_scene_in_3d.sh taichi 0 false
-# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 true
+# bash preprocess/vis/check_scene_in_3d.sh mmm_dance 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 
-# src_cam_id=4
-# scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
-# python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
+src_cam_id=4
+scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
+python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
 
 # Check inputs to the evaluation script
 # root_pred_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_large_refactor_check/epoch_0000
@@ -138,12 +138,12 @@ cd /home/cizinsky/master-thesis
 # bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
 
 # -- Hi4d pair19 piggyback
-exp_name=v203_core_ablation_set_a4_use_lhm_with_view_densification_and_difix
-exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair19_piggyback/evaluation/$exp_name/epoch_0015
-inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair19_piggyback/$exp_name
-cam_id=4
-max_frames=200
-bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
+# exp_name=v203_core_ablation_set_a4_use_lhm_with_view_densification_and_difix
+# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair19_piggyback/evaluation/$exp_name/epoch_0015
+# inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair19_piggyback/$exp_name
+# cam_id=4
+# max_frames=200
+# bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
 
 
 # -- MMM lift
