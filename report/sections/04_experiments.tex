@@ -19,7 +19,7 @@
 \subsection{Datasets}
 
 \paragraph{Hi4D.}
-We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people performing complex motions. Hi4D provides multi-view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly \cite{multiply} for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters can live in a different world coordinate frame than the ground truth, we apply a camera-based world alignment using the provided camera parameters and use the same alignment consistently across all tasks, including pose and reconstruction metrics.
+We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people performing complex motions. Hi4D provides multi-view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters can live in a different world coordinate frame than the ground truth, we apply a camera-based world alignment using the provided camera parameters and use the same alignment consistently across all tasks, including pose and reconstruction metrics.
 
 
 \paragraph{MMM.}
@@ -61,6 +61,10 @@ For preprocessing, we use the original Hi4D image resolution, while for MMM we d
 % 1. trying to see if i have access to faces apart from the upsampled points could make these much better
 % 2. also i guess if improve pose i would think these results should improve as well
 \subsection{Reconstruction Comparisons}
+
+% selected scene and frames for this qual vis:
+% mmm - lift - frame 53
+% hi4d pair 19 piggyback - frame 135
 \begin{figure}[!ht]
     \centering
     \includegraphics[width=1.0\textwidth]{figures/qual_recon_comp.drawio.png}
@@ -102,6 +106,9 @@ We compare our mesh reconstruction quality to MultiPly \cite{multiply} and addit
 % 2. optimising pose during training as well would be interesting to see how much we can gain here
 % 3. replacing human3r with promt hmr would probably also help a bit
 \subsection{Pose Estimation Comparisons}
+
+% selected scene and frames for this qual vis:
+%  Pair15 - frame 87, Pai19 - frame 132
 
 \begin{figure}[!ht]
     \centering
@@ -174,6 +181,9 @@ We compare our mask segmentation quality to MultiPly, which reports results for 
 % 3. would be probably good to include also comparison to guess the unseen which is 3dgs based
 % 4. i could also include the results from LHM alone to have representation of the image to 3d methods
 \subsection{Novel View Synthesis Comparisons}
+
+% selected scene and frames for this qual vis:
+% Pair 16 - frame 66, Pair 15 - frame 90
 \begin{figure}[!ht]
     \centering
     \includegraphics[width=1.0\textwidth]{figures/qual_nvs_comp.drawio.png}
@@ -215,7 +225,7 @@ In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a m
     \label{fig:qual_difix_comp}  
 \end{figure}
 
-An ablation study will be conducted to isolate the effect of key components, in particular (i) LHM initialization and (ii) DiFix-based view refinement. This requires rerunning per-scene optimization under matched settings and reporting results using the same evaluation protocol as in Tables~\ref{tab:nvs_results_hi4d}--\ref{tab:reconstruction_results}. The goal is to quantify which components primarily drive novel view synthesis improvements versus the remaining gap in mesh reconstruction.
+\paragraph{Novel Training View Synthesis.}
 
 \begin{table}[!ht]
   \centering
@@ -242,3 +252,10 @@ An ablation study will be conducted to isolate the effect of key components, in 
   \caption{\textbf{Ablation study on novel view synthesis.} Results will be reported under the same evaluation protocol as Table~\ref{tab:nvs_results_hi4d}. $\checkmark$ enabled, $\times$ disabled. Best results are in bold.}
   \label{tab:ablation_nvs}
 \end{table}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=1.0\textwidth]{figures/qual_diff_trn_nv_strategies.drawio.png}
+    \caption{\textbf{Qualitative comparison of synthesised novel views based on different novel view training strategies}. First row: no training novel cameras synthesised, novel training cameras synthesised using either source or previous camera as reference. Second row: synthesised view of the LHM initialized 3DGS, novel training cameras synthesised using either source or previous camera as reference.}
+    \label{fig:qual_comp_trn_nvs_strategies}  
+\end{figure}
