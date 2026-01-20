@@ -130,17 +130,26 @@ cd /home/cizinsky/master-thesis
 # ------ Visualise normal maps of posed meshes in 2D
 
 # -- Hi4d pair17 dance
-exp_name=v202_white_bg
-exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair17_dance/evaluation/$exp_name/epoch_0000
-inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair17_dance/$exp_name
-cam_id=28
-max_frames=10
+# exp_name=v202_white_bg
+# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair17_dance/evaluation/$exp_name/epoch_0000
+# inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair17_dance/$exp_name
+# cam_id=28
+# max_frames=10
+# bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
+
+# -- Hi4d pair19 piggyback
+exp_name=v203_core_ablation_set_a4_use_lhm_with_view_densification_and_difix
+exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair19_piggyback/evaluation/$exp_name/epoch_0015
+inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/hi4d_pair19_piggyback/$exp_name
+cam_id=4
+max_frames=200
 bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
 
+
 # -- MMM lift
-# exp_name=v204_save_individual_meshes_eval_pretrain
-# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0000
+# exp_name=v203_core_ablation_set_a4_use_lhm_with_view_densification_and_difix
+# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0015
 # inputs_eval_dir=/scratch/izar/cizinsky/thesis/input_data/test/mmm_lift/$exp_name
 # cam_id=0
-# max_frames=10
+# max_frames=200
 # bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
