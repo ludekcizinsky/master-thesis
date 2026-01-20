@@ -47,7 +47,7 @@ test_meshes_scene_dir: ${root_gt_dir_path}  # for now, this is just here to be a
 difix:
   eval_enable: false
   trn_enable: true
-  is_prev_cam_always_source: false
+  is_prev_cam_always_source: true
   model_id: "nvidia/difix_ref"
   prompt: "remove degradation"
   negative_prompt: null

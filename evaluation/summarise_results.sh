@@ -8,7 +8,7 @@ conda activate thesis
 cd /home/cizinsky/master-thesis
 
 exp_name=$1 # e.g "v1_all_scenes_tune_after_hi4d_reprocess"
-epoch_str="0030"
+epoch_str="0015"
 
 scene_names=(
   "hi4d_pair15_fight"
