@@ -251,3 +251,33 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
     \caption{\textbf{Qualitative comparison of synthesised novel views based on different novel view training strategies}. First row: no training novel cameras synthesised, novel training cameras synthesised using either source or previous camera as reference. Second row: synthesised view of the LHM initialized 3DGS, novel training cameras synthesised using either source or previous camera as reference.}
     \label{fig:qual_comp_trn_nvs_strategies}  
 \end{figure}
+
+
+\paragraph{Number of training cameras.}
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
+    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
+    \label{fig:n_trn_cameras_ablation_setup}  
+\end{figure}
+
+\begin{table}[!ht]
+  \centering
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \begin{tabular}{c
+      S[table-format=1.3]
+      S[table-format=2.1]
+      S[table-format=1.4]}
+    \toprule
+    \textbf{Number of Novel Training Cameras} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
+    \midrule
+    0 & 0.890 & 17.0 & 0.1343 \\
+    2 & 0.922 & 20.1 & 0.0953 \\
+    4 & 0.925 & 20.3 & 0.0903 \\
+    7 & \textbf{0.926} & \textbf{20.2} & \textbf{0.0872} \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Ablation study on number of novel training cameras}. Best results are in bold.}
+  \label{tab:ablation_num_trn_cams}
+\end{table}
