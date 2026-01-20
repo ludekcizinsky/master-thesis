@@ -260,12 +260,6 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
 
 
 \paragraph{Number of training cameras.}
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
-    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
-    \label{fig:n_trn_cameras_ablation_setup}  
-\end{figure}
 
 \begin{table}[!ht]
   \centering
@@ -278,12 +272,23 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
     \toprule
     \textbf{Number of Novel Training Cameras} & \multicolumn{1}{c}{\textbf{SSIM} $\uparrow$} & \multicolumn{1}{c}{\textbf{PSNR} $\uparrow$} & \multicolumn{1}{c}{\textbf{LPIPS} $\downarrow$} \\
     \midrule
-    0 & 0.890 & 17.0 & 0.1343 \\
+    0 & 0.908 & 18.8 & 0.1134 \\
     2 & 0.922 & 20.1 & 0.0953 \\
-    4 & 0.925 & 20.3 & 0.0903 \\
-    7 & \textbf{0.926} & \textbf{20.2} & \textbf{0.0872} \\
+    4 & 0.925 & \textbf{20.3} & 0.0903 \\
+    7 & \textbf{0.926} & 20.2 & \textbf{0.0872} \\
     \bottomrule
   \end{tabular}
   \caption{\textbf{Ablation study on number of novel training cameras}. Best results are in bold.}
   \label{tab:ablation_num_trn_cams}
 \end{table}
+
+One motivation for introducing DiFix-based novel training view synthesis is that optimizing a 3DGS model from monocular video requires multi-view supervision. Without additional views, we expect poor novel view synthesis performance, even when starting from an LHM initialization, because subsequent monocular fine-tuning can overfit to the single source view. To test this assumption, we ablate the number of novel training cameras used during training. We consider 0, 2, 4, and 7 novel training cameras, where 0 means training uses only the source camera. All experiments are initialized from LHM; when novel cameras are used, their training images are synthesized and refined with DiFix. Figure~\ref{fig:n_trn_cameras_ablation_setup} shows the camera distribution used in this ablation.
+
+Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
+    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
+    \label{fig:n_trn_cameras_ablation_setup}  
+\end{figure}
