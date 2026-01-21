@@ -120,12 +120,42 @@ def _load_mesh(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     return verts, faces
 
 
+def _load_camera_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    with np.load(path) as cams:
+        if "intrinsics" not in cams.files or "extrinsics" not in cams.files:
+            raise KeyError(f"Missing intrinsics/extrinsics in {path}")
+        intr = cams["intrinsics"]
+        extr = cams["extrinsics"]
+    if intr.ndim == 3:
+        intr = intr[0]
+    if extr.ndim == 3:
+        extr = extr[0]
+    if intr.shape != (3, 3) or extr.shape != (3, 4):
+        raise ValueError(f"Unexpected camera shapes in {path}: {intr.shape}, {extr.shape}")
+    return intr.astype(np.float32), extr.astype(np.float32)
+
+
+def _fov_aspect_from_intrinsics(intr: np.ndarray) -> Tuple[float, float]:
+    fy = float(intr[1, 1])
+    if fy > 0.0:
+        cy = float(intr[1, 2])
+        cx = float(intr[0, 2])
+        if cx > 0.0 and cy > 0.0:
+            height = 2.0 * cy
+            width = 2.0 * cx
+            fov = 2.0 * np.arctan2(height / 2.0, fy)
+            return fov, width / height
+    return np.deg2rad(60.0), 1.0
+
+
 def _color_for_track(track_id: str) -> Tuple[int, int, int]:
     digest = hashlib.md5(track_id.encode("utf-8")).digest()
     return (60 + digest[0] % 160, 60 + digest[1] % 160, 60 + digest[2] % 160)
 
 
-def _update_bounds(verts: np.ndarray, bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+def _update_bounds(
+    verts: np.ndarray, bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]]
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     if verts.size == 0:
         return bounds
     vmin = verts.min(axis=0)
@@ -136,10 +166,29 @@ def _update_bounds(verts: np.ndarray, bounds: Tuple[Optional[np.ndarray], Option
     return np.minimum(min_bound, vmin), np.maximum(max_bound, vmax)
 
 
+@dataclass
+class Args:
+    eval_scene_dir: Path
+    frame_index: int = 0
+    frame_name: Optional[str] = None
+    port: int = 8080
+    center_scene: bool = True
+    max_scale: Optional[float] = None
+    max_gaussians: Optional[int] = None
+    seed: int = 0
+    mesh_opacity: float = 0.8
+    posed_3dgs_pattern: str = "*.pt"
+    posed_mesh_pattern: str = "*.obj"
+    smplx_mesh_pattern: str = "*.obj"
+    camera_pattern: str = "*.npz"
+    camera_frustum_scale: float = 0.2
+
 
 def main(args: Args) -> None:
     posed_3dgs_dir = args.eval_scene_dir / "posed_3dgs_per_frame"
     posed_meshes_dir = args.eval_scene_dir / "posed_meshes_per_frame"
+    posed_smplx_meshes_dir = args.eval_scene_dir / "posed_smplx_meshes_per_frame"
+    cameras_dir = args.eval_scene_dir / "all_cameras"
 
     splat_data: Optional[Dict[str, np.ndarray]] = None
     raw_xyz: Optional[np.ndarray] = None
@@ -161,7 +210,9 @@ def main(args: Args) -> None:
                 seed=args.seed,
             )
         else:
-            print(f"No 3DGS frames found in {posed_3dgs_dir} with pattern {args.posed_3dgs_pattern}")
+            print(
+                f"No 3DGS frames found in {posed_3dgs_dir} with pattern {args.posed_3dgs_pattern}"
+            )
     else:
         print(f"No posed 3DGS directory found at {posed_3dgs_dir}")
 
@@ -188,13 +239,69 @@ def main(args: Args) -> None:
     else:
         print(f"No posed meshes directory found at {posed_meshes_dir}")
 
-    if splat_data is None and not mesh_entries:
-        raise FileNotFoundError("No 3DGS or mesh data found to visualize.")
+    smplx_entries: List[Tuple[str, np.ndarray, np.ndarray, Tuple[int, int, int]]] = []
+    if posed_smplx_meshes_dir.exists():
+        track_dirs = sorted(
+            [p for p in posed_smplx_meshes_dir.iterdir() if p.is_dir()], key=lambda p: p.name
+        )
+        for track_dir in track_dirs:
+            frame_files = _sorted_frame_files(track_dir, args.smplx_mesh_pattern)
+            if not frame_files:
+                print(
+                    f"Skipping SMPL-X {track_dir.name}: no files matching {args.smplx_mesh_pattern}"
+                )
+                continue
+            try:
+                frame_path = _select_frame(frame_files, args.frame_index, args.frame_name)
+            except (FileNotFoundError, IndexError, RuntimeError) as exc:
+                print(f"Skipping SMPL-X {track_dir.name}: {exc}")
+                continue
+            try:
+                verts, faces = _load_mesh(frame_path)
+            except RuntimeError as exc:
+                print(f"Skipping SMPL-X {track_dir.name}: {exc}")
+                continue
+            color = _color_for_track(f"smplx_{track_dir.name}")
+            smplx_entries.append((track_dir.name, verts, faces, color))
+    else:
+        print(f"No posed SMPL-X meshes directory found at {posed_smplx_meshes_dir}")
+
+    camera_data: List[Tuple[str, np.ndarray, np.ndarray, float, float, Tuple[int, int, int]]] = []
+    if cameras_dir.exists():
+        camera_ids = sorted([p for p in cameras_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
+        for cam_dir in camera_ids:
+            frame_files = _sorted_frame_files(cam_dir, args.camera_pattern)
+            if not frame_files:
+                print(f"Skipping camera {cam_dir.name}: no files matching {args.camera_pattern}")
+                continue
+            try:
+                frame_path = _select_frame(frame_files, args.frame_index, args.frame_name)
+            except (FileNotFoundError, IndexError, RuntimeError) as exc:
+                print(f"Skipping camera {cam_dir.name}: {exc}")
+                continue
+            try:
+                intr, extr = _load_camera_npz(frame_path)
+            except (KeyError, ValueError) as exc:
+                print(f"Skipping camera {cam_dir.name}: {exc}")
+                continue
+            w2c = np.eye(4, dtype=np.float32)
+            w2c[:3, :4] = extr
+            c2w = np.linalg.inv(w2c)
+            fov, aspect = _fov_aspect_from_intrinsics(intr)
+            color = _color_for_track(f"cam_{cam_dir.name}")
+            camera_data.append((cam_dir.name, c2w, fov, aspect, color))
+    else:
+        print(f"No cameras directory found at {cameras_dir}")
+
+    if splat_data is None and not mesh_entries and not smplx_entries and not camera_data:
+        raise FileNotFoundError("No 3DGS, mesh, SMPL-X mesh, or camera data found to visualize.")
 
     bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)
     if raw_xyz is not None:
         bounds = _update_bounds(raw_xyz, bounds)
     for _, verts, _, _ in mesh_entries:
+        bounds = _update_bounds(verts, bounds)
+    for _, verts, _, _ in smplx_entries:
         bounds = _update_bounds(verts, bounds)
 
     center_offset = np.zeros(3, dtype=np.float32)
@@ -230,7 +337,34 @@ def main(args: Args) -> None:
         )
         if hasattr(handle, "opacity"):
             handle.opacity = float(args.mesh_opacity)
+        handle.visible = False
         track_handles.append((track_id, handle))
+
+    smplx_handles: List[Tuple[str, object]] = []
+    for track_id, verts, faces, color in smplx_entries:
+        handle = server.scene.add_mesh_simple(
+            f"/scene/smplx_meshes/{track_id}",
+            vertices=verts,
+            faces=faces,
+            color=color,
+        )
+        if hasattr(handle, "opacity"):
+            handle.opacity = float(args.mesh_opacity)
+        handle.visible = False
+        smplx_handles.append((track_id, handle))
+
+    camera_entries: List[Tuple[str, object]] = []
+    for cam_id, c2w, fov, aspect, color in camera_data:
+        handle = server.scene.add_camera_frustum(
+            f"/scene/cameras/{cam_id}",
+            fov=float(fov),
+            aspect=float(aspect),
+            scale=float(args.camera_frustum_scale),
+            wxyz=tuple(tf.SO3.from_matrix(c2w[:3, :3]).wxyz),
+            position=tuple(c2w[:3, 3].tolist()),
+            color=color,
+        )
+        camera_entries.append((cam_id, handle))
 
     with server.gui.add_folder("Visibility"):
         if gs_handle is not None:
@@ -239,16 +373,37 @@ def main(args: Args) -> None:
             @show_3dgs.on_update
             def _(_event=None) -> None:
                 gs_handle.visible = bool(show_3dgs.value)
-        for track_id, handle in track_handles:
-            checkbox = server.gui.add_checkbox(f"Show {track_id}", True)
+        if camera_entries:
+            show_cameras = server.gui.add_checkbox("Show Cameras", True)
 
-            @checkbox.on_update
-            def _(_event=None, handle=handle, checkbox=checkbox) -> None:
-                handle.visible = bool(checkbox.value)
+            @show_cameras.on_update
+            def _(_event=None) -> None:
+                for _cam_id, handle in camera_entries:
+                    handle.visible = bool(show_cameras.value)
+
+    if track_handles:
+        with server.gui.add_folder("Meshes"):
+            for track_id, handle in track_handles:
+                checkbox = server.gui.add_checkbox(f"Show {track_id}", False)
+
+                @checkbox.on_update
+                def _(_event=None, handle=handle, checkbox=checkbox) -> None:
+                    handle.visible = bool(checkbox.value)
+
+    if smplx_handles:
+        with server.gui.add_folder("SMPL-X Meshes"):
+            for track_id, handle in smplx_handles:
+                checkbox = server.gui.add_checkbox(f"Show {track_id}", False)
+
+                @checkbox.on_update
+                def _(_event=None, handle=handle, checkbox=checkbox) -> None:
+                    handle.visible = bool(checkbox.value)
 
     frame_desc = args.frame_name if args.frame_name is not None else str(args.frame_index)
     if frame_used_3dgs is not None:
         print(f"3DGS frame: {frame_used_3dgs.name}")
+    if camera_entries:
+        print(f"Loaded cameras: {', '.join(cam_id for cam_id, _ in camera_entries)}")
     print(f"Viser server running. Showing frame {frame_desc} from {args.eval_scene_dir}.")
 
     try:
@@ -256,20 +411,6 @@ def main(args: Args) -> None:
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("Shutting down viewer...")
-
-@dataclass
-class Args:
-    eval_scene_dir: Path
-    frame_index: int = 0
-    frame_name: Optional[str] = None
-    port: int = 8080
-    center_scene: bool = True
-    max_scale: Optional[float] = None
-    max_gaussians: Optional[int] = None
-    seed: int = 0
-    mesh_opacity: float = 0.8
-    posed_3dgs_pattern: str = "*.pt"
-    posed_mesh_pattern: str = "*.obj"
 
 
 if __name__ == "__main__":
