@@ -164,5 +164,5 @@ cd /home/cizinsky/master-thesis
 
 
 # ------ Visualise the eval output of in the wild scene in 3d
-scene_eval_dir="/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v102_smplx_meshes_saved_as_well/epoch_0000"
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v103_saving_individual_3dgs/epoch_0000
 python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000

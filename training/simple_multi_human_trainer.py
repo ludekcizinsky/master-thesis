@@ -1945,6 +1945,14 @@ class MultiHumanTrainer:
                     extrinsics=extr.detach().cpu().numpy()[None, ...],
                 )
 
+                # -- Save per-person posed 3DGS
+                for person_idx, person_gs in enumerate(all_posed_gs_list):
+                    person_dir = save_dir_posed_3dgs / f"{person_idx:02d}"
+                    person_dir.mkdir(parents=True, exist_ok=True)
+                    person_path = person_dir / f"{frame_name}.pt"
+                    person_state = posed_gs_list_to_serializable_dict([person_gs])
+                    torch.save(person_state, person_path)
+
                 # -- Posed 3dgs -> posed meshes and save to disk
                 meshes_for_frame = get_meshes_from_3dgs(
                     posed_gs_state,

@@ -173,6 +173,7 @@ class Args:
     frame_name: Optional[str] = None
     port: int = 8080
     center_scene: bool = True
+    source_camera_id: int = 0
     max_scale: Optional[float] = None
     max_gaussians: Optional[int] = None
     seed: int = 0
@@ -190,29 +191,41 @@ def main(args: Args) -> None:
     posed_smplx_meshes_dir = args.eval_scene_dir / "posed_smplx_meshes_per_frame"
     cameras_dir = args.eval_scene_dir / "all_cameras"
 
-    splat_data: Optional[Dict[str, np.ndarray]] = None
-    raw_xyz: Optional[np.ndarray] = None
-    frame_used_3dgs: Optional[Path] = None
+    per_person_splats: List[Tuple[str, Dict[str, np.ndarray], Optional[np.ndarray]]] = []
 
     if posed_3dgs_dir.exists():
-        frame_files = _sorted_frame_files(posed_3dgs_dir, args.posed_3dgs_pattern)
-        if frame_files:
-            frame_used_3dgs = _select_frame(frame_files, args.frame_index, args.frame_name)
-            state = _torch_load(frame_used_3dgs)
-            raw_xyz = state.get("xyz")
-            if isinstance(raw_xyz, torch.Tensor):
-                raw_xyz = raw_xyz.detach().cpu().numpy()
-            raw_xyz = None if raw_xyz is None else np.asarray(raw_xyz, dtype=np.float32)
-            splat_data = _state_to_splat_arrays(
-                state,
-                max_scale=args.max_scale,
-                max_gaussians=args.max_gaussians,
-                seed=args.seed,
-            )
+        person_dirs = sorted(
+            [p for p in posed_3dgs_dir.iterdir() if p.is_dir()], key=lambda p: p.name
+        )
+        if person_dirs:
+            for person_dir in person_dirs:
+                frame_files = _sorted_frame_files(person_dir, args.posed_3dgs_pattern)
+                if not frame_files:
+                    print(
+                        f"Skipping 3DGS {person_dir.name}: no files matching {args.posed_3dgs_pattern}"
+                    )
+                    continue
+                try:
+                    frame_path = _select_frame(frame_files, args.frame_index, args.frame_name)
+                except (FileNotFoundError, IndexError, RuntimeError) as exc:
+                    print(f"Skipping 3DGS {person_dir.name}: {exc}")
+                    continue
+                state = _torch_load(frame_path)
+                person_xyz = state.get("xyz")
+                if isinstance(person_xyz, torch.Tensor):
+                    person_xyz = person_xyz.detach().cpu().numpy()
+                person_xyz = None if person_xyz is None else np.asarray(person_xyz, dtype=np.float32)
+                person_splat = _state_to_splat_arrays(
+                    state,
+                    max_scale=args.max_scale,
+                    max_gaussians=args.max_gaussians,
+                    seed=args.seed,
+                )
+                per_person_splats.append((person_dir.name, person_splat, person_xyz))
+            if not per_person_splats:
+                print(f"No per-person 3DGS frames loaded from {posed_3dgs_dir}")
         else:
-            print(
-                f"No 3DGS frames found in {posed_3dgs_dir} with pattern {args.posed_3dgs_pattern}"
-            )
+            print(f"No per-person 3DGS subfolders found in {posed_3dgs_dir}")
     else:
         print(f"No posed 3DGS directory found at {posed_3dgs_dir}")
 
@@ -288,17 +301,19 @@ def main(args: Args) -> None:
             w2c[:3, :4] = extr
             c2w = np.linalg.inv(w2c)
             fov, aspect = _fov_aspect_from_intrinsics(intr)
-            color = _color_for_track(f"cam_{cam_dir.name}")
-            camera_data.append((cam_dir.name, c2w, fov, aspect, color))
+            is_source = cam_dir.name == str(args.source_camera_id)
+            color = (30, 144, 255) if is_source else (255, 140, 0)
+            camera_data.append((cam_dir.name, c2w, fov, aspect, color, is_source))
     else:
         print(f"No cameras directory found at {cameras_dir}")
 
-    if splat_data is None and not mesh_entries and not smplx_entries and not camera_data:
+    if not per_person_splats and not mesh_entries and not smplx_entries and not camera_data:
         raise FileNotFoundError("No 3DGS, mesh, SMPL-X mesh, or camera data found to visualize.")
 
     bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)
-    if raw_xyz is not None:
-        bounds = _update_bounds(raw_xyz, bounds)
+    for _, _, person_xyz in per_person_splats:
+        if person_xyz is not None:
+            bounds = _update_bounds(person_xyz, bounds)
     for _, verts, _, _ in mesh_entries:
         bounds = _update_bounds(verts, bounds)
     for _, verts, _, _ in smplx_entries:
@@ -317,15 +332,16 @@ def main(args: Args) -> None:
         position=tuple((-R_fix.apply(center_offset)).tolist()),
     )
 
-    gs_handle = None
-    if splat_data is not None:
-        gs_handle = server.scene.add_gaussian_splats(
-            "/scene/3dgs/gaussian_splats",
-            centers=splat_data["centers"],
-            rgbs=splat_data["rgbs"],
-            opacities=splat_data["opacities"],
-            covariances=splat_data["covariances"],
+    gs_person_handles: List[Tuple[str, object]] = []
+    for person_id, person_splat, _ in per_person_splats:
+        handle = server.scene.add_gaussian_splats(
+            f"/scene/3dgs/{person_id}",
+            centers=person_splat["centers"],
+            rgbs=person_splat["rgbs"],
+            opacities=person_splat["opacities"],
+            covariances=person_splat["covariances"],
         )
+        gs_person_handles.append((person_id, handle))
 
     track_handles: List[Tuple[str, object]] = []
     for track_id, verts, faces, color in mesh_entries:
@@ -354,7 +370,7 @@ def main(args: Args) -> None:
         smplx_handles.append((track_id, handle))
 
     camera_entries: List[Tuple[str, object]] = []
-    for cam_id, c2w, fov, aspect, color in camera_data:
+    for cam_id, c2w, fov, aspect, color, is_source in camera_data:
         handle = server.scene.add_camera_frustum(
             f"/scene/cameras/{cam_id}",
             fov=float(fov),
@@ -364,22 +380,28 @@ def main(args: Args) -> None:
             position=tuple(c2w[:3, 3].tolist()),
             color=color,
         )
+        handle.visible = bool(is_source)
         camera_entries.append((cam_id, handle))
 
-    with server.gui.add_folder("Visibility"):
-        if gs_handle is not None:
-            show_3dgs = server.gui.add_checkbox("Show 3DGS", True)
+    if camera_entries:
+        with server.gui.add_folder("Cameras"):
+            for cam_id, handle in camera_entries:
+                checkbox = server.gui.add_checkbox(
+                    f"Show {cam_id}", cam_id == str(args.source_camera_id)
+                )
 
-            @show_3dgs.on_update
-            def _(_event=None) -> None:
-                gs_handle.visible = bool(show_3dgs.value)
-        if camera_entries:
-            show_cameras = server.gui.add_checkbox("Show Cameras", True)
+                @checkbox.on_update
+                def _(_event=None, handle=handle, checkbox=checkbox) -> None:
+                    handle.visible = bool(checkbox.value)
 
-            @show_cameras.on_update
-            def _(_event=None) -> None:
-                for _cam_id, handle in camera_entries:
-                    handle.visible = bool(show_cameras.value)
+    if gs_person_handles:
+        with server.gui.add_folder("3DGS"):
+            for person_id, handle in gs_person_handles:
+                checkbox = server.gui.add_checkbox(f"Show {person_id}", True)
+
+                @checkbox.on_update
+                def _(_event=None, handle=handle, checkbox=checkbox) -> None:
+                    handle.visible = bool(checkbox.value)
 
     if track_handles:
         with server.gui.add_folder("Meshes"):
@@ -400,8 +422,6 @@ def main(args: Args) -> None:
                     handle.visible = bool(checkbox.value)
 
     frame_desc = args.frame_name if args.frame_name is not None else str(args.frame_index)
-    if frame_used_3dgs is not None:
-        print(f"3DGS frame: {frame_used_3dgs.name}")
     if camera_entries:
         print(f"Loaded cameras: {', '.join(cam_id for cam_id, _ in camera_entries)}")
     print(f"Viser server running. Showing frame {frame_desc} from {args.eval_scene_dir}.")
