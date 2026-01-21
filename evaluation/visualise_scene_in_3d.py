@@ -11,6 +11,7 @@ import torch
 import trimesh
 import tyro
 from pytorch3d.transforms import quaternion_to_matrix
+from PIL import Image
 
 import viser
 import viser.transforms as tf
@@ -148,6 +149,51 @@ def _fov_aspect_from_intrinsics(intr: np.ndarray) -> Tuple[float, float]:
     return np.deg2rad(60.0), 1.0
 
 
+def _load_rgb_image(scene_dir: Path, cam_id: int, frame_stem: str) -> np.ndarray:
+    path = scene_dir / "images" / f"{cam_id}" / f"{frame_stem}.jpg"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing RGB frame at {path}. Expected images saved as "
+            f"images/{cam_id}/{frame_stem}.jpg"
+        )
+    with Image.open(path) as img:
+        return np.asarray(img.convert("RGB"), dtype=np.uint8)
+
+
+def _depth_to_point_cloud(
+    depth: np.ndarray,
+    intr: np.ndarray,
+    c2w: np.ndarray,
+    *,
+    stride: int,
+    max_depth: float,
+    rgb: Optional[np.ndarray],
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    if depth.ndim != 2:
+        raise ValueError(f"Expected depth map with shape (H, W), got {depth.shape}")
+    h, w = depth.shape
+    if rgb is not None and (rgb.shape[0] != h or rgb.shape[1] != w):
+        rgb = np.asarray(
+            Image.fromarray(rgb).resize((w, h), resample=Image.BILINEAR), dtype=np.uint8
+        )
+    stride = max(int(stride), 1)
+    ys = np.arange(0, h, stride, dtype=np.float32)
+    xs = np.arange(0, w, stride, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    z = depth[::stride, ::stride].astype(np.float32)
+    valid = np.isfinite(z) & (z > 0.0) & (z <= float(max_depth))
+    if not np.any(valid):
+        return np.zeros((0, 3), dtype=np.float32), None
+    x = (grid_x - float(intr[0, 2])) / float(intr[0, 0]) * z
+    y = (grid_y - float(intr[1, 2])) / float(intr[1, 1]) * z
+    points_cam = np.stack([x, y, z], axis=-1)[valid]
+    points_world = (c2w[:3, :3] @ points_cam.T).T + c2w[:3, 3]
+    colors = None
+    if rgb is not None:
+        colors = rgb[::stride, ::stride][valid]
+    return points_world.astype(np.float32), colors
+
+
 def _color_for_track(track_id: str) -> Tuple[int, int, int]:
     digest = hashlib.md5(track_id.encode("utf-8")).digest()
     return (60 + digest[0] % 160, 60 + digest[1] % 160, 60 + digest[2] % 160)
@@ -174,6 +220,9 @@ class Args:
     port: int = 8080
     center_scene: bool = True
     source_camera_id: int = 0
+    background_max_depth: float = 5.0
+    depth_stride: int = 4
+    background_point_size: float = 0.02
     max_scale: Optional[float] = None
     max_gaussians: Optional[int] = None
     seed: int = 0
@@ -183,6 +232,7 @@ class Args:
     smplx_mesh_pattern: str = "*.obj"
     camera_pattern: str = "*.npz"
     camera_frustum_scale: float = 0.2
+    depth_pattern: str = "*.npy"
 
 
 def main(args: Args) -> None:
@@ -190,6 +240,7 @@ def main(args: Args) -> None:
     posed_meshes_dir = args.eval_scene_dir / "posed_meshes_per_frame"
     posed_smplx_meshes_dir = args.eval_scene_dir / "posed_smplx_meshes_per_frame"
     cameras_dir = args.eval_scene_dir / "all_cameras"
+    masked_depth_dir = args.eval_scene_dir / "masked_depth_maps"
 
     per_person_splats: List[Tuple[str, Dict[str, np.ndarray], Optional[np.ndarray]]] = []
 
@@ -307,7 +358,50 @@ def main(args: Args) -> None:
     else:
         print(f"No cameras directory found at {cameras_dir}")
 
-    if not per_person_splats and not mesh_entries and not smplx_entries and not camera_data:
+    background_depth: Optional[np.ndarray] = None
+    background_intr: Optional[np.ndarray] = None
+    background_c2w: Optional[np.ndarray] = None
+    background_rgb: Optional[np.ndarray] = None
+    if masked_depth_dir.exists():
+        depth_files = _sorted_frame_files(masked_depth_dir, args.depth_pattern)
+        if depth_files:
+            try:
+                depth_path = _select_frame(depth_files, args.frame_index, args.frame_name)
+            except (FileNotFoundError, IndexError, RuntimeError) as exc:
+                print(f"Skipping masked depth maps: {exc}")
+                depth_path = None
+            if depth_path is not None:
+                depth = np.load(depth_path).astype(np.float32)
+                cam_dir = cameras_dir / f"{args.source_camera_id}"
+                cam_path = cam_dir / f"{depth_path.stem}.npz"
+                if cam_dir.exists() and cam_path.exists():
+                    intr, extr = _load_camera_npz(cam_path)
+                    w2c = np.eye(4, dtype=np.float32)
+                    w2c[:3, :4] = extr
+                    c2w = np.linalg.inv(w2c)
+                    background_depth = depth
+                    background_intr = intr
+                    background_c2w = c2w
+                    background_rgb = _load_rgb_image(
+                        args.eval_scene_dir, args.source_camera_id, depth_path.stem
+                    )
+                else:
+                    if not cam_dir.exists():
+                        print(f"Missing camera dir for source camera {args.source_camera_id}: {cam_dir}")
+                    else:
+                        print(f"Missing camera file for depth frame: {cam_path}")
+        else:
+            print(f"No masked depth maps found in {masked_depth_dir} with pattern {args.depth_pattern}")
+    else:
+        print(f"No masked depth maps directory found at {masked_depth_dir}")
+
+    if (
+        not per_person_splats
+        and not mesh_entries
+        and not smplx_entries
+        and not camera_data
+        and background_depth is None
+    ):
         raise FileNotFoundError("No 3DGS, mesh, SMPL-X mesh, or camera data found to visualize.")
 
     bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)
@@ -383,6 +477,27 @@ def main(args: Args) -> None:
         handle.visible = bool(is_source)
         camera_entries.append((cam_id, handle))
 
+    background_handle = None
+    if background_depth is not None and background_intr is not None and background_c2w is not None:
+        background_points, background_colors = _depth_to_point_cloud(
+            background_depth,
+            background_intr,
+            background_c2w,
+            stride=args.depth_stride,
+            max_depth=args.background_max_depth,
+            rgb=background_rgb,
+        )
+        if background_colors is None:
+            background_colors = np.full((background_points.shape[0], 3), 180, dtype=np.uint8)
+        background_handle = server.scene.add_point_cloud(
+            "/scene/background",
+            points=background_points,
+            colors=background_colors,
+            point_size=float(args.background_point_size),
+            point_shape="rounded",
+        )
+        background_handle.visible = False
+
     if camera_entries:
         with server.gui.add_folder("Cameras"):
             for cam_id, handle in camera_entries:
@@ -393,6 +508,48 @@ def main(args: Args) -> None:
                 @checkbox.on_update
                 def _(_event=None, handle=handle, checkbox=checkbox) -> None:
                     handle.visible = bool(checkbox.value)
+
+    if background_handle is not None:
+        with server.gui.add_folder("Background"):
+            checkbox = server.gui.add_checkbox("Show Background", False)
+            depth_slider = server.gui.add_slider(
+                "Max Depth (m)",
+                min=0.5,
+                max=20.0,
+                step=0.1,
+                initial_value=float(args.background_max_depth),
+            )
+
+            @checkbox.on_update
+            def _(_event=None, handle=background_handle, checkbox=checkbox) -> None:
+                handle.visible = bool(checkbox.value)
+
+            @depth_slider.on_update
+            def _(_event=None) -> None:
+                nonlocal background_handle
+                points, colors = _depth_to_point_cloud(
+                    background_depth,
+                    background_intr,
+                    background_c2w,
+                    stride=args.depth_stride,
+                    max_depth=float(depth_slider.value),
+                    rgb=background_rgb,
+                )
+                if colors is None:
+                    colors = np.full((points.shape[0], 3), 180, dtype=np.uint8)
+                if background_handle is not None and hasattr(background_handle, "update"):
+                    background_handle.update(points=points, colors=colors)
+                else:
+                    if background_handle is not None and hasattr(background_handle, "remove"):
+                        background_handle.remove()
+                    background_handle = server.scene.add_point_cloud(
+                        "/scene/background",
+                        points=points,
+                        colors=colors,
+                        point_size=float(args.background_point_size),
+                        point_shape="rounded",
+                    )
+                background_handle.visible = bool(checkbox.value)
 
     if gs_person_handles:
         with server.gui.add_folder("3DGS"):

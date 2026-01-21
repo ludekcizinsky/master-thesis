@@ -1869,22 +1869,20 @@ class MultiHumanTrainer:
         # Prediction dataset 
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
-        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
+        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames, use_depth=True)
         pred_loader = DataLoader(
             pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
-        # Fetch mesh config
+        # Fetch configs
+        # - mesh
         save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
         mesh_cfg_node = self.cfg["3dgs_to_mesh"]
         mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
-
-        # Fetch smplx to mesh conversion config
+        # - smplx
         save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
         save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
-        save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
-        save_dir_cameras.mkdir(parents=True, exist_ok=True)
         smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
         if smplx_layer is None:
             raise RuntimeError("SMPL-X layer not available; cannot export posed SMPL-X meshes.")
@@ -1892,7 +1890,17 @@ class MultiHumanTrainer:
         smplx_faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int32)
         expr_dim = int(getattr(getattr(self.renderer.smplx_model, "smpl_x", None), "expr_param_dim", 0))
 
+        # - cameras
+        save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
+        save_dir_cameras.mkdir(parents=True, exist_ok=True)
+        # - masked depth maps
+        save_dir_masked_depth: Path = save_dir_root / "masked_depth_maps"
+        save_dir_masked_depth.mkdir(parents=True, exist_ok=True)
+        # - images
+        save_dir_images: Path = save_dir_root / "images" / f"{src_cam_id}"
+        save_dir_images.mkdir(parents=True, exist_ok=True)
 
+        # For each frame in the prediction dataset, save posed 3dgs, posed meshes, cameras, masked depth maps (if available), and images
         for pred_batch in tqdm(pred_loader, desc="Evaluating In-The-Wild"):
 
             # - Parse batch data
@@ -1944,6 +1952,23 @@ class MultiHumanTrainer:
                     intrinsics=intr.detach().cpu().numpy()[None, ...],
                     extrinsics=extr.detach().cpu().numpy()[None, ...],
                 )
+
+                # -- Save source RGB frame
+                frame_img = pred_batch["image"][view_idx]
+                frame_np = (frame_img.detach().cpu().numpy() * 255.0).astype(np.uint8)
+                Image.fromarray(frame_np).save(save_dir_images / f"{frame_name}.jpg")
+
+                # -- Save masked depth map if available
+                depth_batch = pred_batch.get("depth")
+                if depth_batch is not None:
+                    depth_view = depth_batch[view_idx]
+                    mask_batch = pred_batch.get("mask")
+                    if mask_batch is not None:
+                        depth_view = depth_view * (1.0 - mask_batch[view_idx])
+                    depth_np = depth_view.detach().cpu().numpy().astype(np.float32)
+                    if depth_np.ndim == 3 and depth_np.shape[-1] == 1:
+                        depth_np = depth_np[..., 0]
+                    np.save(save_dir_masked_depth / f"{frame_name}.npy", depth_np)
 
                 # -- Save per-person posed 3DGS
                 for person_idx, person_gs in enumerate(all_posed_gs_list):
