@@ -1880,6 +1880,18 @@ class MultiHumanTrainer:
         mesh_cfg_node = self.cfg["3dgs_to_mesh"]
         mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
 
+        # Fetch smplx to mesh conversion config
+        save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
+        save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
+        save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
+        save_dir_cameras.mkdir(parents=True, exist_ok=True)
+        smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
+        if smplx_layer is None:
+            raise RuntimeError("SMPL-X layer not available; cannot export posed SMPL-X meshes.")
+        smplx_layer = smplx_layer.to(self.tuner_device).eval()
+        smplx_faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int32)
+        expr_dim = int(getattr(getattr(self.renderer.smplx_model, "smpl_x", None), "expr_param_dim", 0))
+
 
         for pred_batch in tqdm(pred_loader, desc="Evaluating In-The-Wild"):
 
@@ -1894,6 +1906,7 @@ class MultiHumanTrainer:
             # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
             n_persons = len(self.gs_model_list)
             pred_meshes_by_person = []
+            pred_smplx_meshes_by_person = []
 
             for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
 
@@ -1917,6 +1930,21 @@ class MultiHumanTrainer:
                 posed_gs_state = posed_gs_list_to_serializable_dict(all_posed_gs_list)
                 torch.save(posed_gs_state, out_path)
 
+                # -- Save source camera parameters (intrinsics + world-to-camera extrinsics)
+                frame_name = fname_str
+                if frame_name.isdigit():
+                    frame_name = f"{int(frame_name):06d}"
+                cam_path = save_dir_cameras / f"{frame_name}.npz"
+                intr = pred_batch["K"][view_idx][:3, :3]
+                c2w = pred_batch["c2w"][view_idx]
+                w2c = torch.inverse(c2w)
+                extr = w2c[:3, :4]
+                np.savez(
+                    cam_path,
+                    intrinsics=intr.detach().cpu().numpy()[None, ...],
+                    extrinsics=extr.detach().cpu().numpy()[None, ...],
+                )
+
                 # -- Posed 3dgs -> posed meshes and save to disk
                 meshes_for_frame = get_meshes_from_3dgs(
                     posed_gs_state,
@@ -1927,6 +1955,51 @@ class MultiHumanTrainer:
                     write_meshes=False,
                 )
                 pred_meshes_by_person.append(meshes_for_frame)
+
+                # -- SMPL-X parameters -> posed meshes
+                smplx_meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+                for person_idx in range(n_persons):
+                    betas = smplx_single_view["betas"][person_idx : person_idx + 1]
+                    root_pose = smplx_single_view["root_pose"][person_idx : person_idx + 1]
+                    body_pose = smplx_single_view["body_pose"][person_idx : person_idx + 1]
+                    jaw_pose = smplx_single_view["jaw_pose"][person_idx : person_idx + 1]
+                    leye_pose = smplx_single_view["leye_pose"][person_idx : person_idx + 1]
+                    reye_pose = smplx_single_view["reye_pose"][person_idx : person_idx + 1]
+                    lhand_pose = smplx_single_view["lhand_pose"][person_idx : person_idx + 1]
+                    rhand_pose = smplx_single_view["rhand_pose"][person_idx : person_idx + 1]
+                    trans = smplx_single_view["trans"][person_idx : person_idx + 1]
+
+                    expression = None
+                    if expr_dim > 0:
+                        expr = smplx_single_view.get("expr")
+                        if expr is not None:
+                            expr_person = expr[person_idx : person_idx + 1].reshape(1, -1)
+                            if expr_person.shape[1] >= expr_dim:
+                                expression = expr_person[:, :expr_dim]
+                            else:
+                                expression = torch.zeros(
+                                    (1, expr_dim), device=self.tuner_device, dtype=betas.dtype
+                                )
+                        else:
+                            expression = torch.zeros(
+                                (1, expr_dim), device=self.tuner_device, dtype=betas.dtype
+                            )
+
+                    smplx_out = smplx_layer(
+                        global_orient=root_pose,
+                        body_pose=body_pose,
+                        jaw_pose=jaw_pose,
+                        leye_pose=leye_pose,
+                        reye_pose=reye_pose,
+                        left_hand_pose=lhand_pose,
+                        right_hand_pose=rhand_pose,
+                        betas=betas,
+                        transl=trans,
+                        expression=expression,
+                    )
+                    vertices = smplx_out.vertices[0].detach().cpu().numpy()
+                    smplx_meshes_for_frame[person_idx] = (vertices, smplx_faces)
+                pred_smplx_meshes_by_person.append(smplx_meshes_for_frame)
 
             # - Save per-person meshes and merged mesh (per frame).
             for frame_idx, meshes_for_frame in enumerate(pred_meshes_by_person):
@@ -1956,6 +2029,32 @@ class MultiHumanTrainer:
                 merged_path = save_dir_posed_meshes / f"{frame_name}.obj"
                 if merged_mesh[0].size and merged_mesh[1].size:
                     trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
+
+                # -- Save SMPL-X meshes
+                smplx_meshes_for_frame = pred_smplx_meshes_by_person[frame_idx]
+                for person_idx in range(n_persons):
+                    person_dir = save_dir_posed_smplx_meshes / f"{person_idx:02d}"
+                    person_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = person_dir / f"{frame_name}.obj"
+
+                    mesh = smplx_meshes_for_frame.get(person_idx)
+                    if mesh is None:
+                        out_path.write_text("")
+                        continue
+                    vertices, faces = mesh
+                    if vertices.size == 0 or faces.size == 0:
+                        out_path.write_text("")
+                        continue
+                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
+
+                merged_smplx_mesh = merge_mesh_dict(smplx_meshes_for_frame)
+                merged_smplx_path = save_dir_posed_smplx_meshes / f"{frame_name}.obj"
+                if merged_smplx_mesh[0].size and merged_smplx_mesh[1].size:
+                    trimesh.Trimesh(
+                        vertices=merged_smplx_mesh[0],
+                        faces=merged_smplx_mesh[1],
+                        process=False,
+                    ).export(merged_smplx_path)
 
 
     @torch.no_grad()

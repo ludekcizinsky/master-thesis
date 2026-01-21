@@ -65,15 +65,7 @@ def _color_for_track(track_id: str) -> Tuple[int, int, int]:
     return (60 + digest[0] % 160, 60 + digest[1] % 160, 60 + digest[2] % 160)
 
 
-@dataclass
-class Args:
-    mesh_dir: Path
-    pattern: str = "*.obj"
-    frame_index: int = 0
-    frame_name: Optional[str] = None
-    port: int = 8080
-    center_scene: bool = True
-    mesh_opacity: float = 0.8
+
 
 
 def main(args: Args) -> None:
@@ -156,6 +148,16 @@ def main(args: Args) -> None:
     except KeyboardInterrupt:
         print("Shutting down viewer...")
 
+
+@dataclass
+class Args:
+    mesh_dir: Path
+    pattern: str = "*.obj"
+    frame_index: int = 0
+    frame_name: Optional[str] = None
+    port: int = 8080
+    center_scene: bool = True
+    mesh_opacity: float = 0.8
 
 if __name__ == "__main__":
     main(tyro.cli(Args))

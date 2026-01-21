@@ -159,5 +159,10 @@ cd /home/cizinsky/master-thesis
 # python evaluation/visualise_posed_3dgs.py --posed-3dgs-dir $scene_eval_dir/posed_3dgs_per_frame --port 8080 --max-scale 0.5 --max-gaussians 200000
 
 # ------ Visualise in the wild posed meshes
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v101_improved_version/epoch_0000/posed_meshes_per_frame
-python evaluation/visualise_meshes_in_3d.py --mesh-dir=$scene_eval_dir
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v101_improved_version/epoch_0000/posed_meshes_per_frame
+# python evaluation/visualise_meshes_in_3d.py --mesh-dir=$scene_eval_dir
+
+
+# ------ Visualise the eval output of in the wild scene in 3d
+scene_eval_dir="/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v102_smplx_meshes_saved_as_well/epoch_0000"
+python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000

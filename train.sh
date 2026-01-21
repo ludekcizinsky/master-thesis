@@ -69,7 +69,7 @@ cd /home/cizinsky/master-thesis
 # ------- In-The-Wild
 seq_name="taichi"
 num_persons=2
-exp_name="v101_improved_version"
+exp_name="v102_smplx_meshes_saved_as_well"
 source_cam_id=0
 target_cam_ids="[]"
 root_gt_dir_path=null
