@@ -297,6 +297,9 @@ class MultiHumanTrainer:
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
         tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
         all_cam_ids = [src_cam_id] + tgt_cam_ids
+        if self.cfg.test_frames_scene_dir is None:
+            print("No test frames scene directory specified. Skipping test dataset initialization.")
+            return
         frames_dir = Path(self.cfg.test_frames_scene_dir)
         masks_dir = Path(self.cfg.test_masks_scene_dir) if self.cfg.test_masks_scene_dir is not None else None
         cameras_dir = Path(self.cfg.test_cameras_scene_dir) if self.cfg.test_cameras_scene_dir is not None else None
@@ -1849,24 +1852,146 @@ class MultiHumanTrainer:
             # f"Normal Consistency: {overall_avg['normal_consistency']:.4f} "
         # )
 
+
+    @torch.no_grad()
+    def eval_loop_in_the_wild(self, epoch):
+
+        # Prepare directories to save results
+        # - root save directory        
+        save_dir_root : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir_root.mkdir(parents=True, exist_ok=True)
+
+        # - posed 3DGS save directory (one file per frame)
+        save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
+        save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
+
+
+        # Prediction dataset 
+        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        skip_frames = load_skip_frames(self.trn_data_dir)
+        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
+        pred_loader = DataLoader(
+            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+
+        # Fetch mesh config
+        save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
+        save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
+        mesh_cfg_node = self.cfg["3dgs_to_mesh"]
+        mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
+
+
+        for pred_batch in tqdm(pred_loader, desc="Evaluating In-The-Wild"):
+
+            # - Parse batch data
+            num_views = pred_batch["K"].shape[0]
+            fnames = pred_batch["frame_name"]      # [B]
+            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
+            pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+            smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+
+
+            # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
+            n_persons = len(self.gs_model_list)
+            pred_meshes_by_person = []
+
+            for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
+
+                # -- Pose 3dgs
+                smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
+                all_posed_gs_list = []
+                for person_idx in range(n_persons):
+                    person_canon_3dgs = self.gs_model_list[person_idx]
+                    person_query_pt = self.query_points[person_idx]
+                    person_smplx_data = {k: v[person_idx : person_idx + 1] for k, v in smplx_single_view.items()}
+                    posed_gs, neutral_posed_gs = self.renderer.animate_single_view_and_person(
+                        person_canon_3dgs,
+                        person_query_pt,
+                        person_smplx_data,
+                    )
+                    all_posed_gs_list.append(posed_gs)
+
+                fname = fnames[view_idx]
+                fname_str = str(fname)
+                out_path = save_dir_posed_3dgs / f"{fname_str}.pt"
+                posed_gs_state = posed_gs_list_to_serializable_dict(all_posed_gs_list)
+                torch.save(posed_gs_state, out_path)
+
+                # -- Posed 3dgs -> posed meshes and save to disk
+                meshes_for_frame = get_meshes_from_3dgs(
+                    posed_gs_state,
+                    save_dir_posed_meshes,
+                    fname_str,
+                    mesh_cfg,
+                    overwrite=True,
+                    write_meshes=False,
+                )
+                pred_meshes_by_person.append(meshes_for_frame)
+
+            # - Save per-person meshes and merged mesh (per frame).
+            for frame_idx, meshes_for_frame in enumerate(pred_meshes_by_person):
+                # -- Parse frame name (we follow the 6digit convention adapted across code base)
+                frame_name = str(fnames[frame_idx])
+                if frame_name.isdigit():
+                    frame_name = f"{int(frame_name):06d}"
+
+                # -- Save per person meshes
+                for person_idx in range(n_persons):
+                    person_dir = save_dir_posed_meshes / f"{person_idx:02d}"
+                    person_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = person_dir / f"{frame_name}.obj"
+
+                    mesh = meshes_for_frame.get(person_idx)
+                    if mesh is None:
+                        out_path.write_text("")
+                        continue
+                    vertices, faces = mesh
+                    if vertices.size == 0 or faces.size == 0:
+                        out_path.write_text("")
+                        continue
+                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
+
+                # -- Save merged mesh
+                merged_mesh = merge_mesh_dict(meshes_for_frame)
+                merged_path = save_dir_posed_meshes / f"{frame_name}.obj"
+                if merged_mesh[0].size and merged_mesh[1].size:
+                    trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
+
+
     @torch.no_grad()
     def eval_loop(self, epoch):
+
+
+        # Quantitative evaluation against provided ground truth
+        has_run_at_least_one_quant_eval = False
         if len(self.cfg.nvs_eval.target_camera_ids) == 0:
             print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
         else:
             self.eval_loop_nvs(epoch)
+            has_run_at_least_one_quant_eval = True
         if self.cfg.test_masks_scene_dir is None:
             print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
         else:
             self.eval_loop_segmentation(epoch)
+            has_run_at_least_one_quant_eval = True
         if self.cfg.test_smpl_params_scene_dir is None:
             print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
         else:
             self.eval_loop_pose_estimation(epoch)
+            has_run_at_least_one_quant_eval = True
         if self.cfg.test_meshes_scene_dir is None:
             print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
         else:
             self.eval_loop_reconstruction(epoch)
+            has_run_at_least_one_quant_eval = True
+
+
+        # For in-the-wild, we do not have ground truth for quantitative eval
+        # -> run custom qualitative evals only
+        if not has_run_at_least_one_quant_eval:
+            print("No quantitative evaluation datasets specified. Running only qualitative evaluations.")
+            self.eval_loop_in_the_wild(epoch)
+
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):

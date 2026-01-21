@@ -95,9 +95,9 @@ cd /home/cizinsky/master-thesis
 # bash preprocess/vis/check_scene_in_3d.sh mmm_lift 0 false
 # bash preprocess/vis/check_scene_in_3d.sh mmm_walkdance 0 false
 
-src_cam_id=4
-scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
-python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
+# src_cam_id=4
+# scenes_dir="/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15"
+# python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --src_cam_id $src_cam_id
 
 # Check inputs to the evaluation script
 # root_pred_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v3_large_refactor_check/epoch_0000
@@ -153,3 +153,11 @@ python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $scenes_dir --sr
 # cam_id=0
 # max_frames=200
 # bash evaluation/visualise_meshes_in_2d.sh $exp_eval_dir $inputs_eval_dir $cam_id $max_frames
+
+# ------ Visualise in the wild posed 3dgs
+# scene_eval_dir="/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v100_initial_run/epoch_0000"
+# python evaluation/visualise_posed_3dgs.py --posed-3dgs-dir $scene_eval_dir/posed_3dgs_per_frame --port 8080 --max-scale 0.5 --max-gaussians 200000
+
+# ------ Visualise in the wild posed meshes
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v101_improved_version/epoch_0000/posed_meshes_per_frame
+python evaluation/visualise_meshes_in_3d.py --mesh-dir=$scene_eval_dir

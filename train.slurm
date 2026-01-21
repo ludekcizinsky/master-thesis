@@ -24,9 +24,11 @@ root_gt_dir_path="${ROOT_GT_DIR_PATH:-}"
 target_cam_ids="${TARGET_CAMERA_IDS:-}"
 trn_nv_gen_cam_ids="${TRN_NV_GEN_CAMERA_IDS:-}"
 test_masks_scene_dir="${TEST_MASKS_SCENE_DIR:-}"
+test_frames_scene_dir="${TEST_FRAMES_SCENE_DIR:-}"
 test_smpl_params_scene_dir="${TEST_SMPL_PARAMS_SCENE_DIR:-}"
 smpl_params_scene_dir="${SMPL_PARAMS_SCENE_DIR:-}"
 test_smplx_params_scene_dir="${TEST_SMPLX_PARAMS_SCENE_DIR:-}"
+test_meshes_scene_dir="${TEST_MESHES_SCENE_DIR:-}"
 cameras_scene_dir="${CAMERAS_SCENE_DIR:-}"
 
 if [[ -z "$seq_name" || -z "$source_cam_id" || -z "$root_gt_dir_path" ]]; then
@@ -54,6 +56,9 @@ fi
 if [[ -n "$test_masks_scene_dir" ]]; then
   extra_args+=("test_masks_scene_dir=$test_masks_scene_dir")
 fi
+if [[ -n "$test_frames_scene_dir" ]]; then
+  extra_args+=("test_frames_scene_dir=$test_frames_scene_dir")
+fi
 if [[ -n "$test_smpl_params_scene_dir" ]]; then
   extra_args+=("test_smpl_params_scene_dir=$test_smpl_params_scene_dir")
 fi
@@ -62,6 +67,9 @@ if [[ -n "$smpl_params_scene_dir" ]]; then
 fi
 if [[ -n "$test_smplx_params_scene_dir" ]]; then
   extra_args+=("test_smplx_params_scene_dir=$test_smplx_params_scene_dir")
+fi
+if [[ -n "$test_meshes_scene_dir" ]]; then
+  extra_args+=("test_meshes_scene_dir=$test_meshes_scene_dir")
 fi
 if [[ -n "$cameras_scene_dir" ]]; then
   extra_args+=("cameras_scene_dir=$cameras_scene_dir")

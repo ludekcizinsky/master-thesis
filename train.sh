@@ -26,13 +26,13 @@ cd /home/cizinsky/master-thesis
 # root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
 # python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=true
 
-seq_name="hi4d_pair17_dance"
-num_persons=2
-exp_name="v203_white_bg_check_refine"
-source_cam_id=28
-target_cam_ids="[4,28,52]"
-root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=true nv_gen_epoch=0 
+# seq_name="hi4d_pair17_dance"
+# num_persons=2
+# exp_name="v203_white_bg_check_refine"
+# source_cam_id=28
+# target_cam_ids="[4,28,52]"
+# root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
+# python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=false difix.trn_enable=true nv_gen_epoch=0 
 
 
 # ------- MMM
@@ -65,3 +65,14 @@ python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp
 # root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/walkdance
 # preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_walkdance
 # python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir
+
+# ------- In-The-Wild
+seq_name="taichi"
+num_persons=2
+exp_name="v101_improved_version"
+source_cam_id=0
+target_cam_ids="[]"
+root_gt_dir_path=null
+preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/taichi
+trn_nv_cam_ids="[0,100,101,102,103,104,105,107]"
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids  wandb.enable=false eval_pretrain=true difix.trn_enable=false smpl_params_scene_dir=null cameras_scene_dir=$preprocessing_dir trn_nv_gen.camera_ids=$trn_nv_cam_ids

@@ -17,6 +17,7 @@ HI4D_TARGET_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
 HI4D_TRN_NV_GEN_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
 HI4D_PAIR17_TRN_NV_GEN_CAM_IDS = [4, 16, 28, 40, 52, 64, 76, 88]
 MMM_TRN_NV_GEN_CAM_IDS = [0, 100, 101, 102, 103, 104, 105, 107]
+WILD_TRN_NV_GEN_CAM_IDS = [0, 100, 101, 102, 103, 104, 105, 107]
 # - Preprocessing directory path
 PREPROCESSING_DIR = "/scratch/izar/cizinsky/thesis/preprocessing"
 
@@ -31,9 +32,11 @@ class Scene:
     trn_nv_gen_cam_ids: List[int]
     preprocessing_dir_path: str | None = None
     test_masks_scene_dir: str | None = None
+    test_frames_scene_dir: str | None = None
     test_smpl_params_scene_dir: str | None = None
     smpl_params_scene_dir: str | None = None
     test_smplx_params_scene_dir: str | None = None
+    test_meshes_scene_dir: str | None = None
     cameras_scene_dir: str | None = None
 
     def __post_init__(self) -> None:
@@ -41,12 +44,16 @@ class Scene:
             self.preprocessing_dir_path = os.path.join(PREPROCESSING_DIR, self.seq_name)
         if self.test_masks_scene_dir is None:
             self.test_masks_scene_dir = self.root_gt_dir_path
+        if self.test_frames_scene_dir is None:
+            self.test_frames_scene_dir = self.root_gt_dir_path
         if self.test_smpl_params_scene_dir is None:
             self.test_smpl_params_scene_dir = self.root_gt_dir_path
         if self.smpl_params_scene_dir is None:
             self.smpl_params_scene_dir = self.preprocessing_dir_path
         if self.test_smplx_params_scene_dir is None:
             self.test_smplx_params_scene_dir = self.root_gt_dir_path
+        if self.test_meshes_scene_dir is None:
+            self.test_meshes_scene_dir = self.root_gt_dir_path
         if self.cameras_scene_dir is None:
             self.cameras_scene_dir = self.root_gt_dir_path
 
@@ -133,6 +140,22 @@ class ScheduleConfig:
                 test_smplx_params_scene_dir="null",
                 cameras_scene_dir=os.path.join(PREPROCESSING_DIR, "mmm_walkdance"),
             ),
+            Scene(
+                "taichi",
+                0,
+                "/scratch/izar/cizinsky/ait_datasets/full/mmm/taichi",
+                2,
+                [],
+                list(WILD_TRN_NV_GEN_CAM_IDS),
+                test_masks_scene_dir="null",
+                test_frames_scene_dir="null",
+                test_smpl_params_scene_dir="null",
+                smpl_params_scene_dir="null",
+                test_smplx_params_scene_dir="null",
+                test_meshes_scene_dir="null",
+                cameras_scene_dir=os.path.join(PREPROCESSING_DIR, "taichi"),
+            ),
+
         ]
     )
 
@@ -157,9 +180,11 @@ def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
         f"TRN_NV_GEN_CAMERA_IDS={trn_nv_gen_cam_ids},"
         f"PREPROCESSING_DIR_PATH={scene.preprocessing_dir_path},"
         f"TEST_MASKS_SCENE_DIR={scene.test_masks_scene_dir},"
+        f"TEST_FRAMES_SCENE_DIR={scene.test_frames_scene_dir},"
         f"TEST_SMPL_PARAMS_SCENE_DIR={scene.test_smpl_params_scene_dir},"
         f"SMPL_PARAMS_SCENE_DIR={scene.smpl_params_scene_dir},"
         f"TEST_SMPLX_PARAMS_SCENE_DIR={scene.test_smplx_params_scene_dir},"
+        f"TEST_MESHES_SCENE_DIR={scene.test_meshes_scene_dir},"
         f"CAMERAS_SCENE_DIR={scene.cameras_scene_dir}"
     )
     cmd = [
