@@ -28,16 +28,16 @@ We also evaluate on MMM \cite{multiply} to cover scenes with more than two peopl
 \subsection{Evaluation Metrics}
 
 \paragraph{Novel view synthesis.}
-We evaluate rendering quality using PSNR and SSIM (higher is better) and LPIPS (lower is better) \cite{lpips}. PSNR measures the pixel-wise fidelity of the reconstructed image by computing the logarithmic ratio between the maximum pixel value and the mean squared error, and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network and correlates better with human judgement than purely pixel-based metrics \cite{lpips}.
+We evaluate rendering quality using Peak-Signal-to-Noise Ratio (PSNR), Stuctural Similarity Index Measure (SSIM) (higher is better) and Learned Perceptual Image Patch Similarity (LPIPS) (lower is better) \cite{lpips}. PSNR measures the pixel-wise similarity of the reconstructed image by computing the logarithmic ratio between the maximum pixel value and the mean squared error, and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images \cite{wikipedia_ssim}. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network. And in contrast to the pixel level metrics should be aligned better with the human judgement \cite{lpips}.
 
 For each Hi4D scene, we treat one camera as the source view and evaluate novel view synthesis on the remaining seven cameras. For each target camera and frame, we compute the metrics between the rendered image and the corresponding ground truth image. Following MultiPly, we downscale images by a factor of two for evaluation. We then aggregate the results by averaging over all evaluation frames and all target cameras to obtain a single score per scene. Finally, we report dataset-level results by averaging these per-scene scores.
 
 \paragraph{Pose estimation.}
-We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction-focused metrics: contact distance (CD, mm) \cite{yin2023hi4d} and percentage of correct depth relations (PCDR) \cite{bev} with a threshold of $0.15$m. Hi4D provides ground truth SMPL parameters, and MultiPly reports pose metrics in the SMPL space. Therefore, for fair comparison, we convert our predicted SMPL-X parameters to SMPL parameters using the official SMPL-X model transfer procedure \cite{smplx} and evaluate all pose metrics in the SMPL parameterization.
+We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction-focused metrics: contact distance (CD, mm) \cite{yin2023hi4d} and percentage of correct depth relations (PCDR) \cite{bev} with a threshold of $0.15$m. Hi4D provides ground truth SMPL parameters, and MultiPly reports pose metrics in the SMPL space. Therefore, for a fair comparison, we convert our predicted SMPL-X parameters to SMPL parameters using the official SMPL-X model transfer procedure \cite{smplx} and evaluate all pose metrics in the SMPL parameterization.
 
 MPJPE measures the mean Euclidean distance between corresponding predicted and ground truth SMPL joints, averaged over all joints and people in the frame, where lower is better. MVE is defined analogously but computes the mean Euclidean distance between corresponding SMPL mesh vertices, and lower values indicate a more accurate reconstruction of the posed body surface. We report MPJPE and MVE in global coordinates and do not apply root alignment.
 
-To capture interaction quality, we report contact distance (CD), which measures how well the predicted meshes reproduce inter-person contact. Given ground truth contact correspondences between the two SMPL meshes, we compute the average distance between corresponding contact points in the prediction, reported in millimeters, where lower is better. Finally, PCDR measures whether the predicted depth ordering between people matches the ground truth. For each frame, we transform the predicted and ground truth person translations to camera coordinates and derive each person's depth from the $z$ component. We then evaluate all person pairs and check whether their relative depth relation is predicted correctly under the threshold $\tau=0.15$m. Following the protocol in \cite{bev} used by MultiPly as well, we also group people into ordinal depth layers using a depth-gap threshold $\gamma=0.3$m, and treat pairs within the same layer as being at equal depth. PCDR is reported as the fraction of correctly predicted relations in a frame, where higher is better.
+To capture interaction quality, we report contact distance (CD), which measures how well the predicted meshes reproduce inter-person contact \cite{yin2023hi4d}. Given ground truth contact correspondences between the two SMPL meshes, we compute the average distance between corresponding contact points in the prediction, reported in millimeters, where lower is better. Finally, PCDR measures whether the predicted depth ordering between people matches the ground truth. For each frame, we transform the predicted and ground truth person translations to camera coordinates and derive each person's depth from the $z$ component. We then evaluate all person pairs and check whether their relative depth relation is predicted correctly under the threshold $\tau=0.15$m \cite{bev}. Following the protocol in \cite{bev} used by MultiPly as well, we also group people into ordinal depth layers using a depth-gap threshold $\gamma=0.3$m, and treat pairs within the same layer as being at equal depth. PCDR is reported as the fraction of correctly predicted relations in a frame, where higher is better.
 
 
 \paragraph{Mesh reconstruction.}
@@ -45,15 +45,15 @@ To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\el
 
 For this evaluation, we extract meshes from the 3DGS representation using marching cubes. Before we compute the metrics, we align the reconstructed meshes to the ground truth meshes using rigid ICP (no scaling). We run ICP for 10 iterations with a convergence threshold of $10^{-4}$ and use 1000 surface samples to estimate the alignment.
 
-For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size 0.02 with padding 0.05 around the joint bounds of predicted and ground truth meshes.
+For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size $0.02$ with padding $0.05$ around the joint bounds of predicted and ground truth meshes.
 
 \paragraph{Instance segmentation.}
 Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
 
 \subsection{Implementation Details}
 Unless stated otherwise, we optimize only the 3DGS parameters and keep SMPL-X parameters and camera parameters fixed. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views. Each person is represented by $N=40{,}000$ Gaussians.
-We optimize the 3DGS parameters using AdamW with learning rate $10^{-5}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
-For preprocessing, we use the original Hi4D image resolution, while for MMM we downsample images by a factor of 2. For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU.
+We optimize the 3DGS parameters using AdamW with learning rate $10^{-4}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
+For preprocessing, we use the original Hi4D image resolution, while for MMM we downsample images by a factor of 2. For runtime, preprocessing takes roughly 10 to 15 minutes per scene, and training takes roughly 5-10 minutes per scene on a single NVIDIA V100 GPU.
 
 \section{Results}
 
@@ -128,7 +128,7 @@ Figure \ref{fig:qual_recon_comp} is consistent with the quantitative reconstruct
     CLIFF & 85.7 & 102.1 & 351.7 & 0.606 \\
     TRACE & 95.6 & 115.7 & 249.4 & 0.603 \\
     MultiPly & \textbf{69.4} & 83.6 & 218.4 & \textbf{0.709} \\
-    Ours & 93.9 & \textbf{77.7} & \textbf{195.8} & 0.647 \\
+    Ours (using Human3R) & 93.9 & \textbf{77.7} & \textbf{195.8} & 0.647 \\
     \bottomrule
   \end{tabular}
   \caption{\textbf{Human pose estimation results on Hi4D.} Best results are in bold.}
@@ -160,7 +160,7 @@ Figure \ref{fig:qual_pose_comp} illustrates that, compared to MultiPly, our meth
     \midrule
     MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
     MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
-    Ours & \textbf{0.974} & 0.982 & 0.987 \\
+    Ours (using SAM3) & \textbf{0.974} & 0.982 & 0.987 \\
     \bottomrule
   \end{tabular}
   \caption{\textbf{Human instance segmentation results on Hi4D.} Best results are in bold.}
@@ -234,7 +234,7 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
     $\checkmark$ & $\checkmark$ & Previous & \textbf{0.926} & \textbf{20.2} & 0.0872 \\
     \bottomrule
   \end{tabular}
-  \caption{\textbf{Ablation study on novel view synthesis.} Results are reported under the same evaluation protocol as Table~\ref{tab:nvs_results_hi4d}. $\checkmark$ enabled, $\times$ disabled. Best results are in bold.}
+  \caption{\textbf{Ablation study on novel view synthesis.} Results are reported under the same evaluation protocol as Table~\ref{tab:nvs_results_hi4d}. The \textbf{LHM Init} and \textbf{DiFix} columns indicate whether the corresponding component is enabled. Best results are in bold.}
   \label{tab:ablation_nvs}
 \end{table}
 
@@ -244,9 +244,16 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_difix_comp.drawio.png}
+    \includegraphics[width=0.9\textwidth]{figures/qual_difix_comp.drawio.png}
     \caption{\textbf{Qualitative comparison of novel training view synthesis}. We show comparison of novel view synthesis strategies along the following axis: (i) LHM initialization vs. random initialization, and (ii) DiFix refinement using source view vs. previous view. In total, we show four possible configurations. In each configuration, we show the reference view (left column), the rendered view to be refined (middle column), and the refined view by DiFix (right column).}
     \label{fig:qual_difix_comp}  
+\end{figure}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
+    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
+    \label{fig:n_trn_cameras_ablation_setup}  
 \end{figure}
 
 
@@ -286,9 +293,4 @@ One motivation for introducing DiFix-based novel training view synthesis is that
 
 Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
 
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
-    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
-    \label{fig:n_trn_cameras_ablation_setup}  
-\end{figure}
+

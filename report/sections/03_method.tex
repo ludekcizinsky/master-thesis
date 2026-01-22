@@ -29,7 +29,7 @@ A = \begin{bmatrix} R & t \\ 0 & 1 \end{bmatrix}
 where $R$ is a $3\times 3$ rotation matrix and $t$ is a $3\times 1$ translation vector. We make use of homogeneous coordinates throughout this work, especially when working with SMPL-X transformations and 3D Gaussian Splatting.
 
 \subsection{SMPL-X Body Model}
-Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage.
+Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage. In the remainder of this section, we go over the posing process as defined in the SMPL-X model \cite{smplx}. For more details we refer the reader to the original SMPL-X paper \cite{smplx}.
 
 \paragraph{SMPL-X model overview.} In general, SMPL-X is a mesh-based model defined as the following function:
 
@@ -64,7 +64,7 @@ In practice, in our work, we do not use facial expressions because Human3R does 
 \paragraph{Converting pose parameters into global transformations.} Next, we convert the pose parameters $\theta$ from axis-angle representation to rotation matrices using Rodrigues' formula. As a result, for each of the $K$ joints in the kinematic tree of the SMPL-X body model we obtain a rotation matrix $R_{i} \in \mathbb{R}^{3 \times 3}$ where $i = 1, \ldots, K$ (in our setup, $K=55$). These rotation matrices represent the local joint rotations with respect to the parent joint in the kinematic tree.
 
 \paragraph{Pose-dependent deformations.}
-In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging. These offsets are applied in the canonical space before skinning. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
+In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging \cite{smpl}. These offsets are applied in the canonical space before skinning. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
 
 We convert each of these local joint \textit{rotations} to local joint \textit{transformation} matrices $G_{i} \in \mathbb{R}^{4 \times 4}$ by appending the joint translation and a row for homogeneous coordinates as follows:
 
@@ -86,7 +86,7 @@ Finally, to transform the rigid transformations from the local joint space to th
 G_{i}^{world} = G_{parent(i)}^{world} \cdot G_{i}
 \end{equation}
 
-where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i)}^{world}$ is the world transformation of the parent joint of joint $i$. We perform this operation recursively starting from the root joint which has no parent.
+where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i)}^{world}$ is the world transformation of the parent joint of joint $i$. We perform this operation recursively starting from the root joint.
 
 \paragraph{Posing the mesh via linear blend skinning and global pose transformations.} Finally, we pose the mesh vertices using linear blend skinning (LBS) and the global joint transformations obtained from forward kinematics. Each vertex $v_{j}$ in the mesh is associated with a set of fixed skinning weights $w_{j,i}$ for each joint $i$ (see the model overview above). The posed vertex position $v_{j}^{posed}$ is then computed as follows:
 
@@ -96,7 +96,7 @@ v_{j}^{posed} = \sum_{i=1}^{K} w_{j,i} \cdot \left(G_{i}^{world} \cdot \begin{bm
 
 where $v_{j}^{shaped}$ is the vertex position after applying shape blendshapes, $B_{p}(\theta)_{j}$ is the pose-dependent offset for vertex $j$, and $(\cdot)_{1:3}$ extracts the first three components of the resulting homogeneous coordinate. This operation is performed for all vertices in the mesh to obtain the final posed mesh $V^{posed}$.
 
-\paragraph{Adding global translation.} To complete the posing process, we add the global translation $t$ to all posed vertices as follows:
+\paragraph{Adding global translation.} To complete the posing process, we add the predicted global translation $t$ to all posed vertices as follows:
 \begin{equation}
 V^{final} = V^{posed} + t
 \end{equation}
@@ -105,16 +105,19 @@ where $V^{final}$ is the final posed mesh with global translation applied.
 
 
 \subsection{3D Gaussians}
-\paragraph{Representation.} We use 3D Gaussians as an explicit scene representation. Each Gaussian is parameterized by its center position $\boldsymbol{\mu}\in\mathbb{R}^{3}$, an anisotropic scale $\boldsymbol{\sigma}\in\mathbb{R}^{3}$ (diagonal standard deviations), a rotation quaternion $\mathbf{q}\in\mathbb{R}^{4}$, an opacity $\alpha\in\mathbb{R}$, and a color $\mathbf{c}\in\mathbb{R}^{3}$ (RGB in our implementation). Together, these parameters define an oriented anisotropic density blob in 3D. 
+
+We use 3D Gaussians \cite{3dgs} as an explicit scene representation. In this section, we summarize the key concepts of 3D Gaussian Splatting (3DGS) relevant to our work. For a more detailed explanation, we refer the reader to the original 3DGS paper \cite{3dgs}.
+
+\paragraph{Representation.} Each Gaussian is parameterized by its center position $\boldsymbol{\mu}\in\mathbb{R}^{3}$, an anisotropic scale $\boldsymbol{\sigma}\in\mathbb{R}^{3}$ (diagonal standard deviations), a rotation quaternion $\mathbf{q}\in\mathbb{R}^{4}$, an opacity $\alpha\in\mathbb{R}$, and a color $\mathbf{c}\in\mathbb{R}^{3}$ (RGB in our implementation). Together, these parameters define an oriented anisotropic density blob in 3D. 
 
 \paragraph{Projection of 3D Gaussians to 2D.}
 Given a set of 3D Gaussians $\{\mathcal{G}_{i}\}_{i=1}^{M}$ and a calibrated camera, we render images using differentiable Gaussian splatting \cite{3dgs}. We denote the camera intrinsics by $\mathbf{K}\in\mathbb{R}^{3\times 3}$ and the camera extrinsics by a world-to-camera transform $\mathbf{T}_{\mathrm{w2c}}=[\mathbf{R}\,|\,\mathbf{t}]\in\mathrm{SE}(3)$ with $\mathbf{R}\in\mathrm{SO}(3)$ and $\mathbf{t}\in\mathbb{R}^{3}$.
-Each Gaussian $\mathcal{G}_{i}$ is defined by a 3D mean $\boldsymbol{\mu}_{i}$ and a 3D covariance $\boldsymbol{\Sigma}_{i}$. Note that in our parameterization, the covariance is constructed from the anisotropic scales and rotation as $\boldsymbol{\Sigma}_{i}=\mathbf{R}_{i}\mathrm{diag}(\boldsymbol{\sigma}_{i}^{2})\mathbf{R}_{i}^{\top}$, where $\mathbf{R}_{i}$ is the rotation matrix corresponding to the quaternion $\mathbf{q}_{i}$ \cite{3dgs}. Given these inputs, we first transform the mean and covariance to camera coordinates:
+Each Gaussian $\mathcal{G}_{i}$ is defined by a 3D mean $\boldsymbol{\mu}_{i}$ and a 3D covariance $\boldsymbol{\Sigma}_{i}$. Note that we follow the same parameterization as introduced in the original 3DGS work \cite{3dgs}, i.e., the covariance is constructed from the anisotropic scales and rotation as $\boldsymbol{\Sigma}_{i}=\mathbf{R}_{i}\mathrm{diag}(\boldsymbol{\sigma}_{i}^{2})\mathbf{R}_{i}^{\top}$, where $\mathbf{R}_{i}$ is the rotation matrix corresponding to the quaternion $\mathbf{q}_{i}$. Given these inputs, we first transform the mean and covariance to camera coordinates:
 \begin{equation}
   \boldsymbol{\mu}_{i}^{c} = \mathbf{R}\boldsymbol{\mu}_{i} + \mathbf{t}, \qquad
   \boldsymbol{\Sigma}_{i}^{c} = \mathbf{R}\boldsymbol{\Sigma}_{i}\mathbf{R}^{\top}.
 \end{equation}
-We then project the Gaussian to the image plane using a first-order approximation of the pinhole projection \cite{3dgs}. Let $\pi(\cdot)$ denote the standard pinhole projection with intrinsics $\mathbf{K}$, which maps a camera-space point to pixel coordinates by perspective division followed by multiplication by $\mathbf{K}$. We denote by $\mathbf{J}_{i}=\frac{\partial \pi}{\partial \mathbf{x}}\big|_{\boldsymbol{\mu}_{i}^{c}}$ the Jacobian of this projection evaluated at the Gaussian mean. The projected mean and covariance are
+We then project the Gaussian to the image plane using a first-order approximation of the pinhole projection as done in \cite{3dgs} as well. Let $\pi(\cdot)$ denote the standard pinhole projection with intrinsics $\mathbf{K}$, which maps a camera-space point to pixel coordinates by perspective division followed by multiplication by $\mathbf{K}$. We denote by $\mathbf{J}_{i}=\frac{\partial \pi}{\partial \mathbf{x}}\big|_{\boldsymbol{\mu}_{i}^{c}}$ the Jacobian of this projection evaluated at the Gaussian mean \cite{3dgs}. The projected mean and covariance are
 \begin{equation}
   \mathbf{u}_{i}=\pi(\boldsymbol{\mu}_{i}^{c}), \qquad
   \boldsymbol{\Sigma}_{i}^{\mathrm{2D}} = \mathbf{J}_{i}\boldsymbol{\Sigma}_{i}^{c}\mathbf{J}_{i}^{\top}.
@@ -122,7 +125,7 @@ We then project the Gaussian to the image plane using a first-order approximatio
 Intuitively, after projection each 3D Gaussian becomes a soft 2D ellipse in the image. The ellipse is centered at the projected mean $\mathbf{u}_{i}$ and its shape and size are determined by the projected covariance $\boldsymbol{\Sigma}_{i}^{\mathrm{2D}}$. 
 
 \paragraph{Rasterization.}
-Given the projected ellipses, rasterization turns their per-pixel contributions into the final rendered image by accumulating colors and opacities along each camera ray. Specifically, we start by computing \textit{for each pixel} the weight of its surrounding Gaussians which fall within a predefined radius. The weight for each such Gaussian with index $i$ at pixel location $\mathbf{u}$ is computed as:
+Given the projected ellipses, rasterization turns their per-pixel contributions into the final rendered image by accumulating colors and opacities along each camera ray \cite{3dgs}. Specifically, we start by computing \textit{for each pixel} the weight of its surrounding Gaussians which fall within a predefined radius. The weight for each such Gaussian with index $i$ at pixel location $\mathbf{u}$ is computed as:
 
 \begin{equation}
   w_{i}(\mathbf{u}) = \,\exp\!\left(
@@ -142,7 +145,7 @@ In words, we assign higher weights to Gaussians that are closer to the pixel cen
 \begin{equation}
   \mathbf{C}(\mathbf{u}) = \sum_{i=1}^{M} T_{i}(\mathbf{u})\,a_{i}(\mathbf{u})\,\mathbf{c}_{i}
 \end{equation}
-Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ at pixel $\mathbf{u}$, computed from its learned opacity $\alpha_{i}$ and its spatial footprint weight $w_{i}(\mathbf{u})$. The accumulated transmittance $T_{i}(\mathbf{u})$ is the fraction of light that reaches Gaussian $i$ after passing through all closer Gaussians. The final pixel color $\mathbf{C}(\mathbf{u})$ is then obtained by summing each Gaussian's color $\mathbf{c}_{i}$ weighted by its effective opacity and the accumulated transmittance.
+Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ at pixel $\mathbf{u}$, computed from its learned opacity $\alpha_{i}$ and its spatial footprint weight $w_{i}(\mathbf{u})$. The accumulated transmittance $T_{i}(\mathbf{u})$ is the fraction of light that reaches Gaussian $i$ after passing through all closer Gaussians \cite{3dgs}. The final pixel color $\mathbf{C}(\mathbf{u})$ is then obtained by summing each Gaussian's color $\mathbf{c}_{i}$ weighted by its effective opacity and the accumulated transmittance.
 
 \paragraph{Making use of rendering library.} In practice, we use the gsplat library \cite{ye2025gsplat} to handle the whole rendering process, including projection and rasterization. Importantly, the whole process is differentiable, which allows us to optimize the 3D Gaussian parameters.
 
@@ -150,7 +153,7 @@ Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ a
 
 Our input consists only of the RGB frames of a monocular video capturing multiple people interacting in a dynamic scene. The video can be captured with either a static or a moving camera. No camera parameters, segmentations, or body model parameters are given at test time. Our pipeline estimates, for each frame, the camera parameters (including intrinsics, estimated within the Human3R pipeline from its depth predictions) and per-person SMPL-X parameters, and uses them to estimate a canonical 3D Gaussian Splatting (3DGS) representation. The final output is a 4D scene representation that includes (i) a canonical 3DGS model, (ii) per-frame SMPL-X parameters for each person, and (iii) per-frame camera parameters. If needed, the 3DGS can be converted to a mesh representation for visualization and evaluation. We represent geometry in meters.
 
-We assume that the input video does not contain severe motion blur and that the people are not persistently occluded by large objects. We focus on reconstructing the dynamic humans and do not aim to reconstruct dynamic non-human objects. Our experiments cover short sequences (up to about 10 seconds), and we treat longer videos as outside the validated scope of this work.
+We assume that the input video does not contain severe motion blur and that the people are not persistently occluded by large objects. We focus on reconstructing the dynamic humans and do not aim to reconstruct dynamic non-human objects. Our experiments cover short sequences (up to about 10 seconds). 
 
 Our evaluation axes reflect the overall objectives of the thesis. First, we target high-quality appearance from arbitrary viewpoints, which we assess via novel view synthesis. Second, we aim for realistic geometry and motion, which we assess via pose estimation and mesh reconstruction metrics. Third, we aim to correctly separate dynamic humans from the static background, which we assess via instance segmentation metrics. We define the specific metrics and evaluation protocols in the Experiments section.
 
@@ -170,8 +173,8 @@ Next, we run SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmen
 \paragraph{LHM initialization.}
 Finally, we initialize a canonical 3DGS model for each person using LHM \cite{qiu2025lhm}. LHM predicts the Gaussians in its neutral canonical pose space. For simplicity, we always use the first video frame as the reference frame: we mask the frame with the corresponding SAM3 instance mask and feed the masked image to LHM.
 
-\paragraph{Limitations.}
-Preprocessing can fail in several ways. SAM3 may miss all people in a scene or lose a person for a subset of frames, which requires manual inspection. In addition, mask track identities may not always match the motion tracks and ground truth track identities, and we need to ensure that we process all detected people. These limitations motivate careful curation of the preprocessed outputs before training.
+% \paragraph{Limitations.}
+% Preprocessing can fail in several ways. SAM3 may miss all people in a scene or lose a person for a subset of frames, which requires manual inspection. In addition, mask track identities may not always match the motion tracks and ground truth track identities, and we need to ensure that we process all detected people. These limitations motivate careful curation of the preprocessed outputs before training.
 
 
 \section{Novel Training View Synthesis with DiFix}
@@ -326,7 +329,7 @@ We supervise the rendered RGB with foreground masks to focus the objective on th
 We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
 
 \paragraph{Canonical regularization.}
-We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.\newline
+We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts \cite{qiu2025lhm}.\newline
 For ASAP, let $\mathbf{s}\in\mathbb{R}^{N\times 3}$ denote the (log-)scales and $\mathbf{s}^+=\exp(\mathbf{s})$ their positive version; we compute
 \begin{equation}
   \mathcal{L}_{\mathrm{ASAP}} = \frac{1}{N}\sum_{i=1}^{N}\left\lVert \mathbf{s}^+_i - \mathrm{mean}(\mathbf{s}^+_i)\mathbf{1}\right\rVert_2^2.
