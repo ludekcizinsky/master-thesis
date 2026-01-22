@@ -29,7 +29,7 @@ A = \begin{bmatrix} R & t \\ 0 & 1 \end{bmatrix}
 where $R$ is a $3\times 3$ rotation matrix and $t$ is a $3\times 1$ translation vector. We make use of homogeneous coordinates throughout this work, especially when working with SMPL-X transformations and 3D Gaussian Splatting.
 
 \subsection{SMPL-X Body Model}
-Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage.
+Skinned Multi-Person Linear Model eXtended (SMPL-X) \cite{smplx} is a parametric 3D human body model that represents a minimally clothed human body (it does not model clothing geometry). It defines parameters that control both body shape and articulation. Shape parameters $\beta$ capture person-specific attributes such as body proportions and are constant across frames. Pose parameters $\theta$ control the articulation of the body (and, in SMPL-X, also hands and face). Given these parameters, SMPL-X maps a canonical template mesh to a posed mesh using forward kinematics and linear blend skinning (LBS). In our work, we use SMPL-X as a strong geometric prior to position and deform our explicit 3D Gaussian Splatting representation. Unless stated otherwise, SMPL-X parameters are estimated during preprocessing and are kept fixed during the 3DGS optimization stage. In the remainder of this section, we go over the posing process as defined in the SMPL-X model \cite{smplx}. For more details we refer the reader to the original SMPL-X paper \cite{smplx}.
 
 \paragraph{SMPL-X model overview.} In general, SMPL-X is a mesh-based model defined as the following function:
 
@@ -105,7 +105,10 @@ where $V^{final}$ is the final posed mesh with global translation applied.
 
 
 \subsection{3D Gaussians}
-\paragraph{Representation.} We use 3D Gaussians as an explicit scene representation. Each Gaussian is parameterized by its center position $\boldsymbol{\mu}\in\mathbb{R}^{3}$, an anisotropic scale $\boldsymbol{\sigma}\in\mathbb{R}^{3}$ (diagonal standard deviations), a rotation quaternion $\mathbf{q}\in\mathbb{R}^{4}$, an opacity $\alpha\in\mathbb{R}$, and a color $\mathbf{c}\in\mathbb{R}^{3}$ (RGB in our implementation). Together, these parameters define an oriented anisotropic density blob in 3D. 
+
+We use 3D Gaussians \cite{3dgs} as an explicit scene representation. In this section, we summarize the key concepts of 3D Gaussian Splatting (3DGS) relevant to our work. For a more detailed explanation, we refer the reader to the original 3DGS paper \cite{3dgs}.
+
+\paragraph{Representation.} Each Gaussian is parameterized by its center position $\boldsymbol{\mu}\in\mathbb{R}^{3}$, an anisotropic scale $\boldsymbol{\sigma}\in\mathbb{R}^{3}$ (diagonal standard deviations), a rotation quaternion $\mathbf{q}\in\mathbb{R}^{4}$, an opacity $\alpha\in\mathbb{R}$, and a color $\mathbf{c}\in\mathbb{R}^{3}$ (RGB in our implementation). Together, these parameters define an oriented anisotropic density blob in 3D. 
 
 \paragraph{Projection of 3D Gaussians to 2D.}
 Given a set of 3D Gaussians $\{\mathcal{G}_{i}\}_{i=1}^{M}$ and a calibrated camera, we render images using differentiable Gaussian splatting \cite{3dgs}. We denote the camera intrinsics by $\mathbf{K}\in\mathbb{R}^{3\times 3}$ and the camera extrinsics by a world-to-camera transform $\mathbf{T}_{\mathrm{w2c}}=[\mathbf{R}\,|\,\mathbf{t}]\in\mathrm{SE}(3)$ with $\mathbf{R}\in\mathrm{SO}(3)$ and $\mathbf{t}\in\mathbb{R}^{3}$.
@@ -122,7 +125,7 @@ We then project the Gaussian to the image plane using a first-order approximatio
 Intuitively, after projection each 3D Gaussian becomes a soft 2D ellipse in the image. The ellipse is centered at the projected mean $\mathbf{u}_{i}$ and its shape and size are determined by the projected covariance $\boldsymbol{\Sigma}_{i}^{\mathrm{2D}}$. 
 
 \paragraph{Rasterization.}
-Given the projected ellipses, rasterization turns their per-pixel contributions into the final rendered image by accumulating colors and opacities along each camera ray. Specifically, we start by computing \textit{for each pixel} the weight of its surrounding Gaussians which fall within a predefined radius. The weight for each such Gaussian with index $i$ at pixel location $\mathbf{u}$ is computed as:
+Given the projected ellipses, rasterization turns their per-pixel contributions into the final rendered image by accumulating colors and opacities along each camera ray \cite{3dgs}. Specifically, we start by computing \textit{for each pixel} the weight of its surrounding Gaussians which fall within a predefined radius. The weight for each such Gaussian with index $i$ at pixel location $\mathbf{u}$ is computed as:
 
 \begin{equation}
   w_{i}(\mathbf{u}) = \,\exp\!\left(
@@ -326,7 +329,7 @@ We supervise the rendered RGB with foreground masks to focus the objective on th
 We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
 
 \paragraph{Canonical regularization.}
-We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts.\newline
+We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts \cite{qiu2025lhm}.\newline
 For ASAP, let $\mathbf{s}\in\mathbb{R}^{N\times 3}$ denote the (log-)scales and $\mathbf{s}^+=\exp(\mathbf{s})$ their positive version; we compute
 \begin{equation}
   \mathcal{L}_{\mathrm{ASAP}} = \frac{1}{N}\sum_{i=1}^{N}\left\lVert \mathbf{s}^+_i - \mathrm{mean}(\mathbf{s}^+_i)\mathbf{1}\right\rVert_2^2.
