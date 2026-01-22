@@ -511,8 +511,8 @@ def main(args: Args) -> None:
 
     if background_handle is not None:
         with server.gui.add_folder("Background"):
-            checkbox = server.gui.add_checkbox("Show Background", False)
-            depth_slider = server.gui.add_slider(
+            bg_checkbox = server.gui.add_checkbox("Show Background", False)
+            bg_depth_slider = server.gui.add_slider(
                 "Max Depth (m)",
                 min=0.5,
                 max=20.0,
@@ -520,19 +520,19 @@ def main(args: Args) -> None:
                 initial_value=float(args.background_max_depth),
             )
 
-            @checkbox.on_update
-            def _(_event=None, handle=background_handle, checkbox=checkbox) -> None:
-                handle.visible = bool(checkbox.value)
+            @bg_checkbox.on_update
+            def _(_event=None, handle=background_handle, bg_checkbox=bg_checkbox) -> None:
+                handle.visible = bool(bg_checkbox.value)
 
-            @depth_slider.on_update
-            def _(_event=None) -> None:
+            @bg_depth_slider.on_update
+            def _(_event=None, bg_checkbox=bg_checkbox) -> None:
                 nonlocal background_handle
                 points, colors = _depth_to_point_cloud(
                     background_depth,
                     background_intr,
                     background_c2w,
                     stride=args.depth_stride,
-                    max_depth=float(depth_slider.value),
+                    max_depth=float(bg_depth_slider.value),
                     rgb=background_rgb,
                 )
                 if colors is None:
@@ -549,7 +549,7 @@ def main(args: Args) -> None:
                         point_size=float(args.background_point_size),
                         point_shape="rounded",
                     )
-                background_handle.visible = bool(checkbox.value)
+                background_handle.visible = bool(bg_checkbox.value)
 
     if gs_person_handles:
         with server.gui.add_folder("3DGS"):
