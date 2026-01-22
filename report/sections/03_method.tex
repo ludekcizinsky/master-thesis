@@ -64,7 +64,7 @@ In practice, in our work, we do not use facial expressions because Human3R does 
 \paragraph{Converting pose parameters into global transformations.} Next, we convert the pose parameters $\theta$ from axis-angle representation to rotation matrices using Rodrigues' formula. As a result, for each of the $K$ joints in the kinematic tree of the SMPL-X body model we obtain a rotation matrix $R_{i} \in \mathbb{R}^{3 \times 3}$ where $i = 1, \ldots, K$ (in our setup, $K=55$). These rotation matrices represent the local joint rotations with respect to the parent joint in the kinematic tree.
 
 \paragraph{Pose-dependent deformations.}
-In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging. These offsets are applied in the canonical space before skinning. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
+In addition to shape and expression blendshapes, the standard SMPL-X formulation includes pose-dependent blendshapes $B_{p}(\theta)$, which model non-linear pose effects such as muscle bulging \cite{smpl}. These offsets are applied in the canonical space before skinning. We rely on the standard SMPL-X implementation \cite{smplx} for these details.
 
 We convert each of these local joint \textit{rotations} to local joint \textit{transformation} matrices $G_{i} \in \mathbb{R}^{4 \times 4}$ by appending the joint translation and a row for homogeneous coordinates as follows:
 
@@ -109,12 +109,12 @@ where $V^{final}$ is the final posed mesh with global translation applied.
 
 \paragraph{Projection of 3D Gaussians to 2D.}
 Given a set of 3D Gaussians $\{\mathcal{G}_{i}\}_{i=1}^{M}$ and a calibrated camera, we render images using differentiable Gaussian splatting \cite{3dgs}. We denote the camera intrinsics by $\mathbf{K}\in\mathbb{R}^{3\times 3}$ and the camera extrinsics by a world-to-camera transform $\mathbf{T}_{\mathrm{w2c}}=[\mathbf{R}\,|\,\mathbf{t}]\in\mathrm{SE}(3)$ with $\mathbf{R}\in\mathrm{SO}(3)$ and $\mathbf{t}\in\mathbb{R}^{3}$.
-Each Gaussian $\mathcal{G}_{i}$ is defined by a 3D mean $\boldsymbol{\mu}_{i}$ and a 3D covariance $\boldsymbol{\Sigma}_{i}$. Note that in our parameterization, the covariance is constructed from the anisotropic scales and rotation as $\boldsymbol{\Sigma}_{i}=\mathbf{R}_{i}\mathrm{diag}(\boldsymbol{\sigma}_{i}^{2})\mathbf{R}_{i}^{\top}$, where $\mathbf{R}_{i}$ is the rotation matrix corresponding to the quaternion $\mathbf{q}_{i}$ \cite{3dgs}. Given these inputs, we first transform the mean and covariance to camera coordinates:
+Each Gaussian $\mathcal{G}_{i}$ is defined by a 3D mean $\boldsymbol{\mu}_{i}$ and a 3D covariance $\boldsymbol{\Sigma}_{i}$. Note that we follow the same parameterization as introduced in the original 3DGS work \cite{3dgs}, i.e., the covariance is constructed from the anisotropic scales and rotation as $\boldsymbol{\Sigma}_{i}=\mathbf{R}_{i}\mathrm{diag}(\boldsymbol{\sigma}_{i}^{2})\mathbf{R}_{i}^{\top}$, where $\mathbf{R}_{i}$ is the rotation matrix corresponding to the quaternion $\mathbf{q}_{i}$. Given these inputs, we first transform the mean and covariance to camera coordinates:
 \begin{equation}
   \boldsymbol{\mu}_{i}^{c} = \mathbf{R}\boldsymbol{\mu}_{i} + \mathbf{t}, \qquad
   \boldsymbol{\Sigma}_{i}^{c} = \mathbf{R}\boldsymbol{\Sigma}_{i}\mathbf{R}^{\top}.
 \end{equation}
-We then project the Gaussian to the image plane using a first-order approximation of the pinhole projection \cite{3dgs}. Let $\pi(\cdot)$ denote the standard pinhole projection with intrinsics $\mathbf{K}$, which maps a camera-space point to pixel coordinates by perspective division followed by multiplication by $\mathbf{K}$. We denote by $\mathbf{J}_{i}=\frac{\partial \pi}{\partial \mathbf{x}}\big|_{\boldsymbol{\mu}_{i}^{c}}$ the Jacobian of this projection evaluated at the Gaussian mean. The projected mean and covariance are
+We then project the Gaussian to the image plane using a first-order approximation of the pinhole projection as done in \cite{3dgs} as well. Let $\pi(\cdot)$ denote the standard pinhole projection with intrinsics $\mathbf{K}$, which maps a camera-space point to pixel coordinates by perspective division followed by multiplication by $\mathbf{K}$. We denote by $\mathbf{J}_{i}=\frac{\partial \pi}{\partial \mathbf{x}}\big|_{\boldsymbol{\mu}_{i}^{c}}$ the Jacobian of this projection evaluated at the Gaussian mean \cite{3dgs}. The projected mean and covariance are
 \begin{equation}
   \mathbf{u}_{i}=\pi(\boldsymbol{\mu}_{i}^{c}), \qquad
   \boldsymbol{\Sigma}_{i}^{\mathrm{2D}} = \mathbf{J}_{i}\boldsymbol{\Sigma}_{i}^{c}\mathbf{J}_{i}^{\top}.
@@ -142,7 +142,7 @@ In words, we assign higher weights to Gaussians that are closer to the pixel cen
 \begin{equation}
   \mathbf{C}(\mathbf{u}) = \sum_{i=1}^{M} T_{i}(\mathbf{u})\,a_{i}(\mathbf{u})\,\mathbf{c}_{i}
 \end{equation}
-Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ at pixel $\mathbf{u}$, computed from its learned opacity $\alpha_{i}$ and its spatial footprint weight $w_{i}(\mathbf{u})$. The accumulated transmittance $T_{i}(\mathbf{u})$ is the fraction of light that reaches Gaussian $i$ after passing through all closer Gaussians. The final pixel color $\mathbf{C}(\mathbf{u})$ is then obtained by summing each Gaussian's color $\mathbf{c}_{i}$ weighted by its effective opacity and the accumulated transmittance.
+Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ at pixel $\mathbf{u}$, computed from its learned opacity $\alpha_{i}$ and its spatial footprint weight $w_{i}(\mathbf{u})$. The accumulated transmittance $T_{i}(\mathbf{u})$ is the fraction of light that reaches Gaussian $i$ after passing through all closer Gaussians \cite{3dgs}. The final pixel color $\mathbf{C}(\mathbf{u})$ is then obtained by summing each Gaussian's color $\mathbf{c}_{i}$ weighted by its effective opacity and the accumulated transmittance.
 
 \paragraph{Making use of rendering library.} In practice, we use the gsplat library \cite{ye2025gsplat} to handle the whole rendering process, including projection and rasterization. Importantly, the whole process is differentiable, which allows us to optimize the 3D Gaussian parameters.
 
