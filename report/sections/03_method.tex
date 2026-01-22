@@ -86,7 +86,7 @@ Finally, to transform the rigid transformations from the local joint space to th
 G_{i}^{world} = G_{parent(i)}^{world} \cdot G_{i}
 \end{equation}
 
-where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i)}^{world}$ is the world transformation of the parent joint of joint $i$. We perform this operation recursively starting from the root joint which has no parent.
+where $G_{i}^{world}$ is the world transformation of joint $i$, and $G_{parent(i)}^{world}$ is the world transformation of the parent joint of joint $i$. We perform this operation recursively starting from the root joint.
 
 \paragraph{Posing the mesh via linear blend skinning and global pose transformations.} Finally, we pose the mesh vertices using linear blend skinning (LBS) and the global joint transformations obtained from forward kinematics. Each vertex $v_{j}$ in the mesh is associated with a set of fixed skinning weights $w_{j,i}$ for each joint $i$ (see the model overview above). The posed vertex position $v_{j}^{posed}$ is then computed as follows:
 
@@ -96,7 +96,7 @@ v_{j}^{posed} = \sum_{i=1}^{K} w_{j,i} \cdot \left(G_{i}^{world} \cdot \begin{bm
 
 where $v_{j}^{shaped}$ is the vertex position after applying shape blendshapes, $B_{p}(\theta)_{j}$ is the pose-dependent offset for vertex $j$, and $(\cdot)_{1:3}$ extracts the first three components of the resulting homogeneous coordinate. This operation is performed for all vertices in the mesh to obtain the final posed mesh $V^{posed}$.
 
-\paragraph{Adding global translation.} To complete the posing process, we add the global translation $t$ to all posed vertices as follows:
+\paragraph{Adding global translation.} To complete the posing process, we add the predicted global translation $t$ to all posed vertices as follows:
 \begin{equation}
 V^{final} = V^{posed} + t
 \end{equation}
@@ -150,7 +150,7 @@ Here, $a_{i}(\mathbf{u})$ is the effective opacity contributed by Gaussian $i$ a
 
 Our input consists only of the RGB frames of a monocular video capturing multiple people interacting in a dynamic scene. The video can be captured with either a static or a moving camera. No camera parameters, segmentations, or body model parameters are given at test time. Our pipeline estimates, for each frame, the camera parameters (including intrinsics, estimated within the Human3R pipeline from its depth predictions) and per-person SMPL-X parameters, and uses them to estimate a canonical 3D Gaussian Splatting (3DGS) representation. The final output is a 4D scene representation that includes (i) a canonical 3DGS model, (ii) per-frame SMPL-X parameters for each person, and (iii) per-frame camera parameters. If needed, the 3DGS can be converted to a mesh representation for visualization and evaluation. We represent geometry in meters.
 
-We assume that the input video does not contain severe motion blur and that the people are not persistently occluded by large objects. We focus on reconstructing the dynamic humans and do not aim to reconstruct dynamic non-human objects. Our experiments cover short sequences (up to about 10 seconds), and we treat longer videos as outside the validated scope of this work.
+We assume that the input video does not contain severe motion blur and that the people are not persistently occluded by large objects. We focus on reconstructing the dynamic humans and do not aim to reconstruct dynamic non-human objects. Our experiments cover short sequences (up to about 10 seconds). 
 
 Our evaluation axes reflect the overall objectives of the thesis. First, we target high-quality appearance from arbitrary viewpoints, which we assess via novel view synthesis. Second, we aim for realistic geometry and motion, which we assess via pose estimation and mesh reconstruction metrics. Third, we aim to correctly separate dynamic humans from the static background, which we assess via instance segmentation metrics. We define the specific metrics and evaluation protocols in the Experiments section.
 
@@ -170,8 +170,8 @@ Next, we run SAM3 \cite{carion2025sam3segmentconcepts} to obtain instance segmen
 \paragraph{LHM initialization.}
 Finally, we initialize a canonical 3DGS model for each person using LHM \cite{qiu2025lhm}. LHM predicts the Gaussians in its neutral canonical pose space. For simplicity, we always use the first video frame as the reference frame: we mask the frame with the corresponding SAM3 instance mask and feed the masked image to LHM.
 
-\paragraph{Limitations.}
-Preprocessing can fail in several ways. SAM3 may miss all people in a scene or lose a person for a subset of frames, which requires manual inspection. In addition, mask track identities may not always match the motion tracks and ground truth track identities, and we need to ensure that we process all detected people. These limitations motivate careful curation of the preprocessed outputs before training.
+% \paragraph{Limitations.}
+% Preprocessing can fail in several ways. SAM3 may miss all people in a scene or lose a person for a subset of frames, which requires manual inspection. In addition, mask track identities may not always match the motion tracks and ground truth track identities, and we need to ensure that we process all detected people. These limitations motivate careful curation of the preprocessed outputs before training.
 
 
 \section{Novel Training View Synthesis with DiFix}
