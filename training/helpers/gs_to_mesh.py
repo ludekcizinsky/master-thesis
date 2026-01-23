@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import open3d as o3d
-import torch
 from skimage.measure import marching_cubes
 
 from training.helpers.gs_renderer import Camera
@@ -26,37 +24,21 @@ class TsdfConfig:
 
 @dataclass
 class MarchingCubesConfig:
-    grid_size: int = 96
-    padding: float = 0.05
-    truncation: float = 2.0
-    iso_level: float = 0.05
-    sigma_scale: float = 0.7
+    grid_size: int = 160
+    sigma_scale: float = 0.6
+    iso_level: float = 0.07
+    truncation: float = 2.5
+    min_opacity: float = 0.02
     min_sigma: float = 1e-4
     max_sigma: Optional[float] = None
-    min_opacity: float = 0.01
     max_gaussians: Optional[int] = None
     seed: int = 0
+    padding: float = 0.05
 
 
 # ---------------------------------------------------------
 # Marching cubes extraction
 # ---------------------------------------------------------
-def _split_person_ids(state: Dict[str, torch.Tensor]) -> np.ndarray:
-    # Prefer explicit person_ids, fall back to counts, else assume a single person.
-    if "person_ids" in state:
-        return state["person_ids"].detach().cpu().numpy().astype(np.int32)
-
-    counts = state.get("person_gaussian_counts", None)
-    if counts is not None:
-        counts_np = counts.detach().cpu().numpy().astype(np.int32).tolist()
-        ids = []
-        for pid, c in enumerate(counts_np):
-            ids.extend([pid] * int(c))
-        return np.asarray(ids, dtype=np.int32)
-
-    return np.zeros((state["xyz"].shape[0],), dtype=np.int32)
-
-
 def _prepare_gaussians(
     posed_3dgs,
     sigma_scale: float,

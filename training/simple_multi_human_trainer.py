@@ -2122,7 +2122,6 @@ class MultiHumanTrainer:
                         process=False,
                     ).export(merged_smplx_path)
             
-            quit()
 
     @torch.no_grad()
     def eval_loop(self, epoch):
