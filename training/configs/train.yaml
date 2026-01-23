@@ -86,7 +86,7 @@ nvs_eval:
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2
 
-gs_to_mesh_method: tsdf
+gs_to_mesh_method: tsdf # options: tsdf, mc
 
 reconstruction_eval:
   icp:

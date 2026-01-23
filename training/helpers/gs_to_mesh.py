@@ -26,12 +26,11 @@ class TsdfConfig:
 
 @dataclass
 class MarchingCubesConfig:
-
     grid_size: int = 96
     padding: float = 0.05
-    truncation: float = 3.0
+    truncation: float = 2.0
     iso_level: float = 0.05
-    sigma_scale: float = 1.0
+    sigma_scale: float = 0.7
     min_sigma: float = 1e-4
     max_sigma: Optional[float] = None
     min_opacity: float = 0.01
@@ -59,9 +58,7 @@ def _split_person_ids(state: Dict[str, torch.Tensor]) -> np.ndarray:
 
 
 def _prepare_gaussians(
-    state: Dict[str, torch.Tensor],
-    mask: np.ndarray,
-    *,
+    posed_3dgs,
     sigma_scale: float,
     min_sigma: float,
     max_sigma: Optional[float],
@@ -70,16 +67,16 @@ def _prepare_gaussians(
     seed: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     # Extract per-person arrays and normalize opacity/scales.
-    xyz = state["xyz"].detach().cpu().numpy().astype(np.float32)[mask]
-    scaling = state["scaling"].detach().cpu().numpy().astype(np.float32)[mask]
-    opacity = state["opacity"].detach().cpu().numpy().astype(np.float32)[mask]
+    xyz = posed_3dgs.xyz.detach().cpu().numpy().astype(np.float32)
+    scaling = posed_3dgs.scaling.detach().cpu().numpy().astype(np.float32)
+    opacity = posed_3dgs.opacity.detach().cpu().numpy().astype(np.float32)
 
     if opacity.ndim == 2 and opacity.shape[-1] == 1:
         opacity = opacity[:, 0]
     opacity = np.clip(opacity, 0.0, 1.0)
 
+    # Uniform downsample to cap density computation cost.
     if max_gaussians is not None and xyz.shape[0] > max_gaussians:
-        # Uniform downsample to cap density computation cost.
         rng = np.random.default_rng(seed)
         idx = rng.choice(xyz.shape[0], size=max_gaussians, replace=False)
         xyz = xyz[idx]
@@ -167,24 +164,21 @@ def _extract_mesh(
 
 
 def get_meshes_using_mc(
-    state: Dict[str, torch.Tensor],
+    all_posed_gs_list: List,
     cfg: MarchingCubesConfig,
 ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """
     Convert posed 3DGS to per-person meshes
     """
-    person_ids = _split_person_ids(state)
     grid_size = (int(cfg.grid_size), int(cfg.grid_size), int(cfg.grid_size))
     results: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    n_persons = len(all_posed_gs_list)
 
     # Convert each person independently to keep per-person mesh outputs.
-    unique_persons = np.unique(person_ids)
-    for pid in unique_persons:
+    for pid in range(n_persons):
 
-        mask = person_ids == pid
         centers, sigmas, weights = _prepare_gaussians(
-            state,
-            mask,
+            all_posed_gs_list[pid],
             sigma_scale=cfg.sigma_scale,
             min_sigma=cfg.min_sigma,
             max_sigma=cfg.max_sigma,
@@ -208,7 +202,6 @@ def get_meshes_using_mc(
         results[int(pid)] = (vertices, faces)
 
     return results
-
 
 
 # ---------------------------------------------------------
@@ -344,3 +337,12 @@ def get_meshes_from_3dgs(gs_to_mesh_method: str,
             meshes_for_frame[person_idx] = (vertices, faces)
 
         return meshes_for_frame
+
+    elif gs_to_mesh_method == "mc":
+        mc_cfg = MarchingCubesConfig()
+        return get_meshes_using_mc(
+            all_posed_gs_list,
+            mc_cfg,
+        )
+    else:
+        raise ValueError(f"Unknown gs_to_mesh_method: {gs_to_mesh_method}")
