@@ -1,45 +1,226 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
-from typing import List, Tuple, Dict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import open3d as o3d
+import torch
+from skimage.measure import marching_cubes
 
 from training.helpers.gs_renderer import Camera
 
+
+# ---------------------------------------------------------
+# Configurations
+# ---------------------------------------------------------
+
 @dataclass
-class MeshConfig:
+class TsdfConfig:
     tsdf_voxel_size: float = 0.005
     tsdf_sdf_trunc: float = 0.02
     tsdf_depth_trunc: float = 12.0
     tsdf_alpha_thresh: float = 0.3
+    tsdf_min_cluster_triangles: int = 100
+
+@dataclass
+class MarchingCubesConfig:
+
+    grid_size: int = 96
+    padding: float = 0.05
+    truncation: float = 3.0
+    iso_level: float = 0.05
+    sigma_scale: float = 1.0
+    min_sigma: float = 1e-4
+    max_sigma: Optional[float] = None
+    min_opacity: float = 0.01
+    max_gaussians: Optional[int] = None
+    seed: int = 0
 
 
-def mesh_config_from_cfg(cfg) -> MeshConfig:
-    if cfg is None:
-        return MeshConfig()
+# ---------------------------------------------------------
+# Marching cubes extraction
+# ---------------------------------------------------------
+def _split_person_ids(state: Dict[str, torch.Tensor]) -> np.ndarray:
+    # Prefer explicit person_ids, fall back to counts, else assume a single person.
+    if "person_ids" in state:
+        return state["person_ids"].detach().cpu().numpy().astype(np.int32)
 
-    if isinstance(cfg, dict):
-        cfg_dict = cfg
+    counts = state.get("person_gaussian_counts", None)
+    if counts is not None:
+        counts_np = counts.detach().cpu().numpy().astype(np.int32).tolist()
+        ids = []
+        for pid, c in enumerate(counts_np):
+            ids.extend([pid] * int(c))
+        return np.asarray(ids, dtype=np.int32)
+
+    return np.zeros((state["xyz"].shape[0],), dtype=np.int32)
+
+
+def _prepare_gaussians(
+    state: Dict[str, torch.Tensor],
+    mask: np.ndarray,
+    *,
+    sigma_scale: float,
+    min_sigma: float,
+    max_sigma: Optional[float],
+    min_opacity: float,
+    max_gaussians: Optional[int],
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Extract per-person arrays and normalize opacity/scales.
+    xyz = state["xyz"].detach().cpu().numpy().astype(np.float32)[mask]
+    scaling = state["scaling"].detach().cpu().numpy().astype(np.float32)[mask]
+    opacity = state["opacity"].detach().cpu().numpy().astype(np.float32)[mask]
+
+    if opacity.ndim == 2 and opacity.shape[-1] == 1:
+        opacity = opacity[:, 0]
+    opacity = np.clip(opacity, 0.0, 1.0)
+
+    if max_gaussians is not None and xyz.shape[0] > max_gaussians:
+        # Uniform downsample to cap density computation cost.
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(xyz.shape[0], size=max_gaussians, replace=False)
+        xyz = xyz[idx]
+        scaling = scaling[idx]
+        opacity = opacity[idx]
+
+    # Isotropic sigma from per-axis scales (rotation ignored).
+    scales = scaling
+    if scales.ndim == 2 and scales.shape[1] == 3:
+        sigma = scales.mean(axis=1)
     else:
-        try:
-            cfg_dict = {k: cfg.get(k) for k in cfg.keys()}
-        except Exception:
-            cfg_dict = {}
+        raise ValueError(f"Expected scaling shape [N,3], got {scaling.shape}")
+    sigma = sigma * float(sigma_scale)
+    sigma = np.clip(sigma, min_sigma, max_sigma if max_sigma is not None else np.inf)
 
-    kwargs = {}
-    for field in fields(MeshConfig):
-        if field.name in cfg_dict and cfg_dict[field.name] is not None:
-            kwargs[field.name] = cfg_dict[field.name]
-    return MeshConfig(**kwargs)
+    keep = opacity >= min_opacity
+    return xyz[keep], sigma[keep], opacity[keep]
 
+
+def _density_grid_from_gaussians(
+    centers: np.ndarray,
+    sigmas: np.ndarray,
+    weights: np.ndarray,
+    grid_size: Tuple[int, int, int],
+    padding: float,
+    truncation: float,
+) -> Tuple[np.ndarray, np.ndarray, Tuple[float, float, float]]:
+    if centers.shape[0] == 0:
+        raise ValueError("No gaussians remaining after filtering.")
+
+    # Build a uniform grid over the gaussian bbox with padding.
+    min_corner = centers.min(axis=0) - padding
+    max_corner = centers.max(axis=0) + padding
+
+    nx, ny, nz = grid_size
+    xs = np.linspace(min_corner[0], max_corner[0], nx, dtype=np.float32)
+    ys = np.linspace(min_corner[1], max_corner[1], ny, dtype=np.float32)
+    zs = np.linspace(min_corner[2], max_corner[2], nz, dtype=np.float32)
+    dx = float(xs[1] - xs[0]) if nx > 1 else 1.0
+    dy = float(ys[1] - ys[0]) if ny > 1 else 1.0
+    dz = float(zs[1] - zs[0]) if nz > 1 else 1.0
+
+    density = np.zeros((nx, ny, nz), dtype=np.float32)
+
+    # Accumulate truncated Gaussian blobs into the grid.
+    for mu, sigma, w in zip(centers, sigmas, weights):
+        radius = truncation * sigma
+        if radius <= 0.0:
+            continue
+        ix0 = max(0, int(np.floor((mu[0] - radius - min_corner[0]) / dx)))
+        ix1 = min(nx - 1, int(np.ceil((mu[0] + radius - min_corner[0]) / dx)))
+        iy0 = max(0, int(np.floor((mu[1] - radius - min_corner[1]) / dy)))
+        iy1 = min(ny - 1, int(np.ceil((mu[1] + radius - min_corner[1]) / dy)))
+        iz0 = max(0, int(np.floor((mu[2] - radius - min_corner[2]) / dz)))
+        iz1 = min(nz - 1, int(np.ceil((mu[2] + radius - min_corner[2]) / dz)))
+
+        if ix1 < ix0 or iy1 < iy0 or iz1 < iz0:
+            continue
+
+        sigma2 = float(sigma * sigma)
+        x = xs[ix0 : ix1 + 1] - mu[0]
+        y = ys[iy0 : iy1 + 1] - mu[1]
+        z = zs[iz0 : iz1 + 1] - mu[2]
+        gx = np.exp(-(x * x) / (2.0 * sigma2)).astype(np.float32)
+        gy = np.exp(-(y * y) / (2.0 * sigma2)).astype(np.float32)
+        gz = np.exp(-(z * z) / (2.0 * sigma2)).astype(np.float32)
+
+        density[ix0 : ix1 + 1, iy0 : iy1 + 1, iz0 : iz1 + 1] += (
+            w * gx[:, None, None] * gy[None, :, None] * gz[None, None, :]
+        )
+
+    return density, min_corner.astype(np.float32), (dx, dy, dz)
+
+
+def _extract_mesh(
+    density: np.ndarray,
+    origin: np.ndarray,
+    spacing: Tuple[float, float, float],
+    iso_level: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    # Marching Cubes expects density on a grid; spacing converts to world units.
+    verts, faces, _, _ = marching_cubes(density, level=iso_level, spacing=spacing)
+    verts = verts + origin[None, :]
+    return verts.astype(np.float32), faces.astype(np.int32)
+
+
+def get_meshes_using_mc(
+    state: Dict[str, torch.Tensor],
+    cfg: MarchingCubesConfig,
+) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+    """
+    Convert posed 3DGS to per-person meshes
+    """
+    person_ids = _split_person_ids(state)
+    grid_size = (int(cfg.grid_size), int(cfg.grid_size), int(cfg.grid_size))
+    results: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+
+    # Convert each person independently to keep per-person mesh outputs.
+    unique_persons = np.unique(person_ids)
+    for pid in unique_persons:
+
+        mask = person_ids == pid
+        centers, sigmas, weights = _prepare_gaussians(
+            state,
+            mask,
+            sigma_scale=cfg.sigma_scale,
+            min_sigma=cfg.min_sigma,
+            max_sigma=cfg.max_sigma,
+            min_opacity=cfg.min_opacity,
+            max_gaussians=cfg.max_gaussians,
+            seed=cfg.seed,
+        )
+
+
+        density, origin, spacing = _density_grid_from_gaussians(
+            centers,
+            sigmas,
+            weights,
+            grid_size=grid_size,
+            padding=cfg.padding,
+            truncation=cfg.truncation,
+        )
+
+        vertices, faces = _extract_mesh(density, origin, spacing, cfg.iso_level)
+
+        results[int(pid)] = (vertices, faces)
+
+    return results
+
+
+
+# ---------------------------------------------------------
+# TSDF based extraction
+# ---------------------------------------------------------
 
 def tsdf_fuse_depths(
     depth_entries: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
     voxel_size: float,
     sdf_trunc: float,
     depth_trunc: float,
+    min_cluster_triangles: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
 
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
@@ -68,13 +249,21 @@ def tsdf_fuse_depths(
     mesh = volume.extract_triangle_mesh()
     if len(mesh.vertices) == 0 or len(mesh.triangles) == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
+    if min_cluster_triangles > 0:
+        triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
+        triangle_clusters = np.asarray(triangle_clusters)
+        cluster_n_triangles = np.asarray(cluster_n_triangles)
+        remove_mask = cluster_n_triangles[triangle_clusters] < int(min_cluster_triangles)
+        if np.any(remove_mask):
+            mesh.remove_triangles_by_mask(remove_mask)
+            mesh.remove_unreferenced_vertices()
     mesh.compute_vertex_normals()
     vertices = np.asarray(mesh.vertices, dtype=np.float32)
     faces = np.asarray(mesh.triangles, dtype=np.int32)
     return vertices, faces
 
 
-def get_meshes_from_3dgs(mesh_cfg: MeshConfig, 
+def get_meshes_from_3dgs(gs_to_mesh_method: str, 
                          all_posed_gs_list: List, 
                          tsdf_camera_files: Dict[int, Dict[str, Dict]],
                          tsdf_cam_ids: List[int], 
@@ -83,72 +272,75 @@ def get_meshes_from_3dgs(mesh_cfg: MeshConfig,
                          render_func
                         ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
 
-    alpha_thresh = mesh_cfg.tsdf_alpha_thresh
-    n_persons = len(all_posed_gs_list)
+    if gs_to_mesh_method == "tsdf":
+        tsdf_cfg = TsdfConfig()
+        alpha_thresh = tsdf_cfg.tsdf_alpha_thresh
+        n_persons = len(all_posed_gs_list)
 
-    # Step 1: Get depth maps from all cameras for each person
-    depth_entries_by_person: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
-        person_idx: [] for person_idx in range(n_persons)
-    }
-    for cam_id in tsdf_cam_ids:
+        # Step 1: Get depth maps from all cameras for each person
+        depth_entries_by_person: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
+            person_idx: [] for person_idx in range(n_persons)
+        }
+        for cam_id in tsdf_cam_ids:
 
-        # - Parse camera params
-        cam_sample = tsdf_camera_files[cam_id][frame_name]
-        K = cam_sample["K"]
-        c2w = cam_sample["c2w"]
-        height, width = render_hw
+            # - Parse camera params
+            cam_sample = tsdf_camera_files[cam_id][frame_name]
+            K = cam_sample["K"]
+            c2w = cam_sample["c2w"]
+            height, width = render_hw
 
-        for person_idx, posed_gs in enumerate(all_posed_gs_list):
+            for person_idx, posed_gs in enumerate(all_posed_gs_list):
 
-            # - Render depth
-            render_res = render_func(
-                posed_gs,
-                Camera.from_c2w(c2w, K, height, width),
-            )
-            depth = (
-                render_res["comp_depth"][0, ..., 0]
-                .detach()
-                .cpu()
-                .numpy()
-                .astype(np.float32)
-            )
-
-            # - Apply alpha thresholding and clean depth
-            if alpha_thresh > 0.0:
-                alpha = (
-                    render_res["comp_mask"][0, ..., 0]
+                # - Render depth
+                render_res = render_func(
+                    posed_gs,
+                    Camera.from_c2w(c2w, K, height, width),
+                )
+                depth = (
+                    render_res["comp_depth"][0, ..., 0]
                     .detach()
                     .cpu()
                     .numpy()
                     .astype(np.float32)
                 )
-                depth = np.where(alpha >= alpha_thresh, depth, 0.0)
-            depth = np.where(np.isfinite(depth), depth, 0.0)
 
-            # - Store entry
-            depth_entries_by_person[person_idx].append(
-                (
-                    depth,
-                    K.detach().cpu().numpy().astype(np.float32),
-                    c2w.detach().cpu().numpy().astype(np.float32),
+                # - Apply alpha thresholding and clean depth
+                if alpha_thresh > 0.0:
+                    alpha = (
+                        render_res["comp_mask"][0, ..., 0]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32)
+                    )
+                    depth = np.where(alpha >= alpha_thresh, depth, 0.0)
+                depth = np.where(np.isfinite(depth), depth, 0.0)
+
+                # - Store entry
+                depth_entries_by_person[person_idx].append(
+                    (
+                        depth,
+                        K.detach().cpu().numpy().astype(np.float32),
+                        c2w.detach().cpu().numpy().astype(np.float32),
+                    )
                 )
+
+        # Step 2: Fuse depths into meshes per person
+        meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        for person_idx in range(n_persons):
+            # - Get depth entries for this person
+            entries = depth_entries_by_person[person_idx]
+
+            # - Fuse the depth maps into a mesh
+            vertices, faces = tsdf_fuse_depths(
+                entries,
+                voxel_size=tsdf_cfg.tsdf_voxel_size,
+                sdf_trunc=tsdf_cfg.tsdf_sdf_trunc,
+                depth_trunc=tsdf_cfg.tsdf_depth_trunc,
+                min_cluster_triangles=tsdf_cfg.tsdf_min_cluster_triangles,
             )
 
-    # Step 2: Fuse depths into meshes per person
-    meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-    for person_idx in range(n_persons):
-        # - Get depth entries for this person
-        entries = depth_entries_by_person[person_idx]
+            # - Store mesh for this person
+            meshes_for_frame[person_idx] = (vertices, faces)
 
-        # - Fuse the depth maps into a mesh
-        vertices, faces = tsdf_fuse_depths(
-            entries,
-            voxel_size=mesh_cfg.tsdf_voxel_size,
-            sdf_trunc=mesh_cfg.tsdf_sdf_trunc,
-            depth_trunc=mesh_cfg.tsdf_depth_trunc,
-        )
-
-        # - Store mesh for this person
-        meshes_for_frame[person_idx] = (vertices, faces)
-
-    return meshes_for_frame
+        return meshes_for_frame

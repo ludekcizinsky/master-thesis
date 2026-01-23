@@ -49,7 +49,7 @@ from training.helpers.debug import (
     create_and_save_depth_debug_vis,
     save_gt_image_and_mask_comparison,
 )
-from training.helpers.gs_to_mesh import mesh_config_from_cfg, get_meshes_from_3dgs
+from training.helpers.gs_to_mesh import get_meshes_from_3dgs
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
     compute_smpl_mpjpe_per_frame,
@@ -1676,8 +1676,6 @@ class MultiHumanTrainer:
 
         # Fetch configurations
         # - 3dgs to mesh config
-        mesh_cfg_node = self.cfg["3dgs_to_mesh"]
-        mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
         tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
         tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()]
         # - reconstruction evaluation config
@@ -1760,7 +1758,8 @@ class MultiHumanTrainer:
                 # -- Posed 3dgs -> posed meshes and save to disk
                 render_func = self.renderer.forward_single_view_gsplat
                 frame_name = str(fnames[view_idx])
-                meshes_for_frame = get_meshes_from_3dgs(mesh_cfg, all_posed_gs_list, tsdf_camera_files, 
+                gs_to_mesh_method = self.cfg.gs_to_mesh_method
+                meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
                                                         tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
                 pred_meshes_by_person.append(meshes_for_frame)
                 merged_mesh = merge_mesh_dict(meshes_for_frame)
@@ -1916,8 +1915,6 @@ class MultiHumanTrainer:
         # - mesh
         save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
-        mesh_cfg_node = self.cfg["3dgs_to_mesh"]
-        mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
         tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
         tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()]
         # - smplx
@@ -2019,7 +2016,8 @@ class MultiHumanTrainer:
 
                 # -- Posed 3dgs -> posed meshes and save to disk
                 render_func = self.renderer.forward_single_view_gsplat
-                meshes_for_frame = get_meshes_from_3dgs(mesh_cfg, all_posed_gs_list, tsdf_camera_files, 
+                gs_to_mesh_method = self.cfg.gs_to_mesh_method
+                meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
                                                         tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
 
                 pred_meshes_by_person.append(meshes_for_frame)
@@ -2123,6 +2121,8 @@ class MultiHumanTrainer:
                         faces=merged_smplx_mesh[1],
                         process=False,
                     ).export(merged_smplx_path)
+            
+            quit()
 
     @torch.no_grad()
     def eval_loop(self, epoch):

@@ -86,11 +86,7 @@ nvs_eval:
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2
 
-3dgs_to_mesh:
-  tsdf_voxel_size: 0.005
-  tsdf_sdf_trunc: 0.02
-  tsdf_depth_trunc: 12.0
-  tsdf_alpha_thresh: 0.3
+gs_to_mesh_method: tsdf
 
 reconstruction_eval:
   icp:
