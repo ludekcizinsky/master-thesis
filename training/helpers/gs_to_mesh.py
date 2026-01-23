@@ -6,6 +6,7 @@ from typing import List, Tuple, Dict
 import numpy as np
 import open3d as o3d
 
+from training.helpers.gs_renderer import Camera
 
 @dataclass
 class MeshConfig:
@@ -71,3 +72,83 @@ def tsdf_fuse_depths(
     vertices = np.asarray(mesh.vertices, dtype=np.float32)
     faces = np.asarray(mesh.triangles, dtype=np.int32)
     return vertices, faces
+
+
+def get_meshes_from_3dgs(mesh_cfg: MeshConfig, 
+                         all_posed_gs_list: List, 
+                         tsdf_camera_files: Dict[int, Dict[str, Dict]],
+                         tsdf_cam_ids: List[int], 
+                         frame_name: str, 
+                         render_hw: Tuple[int, int],
+                         render_func
+                        ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+
+    alpha_thresh = mesh_cfg.tsdf_alpha_thresh
+    n_persons = len(all_posed_gs_list)
+
+    # Step 1: Get depth maps from all cameras for each person
+    depth_entries_by_person: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
+        person_idx: [] for person_idx in range(n_persons)
+    }
+    for cam_id in tsdf_cam_ids:
+
+        # - Parse camera params
+        cam_sample = tsdf_camera_files[cam_id][frame_name]
+        K = cam_sample["K"]
+        c2w = cam_sample["c2w"]
+        height, width = render_hw
+
+        for person_idx, posed_gs in enumerate(all_posed_gs_list):
+
+            # - Render depth
+            render_res = render_func(
+                posed_gs,
+                Camera.from_c2w(c2w, K, height, width),
+            )
+            depth = (
+                render_res["comp_depth"][0, ..., 0]
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+
+            # - Apply alpha thresholding and clean depth
+            if alpha_thresh > 0.0:
+                alpha = (
+                    render_res["comp_mask"][0, ..., 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
+                )
+                depth = np.where(alpha >= alpha_thresh, depth, 0.0)
+            depth = np.where(np.isfinite(depth), depth, 0.0)
+
+            # - Store entry
+            depth_entries_by_person[person_idx].append(
+                (
+                    depth,
+                    K.detach().cpu().numpy().astype(np.float32),
+                    c2w.detach().cpu().numpy().astype(np.float32),
+                )
+            )
+
+    # Step 2: Fuse depths into meshes per person
+    meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    for person_idx in range(n_persons):
+        # - Get depth entries for this person
+        entries = depth_entries_by_person[person_idx]
+
+        # - Fuse the depth maps into a mesh
+        vertices, faces = tsdf_fuse_depths(
+            entries,
+            voxel_size=mesh_cfg.tsdf_voxel_size,
+            sdf_trunc=mesh_cfg.tsdf_sdf_trunc,
+            depth_trunc=mesh_cfg.tsdf_depth_trunc,
+        )
+
+        # - Store mesh for this person
+        meshes_for_frame[person_idx] = (vertices, faces)
+
+    return meshes_for_frame

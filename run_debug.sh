@@ -112,12 +112,12 @@ cd /home/cizinsky/master-thesis
 # path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
 # python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
-# exp_name=v1_all_scenes_tune_after_hi4d_reprocess
-# root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0015
-# path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
-# path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
-# path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift/meshes
-# python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
+exp_name=v301_tsdf_mesh
+root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_lift/evaluation/$exp_name/epoch_0000
+path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
+path_to_posed_meshes=$root_pred_dir/aligned_posed_meshes_per_frame
+path_to_gt_meshes=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift/meshes
+python evaluation/visualise_sequence_of_posed_3dgs.py --posed-3dgs-dir $path_to_posed_3dgs --port 8080 --max-scale 0.02 --max-gaussians 80000 --posed-meshes-dir $path_to_posed_meshes --mesh-opacity 0.5 --gt-meshes-dir $path_to_gt_meshes --gt-mesh-opacity 0.5
 
 # root_pred_dir=/scratch/izar/cizinsky/thesis/results/mmm_walkdance/evaluation/v3_large_refactor_check/epoch_0000
 # path_to_posed_3dgs=$root_pred_dir/posed_3dgs_per_frame
@@ -164,9 +164,9 @@ cd /home/cizinsky/master-thesis
 
 
 # ------ Visualise the eval output of in the wild scene in 3d
-bash train.sh
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000
-python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000
+# bash train.sh
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000
 
 # python playground/debug_tsdf.py \
   # --tsdf-debug-dir /scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000/debug/tsdf_ply \
