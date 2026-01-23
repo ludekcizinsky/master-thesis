@@ -55,7 +55,7 @@ target_cam_ids="[]"
 trn_nv_cam_ids="[0,100,101,102,103,104,105,107]"
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/mmm/lift
 preprocessing_dir=/scratch/izar/cizinsky/thesis/preprocessing/mmm_lift
-python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir trn_nv_gen.camera_ids=$trn_nv_cam_ids wandb.enable=false eval_pretrain=true difix.trn_enable=false gs_to_mesh_method=mc
+python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id  nvs_eval.target_camera_ids=$target_cam_ids test_masks_scene_dir=null test_smpl_params_scene_dir=null smpl_params_scene_dir=null test_smplx_params_scene_dir=null cameras_scene_dir=$preprocessing_dir trn_nv_gen.camera_ids=$trn_nv_cam_ids wandb.enable=true eval_pretrain=true difix.trn_enable=false gs_to_mesh_method=mc
 
 # seq_name="mmm_walkdance"
 # num_persons=3
