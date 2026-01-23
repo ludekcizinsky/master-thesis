@@ -164,5 +164,11 @@ cd /home/cizinsky/master-thesis
 
 
 # ------ Visualise the eval output of in the wild scene in 3d
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v103_saving_individual_3dgs/epoch_0000
+bash train.sh
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000
 python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000
+
+# python playground/debug_tsdf.py \
+  # --tsdf-debug-dir /scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000/debug/tsdf_ply \
+  # --person-id 1 \
+  # --frame 1

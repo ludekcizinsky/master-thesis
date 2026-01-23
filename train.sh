@@ -69,7 +69,7 @@ cd /home/cizinsky/master-thesis
 # ------- In-The-Wild
 seq_name="taichi"
 num_persons=2
-exp_name="v103_saving_individual_3dgs"
+exp_name="v303_tsdf_mesh"
 source_cam_id=0
 target_cam_ids="[]"
 root_gt_dir_path=null

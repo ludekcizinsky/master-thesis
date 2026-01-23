@@ -31,8 +31,7 @@ sys.path.insert(
         os.path.join(os.path.dirname(__file__), "..", "submodules", "lhm")
     ),
 )
-
-from training.helpers.gs_renderer import GS3DRenderer
+from training.helpers.gs_renderer import GS3DRenderer, Camera
 from training.helpers.dataset import (
     SceneDataset, 
     fetch_data_if_available, 
@@ -40,14 +39,17 @@ from training.helpers.dataset import (
     root_dir_to_mask_dir, 
     root_dir_to_skip_frames_path, 
     root_dir_to_depth_dir,
-    fetch_masks_if_exist
+    root_dir_to_all_cameras_dir,
+    fetch_masks_if_exist,
+    intr_to_4x4,
+    extr_to_w2c_4x4
 )
 from training.helpers.debug import (
     save_depth_comparison, 
     create_and_save_depth_debug_vis,
-    save_gt_image_and_mask_comparison
+    save_gt_image_and_mask_comparison,
 )
-from training.helpers.gs_to_mesh import mesh_config_from_cfg, get_meshes_from_3dgs
+from training.helpers.gs_to_mesh import mesh_config_from_cfg, tsdf_fuse_depths
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
     compute_smpl_mpjpe_per_frame,
@@ -144,7 +146,6 @@ def save_binary_mask(tensor: torch.Tensor, filename: str):
     mask = (tensor.detach().cpu().numpy() > 0.5).astype("uint8") * 255
     Image.fromarray(mask.squeeze(-1)).save(filename)
 
-
 def build_renderer():
     renderer = GS3DRenderer(
         human_model_path="/scratch/izar/cizinsky/pretrained/pretrained_models/human_model_files",
@@ -217,6 +218,44 @@ def load_skip_frames(scene_dir: Path) -> List[int]:
         line = f.readline().strip()
         skip_frames = [int(idx_str) for idx_str in line.split(",") if idx_str.isdigit()]
     return skip_frames
+
+
+def get_all_scene_dir_cams(scene_dir: Path, device: torch.device) -> Dict[int, Dict[str, torch.Tensor]]:
+
+    all_cams_dir = root_dir_to_all_cameras_dir(scene_dir)
+    all_camera_ids = [path.stem for path in all_cams_dir.iterdir()]
+
+    cam_id_to_cam_params = dict()
+    for camera_id in all_camera_ids:
+
+        # Fetch all camera files for this camera
+        all_camera_files = sorted(list((all_cams_dir / camera_id).glob("*.npz")))
+        cam_params_for_each_frame = dict()
+        for path in all_camera_files:
+
+            frame_cam_params = dict()
+            with np.load(path) as cams:
+                missing = [k for k in ("intrinsics", "extrinsics") if k not in cams.files]
+                if missing:
+                    raise KeyError(f"Missing keys {missing} in camera file {path}")
+
+                intrinsics = cams["intrinsics"][0] # (3, 3)
+                extrinsics = cams["extrinsics"][0] # (3, 4)
+
+
+            intr = torch.from_numpy(intrinsics).float().to(device)
+            extr = torch.from_numpy(extrinsics).float().to(device)
+
+            w2c = extr_to_w2c_4x4(extr, device)
+            frame_cam_params["c2w"] = torch.inverse(w2c)
+            frame_cam_params["K"] = intr_to_4x4(intr, device)
+            cam_params_for_each_frame[path.stem] = frame_cam_params
+
+        # Store cam params for this camera
+        cam_id_to_cam_params[int(camera_id)] = cam_params_for_each_frame
+
+    return cam_id_to_cam_params
+
 
 # ---------------------------------------------------------------------------
 # Trainer
@@ -487,10 +526,6 @@ class MultiHumanTrainer:
         params = self._trainable_tensors()
         optimizer = torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
-        # Pre-optimization visualization (epoch 0).
-        if self.cfg.eval_pretrain:
-            self.eval_loop(0)
-
         # Training loop
         for epoch in range(self.cfg.epochs):
 
@@ -499,6 +534,10 @@ class MultiHumanTrainer:
             if self._maybe_augment_training_data(epoch):
                 trn_loader = self._build_loader(self.trn_dataset)
                 trn_iter = self._infinite_loader(trn_loader)
+
+            # Pre-optimization visualization (epoch 0).
+            if self.cfg.eval_pretrain and epoch == 0:
+                self.eval_loop(epoch)
 
             trn_ds_size = len(self.trn_dataset)
             total_ds_size = trn_ds_size 
@@ -1880,6 +1919,8 @@ class MultiHumanTrainer:
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
         mesh_cfg_node = self.cfg["3dgs_to_mesh"]
         mesh_cfg = mesh_config_from_cfg(mesh_cfg_node)
+        tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
+        tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()]
         # - smplx
         save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
         save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
@@ -1889,7 +1930,6 @@ class MultiHumanTrainer:
         smplx_layer = smplx_layer.to(self.tuner_device).eval()
         smplx_faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int32)
         expr_dim = int(getattr(getattr(self.renderer.smplx_model, "smpl_x", None), "expr_param_dim", 0))
-
         # - cameras
         save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
         save_dir_cameras.mkdir(parents=True, exist_ok=True)
@@ -1979,14 +2019,63 @@ class MultiHumanTrainer:
                     torch.save(person_state, person_path)
 
                 # -- Posed 3dgs -> posed meshes and save to disk
-                meshes_for_frame = get_meshes_from_3dgs(
-                    posed_gs_state,
-                    save_dir_posed_meshes,
-                    fname_str,
-                    mesh_cfg,
-                    overwrite=True,
-                    write_meshes=False,
-                )
+                alpha_thresh = mesh_cfg.tsdf_alpha_thresh
+
+                # --- Get depth maps from all cameras for each person
+                depth_entries_by_person: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
+                    person_idx: [] for person_idx in range(n_persons)
+                }
+                used_cam_ids = []
+                for cam_id in tsdf_cam_ids:
+                    used_cam_ids.append(int(cam_id))
+                    cam_sample = tsdf_camera_files[cam_id][frame_name]
+                    K = cam_sample["K"]
+                    c2w = cam_sample["c2w"]
+                    height, width = self.trn_render_hw
+
+                    for person_idx, posed_gs in enumerate(all_posed_gs_list):
+                        render_res = self.renderer.forward_single_view_gsplat(
+                            posed_gs,
+                            Camera.from_c2w(c2w, K, height, width),
+                        )
+                        depth = (
+                            render_res["comp_depth"][0, ..., 0]
+                            .detach()
+                            .cpu()
+                            .numpy()
+                            .astype(np.float32)
+                        )
+                        if alpha_thresh > 0.0:
+                            alpha = (
+                                render_res["comp_mask"][0, ..., 0]
+                                .detach()
+                                .cpu()
+                                .numpy()
+                                .astype(np.float32)
+                            )
+                            depth = np.where(alpha >= alpha_thresh, depth, 0.0)
+                        depth = np.where(np.isfinite(depth), depth, 0.0)
+                        depth_entries_by_person[person_idx].append(
+                            (
+                                depth,
+                                K.detach().cpu().numpy().astype(np.float32),
+                                c2w.detach().cpu().numpy().astype(np.float32),
+                            )
+                        )
+
+                # --- Fuse depths into meshes per person
+                meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+                for person_idx in range(n_persons):
+                    entries = depth_entries_by_person.get(person_idx, [])
+                    print(f"Fusing depths for person {person_idx} with {len(entries)} entries")
+                    vertices, faces = tsdf_fuse_depths(
+                        entries,
+                        voxel_size=mesh_cfg.tsdf_voxel_size,
+                        sdf_trunc=mesh_cfg.tsdf_sdf_trunc,
+                        depth_trunc=mesh_cfg.tsdf_depth_trunc,
+                    )
+                    meshes_for_frame[person_idx] = (vertices, faces)
+
                 pred_meshes_by_person.append(meshes_for_frame)
 
                 # -- SMPL-X parameters -> posed meshes
@@ -2088,7 +2177,7 @@ class MultiHumanTrainer:
                         faces=merged_smplx_mesh[1],
                         process=False,
                     ).export(merged_smplx_path)
-
+            quit()
 
     @torch.no_grad()
     def eval_loop(self, epoch):

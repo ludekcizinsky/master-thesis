@@ -87,10 +87,10 @@ nvs_eval:
   downscale_factor: 2
 
 3dgs_to_mesh:
-  grid_size: 96
-  truncation: 2.0
-  sigma_scale: 0.7
-  overwrite: false
+  tsdf_voxel_size: 0.005
+  tsdf_sdf_trunc: 0.02
+  tsdf_depth_trunc: 12.0
+  tsdf_alpha_thresh: 0.3
 
 reconstruction_eval:
   icp:
