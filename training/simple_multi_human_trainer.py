@@ -53,10 +53,10 @@ from training.helpers.debug import (
 from training.helpers.gs_to_mesh import get_meshes_from_3dgs
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
-    compute_smplx_mpjpe_per_frame,
-    compute_smplx_mve_per_frame,
-    compute_smplx_contact_distance_per_frame,
-    compute_smplx_pcdr_per_frame,
+    compute_pose_mpjpe_per_frame,
+    compute_pose_mve_per_frame,
+    compute_pose_contact_distance_per_frame,
+    compute_pose_pcdr_per_frame,
     gt_mesh_from_sample,
     merge_mesh_dict,
     posed_gs_list_to_serializable_dict,
@@ -1737,8 +1737,7 @@ class MultiHumanTrainer:
         self._save_pose_tuned_smplx_params(pred_dataset, pose_tuned_smplx_params_dir)
 
         # Convert the saved pose-tuned SMPL-X params to SMPL format
-        # example command:
-        # bash submodules/smplx/tools/run_conversion.sh $save_dir smplx smpl
+        # (will create save_dir / "smpl" directory with the converted SMPL params)
         subprocess.run([
             "bash",
             "submodules/smplx/tools/run_conversion.sh",
@@ -1787,18 +1786,20 @@ class MultiHumanTrainer:
 
             # - Compute pose metrics
             # -- MPJPE per frame
-            mpjpe_per_frame = compute_smplx_mpjpe_per_frame(
+            mpjpe_per_frame = compute_pose_mpjpe_per_frame(
                 pred_smplx_params,
                 gt_smplx_params_batched,
                 smplx_layer,
                 unit="mm",
+                pose_type="smplx",
             )
             # -- MVE per frame
-            mve_per_frame = compute_smplx_mve_per_frame(
+            mve_per_frame = compute_pose_mve_per_frame(
                 pred_smplx_params,
                 gt_smplx_params_batched,
                 smplx_layer,
                 unit="mm",
+                pose_type="smplx",
             )
             # -- Contact distance per frame (if available)
             batch_has_contact = "contact" in gt_smplx_params_batched
@@ -1807,19 +1808,21 @@ class MultiHumanTrainer:
             elif has_contact != batch_has_contact:
                 raise ValueError("Inconsistent GT contact availability across batches.")
             if batch_has_contact:
-                cd_per_frame = compute_smplx_contact_distance_per_frame(
+                cd_per_frame = compute_pose_contact_distance_per_frame(
                     pred_smplx_params,
                     gt_smplx_params_batched["contact"],
                     smplx_layer,
                     unit="mm",
+                    pose_type="smplx",
                 )
             # -- Percentage of Correct Depth Relations
-            pcdr = compute_smplx_pcdr_per_frame(
+            pcdr = compute_pose_pcdr_per_frame(
                 pred_smplx_params,
                 gt_smplx_params_batched,
                 c2ws,
                 tau=0.15,
                 gamma=0.3,
+                pose_type="smplx",
             )
 
             # - Collect metrics per frame

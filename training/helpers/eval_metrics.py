@@ -571,6 +571,20 @@ def compute_smplx_mpjpe_per_frame(
     return per_frame * scale
 
 
+def compute_pose_mpjpe_per_frame(
+    pred_params: Dict[str, torch.Tensor],
+    gt_params: Dict[str, torch.Tensor],
+    body_model_layer,
+    unit: str = "mm",
+    pose_type: str = "smplx",
+) -> torch.Tensor:
+    if pose_type == "smplx":
+        return compute_smplx_mpjpe_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+    if pose_type == "smpl":
+        return compute_smpl_mpjpe_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+    raise ValueError(f"Unknown pose_type: {pose_type}")
+
+
 # ------- Vertex Error
 def _smpl_params_to_vertices(
     smpl_params: Dict[str, torch.Tensor],
@@ -726,6 +740,20 @@ def compute_smplx_mve_per_frame(
     return per_frame * scale
 
 
+def compute_pose_mve_per_frame(
+    pred_params: Dict[str, torch.Tensor],
+    gt_params: Dict[str, torch.Tensor],
+    body_model_layer,
+    unit: str = "mm",
+    pose_type: str = "smplx",
+) -> torch.Tensor:
+    if pose_type == "smplx":
+        return compute_smplx_mve_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+    if pose_type == "smpl":
+        return compute_smpl_mve_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+    raise ValueError(f"Unknown pose_type: {pose_type}")
+
+
 # ------- Contact Distance
 def _contact_distance_per_frame(
     pred_verts: torch.Tensor,
@@ -819,6 +847,25 @@ def compute_smplx_contact_distance_per_frame(
     return _contact_distance_per_frame(
         pred_verts, gt_contact, unit=unit, invalid_value=invalid_value
     )
+
+
+def compute_pose_contact_distance_per_frame(
+    pred_params: Dict[str, torch.Tensor],
+    gt_contact: torch.Tensor,
+    body_model_layer,
+    unit: str = "mm",
+    invalid_value: int = 0,
+    pose_type: str = "smplx",
+) -> torch.Tensor:
+    if pose_type == "smplx":
+        return compute_smplx_contact_distance_per_frame(
+            pred_params, gt_contact, body_model_layer, unit=unit, invalid_value=invalid_value
+        )
+    if pose_type == "smpl":
+        return compute_smpl_contact_distance_per_frame(
+            pred_params, gt_contact, body_model_layer, unit=unit, invalid_value=invalid_value
+        )
+    raise ValueError(f"Unknown pose_type: {pose_type}")
 
 # ------- PCDR
 def _points_world_to_cam(points_world: torch.Tensor, c2w: torch.Tensor) -> torch.Tensor:
@@ -945,6 +992,21 @@ def compute_smplx_pcdr_per_frame(
     return compute_smpl_pcdr_per_frame(
         pred_smplx_params, gt_smplx_params, c2w, tau=tau, gamma=gamma
     )
+
+
+def compute_pose_pcdr_per_frame(
+    pred_params: Dict[str, torch.Tensor],
+    gt_params: Dict[str, torch.Tensor],
+    c2w: torch.Tensor,
+    tau: float = 0.15,
+    gamma: float = 0.3,
+    pose_type: str = "smplx",
+) -> Dict[str, torch.Tensor]:
+    if pose_type == "smplx":
+        return compute_smplx_pcdr_per_frame(pred_params, gt_params, c2w, tau=tau, gamma=gamma)
+    if pose_type == "smpl":
+        return compute_smpl_pcdr_per_frame(pred_params, gt_params, c2w, tau=tau, gamma=gamma)
+    raise ValueError(f"Unknown pose_type: {pose_type}")
 
 # ---------------------------------------------------------------------------
 # Segmentation evaluation metrics
