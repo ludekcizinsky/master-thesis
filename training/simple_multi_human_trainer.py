@@ -526,6 +526,14 @@ class MultiHumanTrainer:
                     device=betas.device,
                     dtype=betas.dtype,
                 )
+            else:
+                # Ensure expression is [B, P, D]
+                if expr.dim() == 4:
+                    expr = expr[..., 0]
+                elif expr.dim() == 2:
+                    expr = expr.unsqueeze(0)
+                if expr.dim() != 3:
+                    raise ValueError(f"Unexpected expression shape {expr.shape}")
 
             for i, fname in enumerate(fnames):
                 save_path = out_dir / f"{fname}.npz"
@@ -1718,7 +1726,7 @@ class MultiHumanTrainer:
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the updated pred SMPL-X params with pose tuning applied
-        pose_tuned_smplx_params_dir = save_dir / "pose_tuned_smplx_params"
+        pose_tuned_smplx_params_dir = save_dir / "smplx"
         pose_tuned_smplx_params_dir.mkdir(parents=True, exist_ok=True)
         skip_frames = load_skip_frames(self.trn_data_dir)
         pred_dataset = SceneDataset(
@@ -1727,6 +1735,17 @@ class MultiHumanTrainer:
             skip_frames=skip_frames,
         )
         self._save_pose_tuned_smplx_params(pred_dataset, pose_tuned_smplx_params_dir)
+
+        # Convert the saved pose-tuned SMPL-X params to SMPL format
+        # example command:
+        # bash submodules/smplx/tools/run_conversion.sh $save_dir smplx smpl
+        subprocess.run([
+            "bash",
+            "submodules/smplx/tools/run_conversion.sh",
+            str(save_dir),
+            "smplx",
+            "smpl",
+        ], check=True)
 
         # Init datasets
         # - pose
