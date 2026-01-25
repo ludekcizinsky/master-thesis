@@ -307,13 +307,14 @@ class SceneDataset(Dataset):
 
         return intrinsics, extrinsics
 
-    def _load_smplx(self, path: Path):
+    @staticmethod
+    def _load_smplx(path: Path, device: torch.device = torch.device("cuda")):
 
         npz = np.load(path)
 
         def add_key(key):
             arrs = torch.from_numpy(npz[key]).float()
-            return arrs.to(self.device)  # [P, ...]
+            return arrs.to(device)  # [P, ...]
 
         smplx = {
             "betas": add_key("betas"),
@@ -328,20 +329,20 @@ class SceneDataset(Dataset):
             "expr": add_key("expression"),
         }
 
-        smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=self.device)
-
+        smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=device)
         return smplx
 
-    def _load_smpl(self, path: Path):
+    @staticmethod
+    def _load_smpl(path: Path, device: torch.device = torch.device("cuda")):
 
         npz = np.load(path)
 
         def add_key(key):
             if not key in npz:
-                arrs = torch.zeros((npz["betas"].shape[0], 10), device=self.device)
+                arrs = torch.zeros((npz["betas"].shape[0], 10), device=device)
             else:
                 arrs = torch.from_numpy(npz[key]).float()
-            return arrs.to(self.device)  # [P, ...]
+            return arrs.to(device)  # [P, ...]
 
         body_pose = add_key("body_pose")
         # SMPL often stores body pose as a flattened axis-angle vector [P, 69] (= 23 joints * 3).

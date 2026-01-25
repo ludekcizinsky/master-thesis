@@ -42,7 +42,8 @@ from training.helpers.dataset import (
     root_dir_to_all_cameras_dir,
     fetch_masks_if_exist,
     intr_to_4x4,
-    extr_to_w2c_4x4
+    extr_to_w2c_4x4,
+    root_dir_to_smplx_dir
 )
 from training.helpers.debug import (
     save_depth_comparison, 
@@ -256,6 +257,66 @@ def get_all_scene_dir_cams(scene_dir: Path, device: torch.device) -> Dict[int, D
 
     return cam_id_to_cam_params
 
+def load_pose_dir(
+    pose_dir: Path,
+    pose_type: str = "smplx",
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    # list all files in the pose dir
+    pose_files = sorted(list(pose_dir.glob("*.npz")))
+
+    # load all pose params
+    frame_to_pose_params = dict()
+    for path in pose_files:
+        frame_name = path.stem
+        if pose_type == "smpl":
+            data = SceneDataset._load_smpl(path)
+        elif pose_type == "smplx":
+            data = SceneDataset._load_smplx(path)
+        else:
+            raise ValueError(f"Unknown pose type: {pose_type}")
+        frame_to_pose_params[frame_name] = data
+
+    return frame_to_pose_params
+
+
+def pose_params_dict_to_batch(pose_params: Dict[str, Dict[str, torch.Tensor]], batch_size=10):
+    """
+    We are given a dict of frame_name -> pose_params_dict
+    where pose params dict is key -> tensor of shape [P, ...]
+
+    We want to convert this to a batched version where we will retuern a list of batches
+    where batch is a dict of key -> tensor of shape [B, P, ...] 
+    """
+    keys = list(next(iter(pose_params.values())).keys())
+    batched_pose_params = []
+    batched_fnames = []
+    current_batch = {k: [] for k in keys}
+    current_fnames = list()
+    for frame_name, params in pose_params.items():
+        # add another frame to the current batch
+        for k in keys:
+            current_batch[k].append(params[k])
+        current_fnames.append(frame_name)
+
+        # how we filled the batch? 
+        if len(current_batch[keys[0]]) == batch_size:
+            # stack and add to batched list
+            batch = {k: torch.stack(current_batch[k], dim=0) for k in keys}
+            batched_pose_params.append(batch)
+            batched_fnames.append(current_fnames)
+
+            # reset
+            current_batch = {k: [] for k in keys}
+            current_fnames = list()
+
+
+    # add remaining
+    if len(current_batch[keys[0]]) > 0:
+        batch = {k: torch.stack(current_batch[k], dim=0) for k in keys}
+        batched_pose_params.append(batch)
+        batched_fnames.append(current_fnames)
+
+    return batched_pose_params, batched_fnames
 
 # ---------------------------------------------------------------------------
 # Trainer
@@ -445,6 +506,42 @@ class MultiHumanTrainer:
 
         # Finally scale by weight and return
         return reg * reg_w
+
+    @torch.no_grad()
+    def _save_pose_tuned_smplx_params(self, dataset: SceneDataset, out_dir: Path) -> None:
+        loader = DataLoader(
+            dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+        )
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for batch in loader:
+            fnames = batch["frame_name"]
+            smplx_params = self._apply_pose_tuning(batch["smplx_params"], fnames)
+
+            betas = smplx_params["betas"]
+            expr = smplx_params.get("expr", smplx_params.get("expression"))
+            if expr is None:
+                expr = torch.zeros(
+                    (betas.shape[0], betas.shape[1], 10),
+                    device=betas.device,
+                    dtype=betas.dtype,
+                )
+
+            for i, fname in enumerate(fnames):
+                save_path = out_dir / f"{fname}.npz"
+                np.savez(
+                    save_path,
+                    betas=betas[i].detach().cpu().numpy(),
+                    root_pose=smplx_params["root_pose"][i].detach().cpu().numpy(),
+                    body_pose=smplx_params["body_pose"][i].detach().cpu().numpy(),
+                    jaw_pose=smplx_params["jaw_pose"][i].detach().cpu().numpy(),
+                    leye_pose=smplx_params["leye_pose"][i].detach().cpu().numpy(),
+                    reye_pose=smplx_params["reye_pose"][i].detach().cpu().numpy(),
+                    lhand_pose=smplx_params["lhand_pose"][i].detach().cpu().numpy(),
+                    rhand_pose=smplx_params["rhand_pose"][i].detach().cpu().numpy(),
+                    trans=smplx_params["trans"][i].detach().cpu().numpy(),
+                    expression=expr[i].detach().cpu().numpy(),
+                )
 
 
     # ---------------- Model  ------------------------------
@@ -1611,37 +1708,38 @@ class MultiHumanTrainer:
 
     @torch.no_grad()
     def eval_loop_pose_estimation(self, epoch):
-        
+
+        # Parse source camera ID
+        src_cam_id = self.cfg.nvs_eval.source_camera_id
+
         # Prepare directories to save results
         # - root save directory        
         save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # Init datasets
+        # Save the updated pred SMPL-X params with pose tuning applied
+        pose_tuned_smplx_params_dir = save_dir / "pose_tuned_smplx_params"
+        pose_tuned_smplx_params_dir.mkdir(parents=True, exist_ok=True)
         skip_frames = load_skip_frames(self.trn_data_dir)
-        # - Ground truth dataset
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval pose in world coords
-        gt_dataset = SceneDataset(
-            self.test_data_dir,
-            src_cam_id,
-            device=self.tuner_device,
-            use_smplx=True,
-            use_smpl=False,
-            skip_frames=skip_frames,
-        )
-
-        # - Prediction dataset 
         pred_dataset = SceneDataset(
             self.trn_data_dir,
             src_cam_id,
-            device=self.tuner_device,
-            use_smplx=True,
-            use_smpl=False,
             skip_frames=skip_frames,
         )
-        pred_loader = DataLoader(
-            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
-        )
+        self._save_pose_tuned_smplx_params(pred_dataset, pose_tuned_smplx_params_dir)
+
+        # Init datasets
+        # - pose
+        batch_size = self.cfg.batch_size
+        gt_smplx_dir = root_dir_to_smplx_dir(self.test_data_dir)
+        gt_fname_to_smplx_params = load_pose_dir(gt_smplx_dir)
+        pred_smplx_dir = pose_tuned_smplx_params_dir
+        pred_fname_to_smplx_params = load_pose_dir(pred_smplx_dir)
+        batched_pred_smplx_params, batched_pred_fnames = pose_params_dict_to_batch(pred_fname_to_smplx_params, batch_size)
+
+        # - cameras
+        all_cameras = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
+        src_camera_params_over_time = all_cameras[src_cam_id]
 
         # Get SMPL-X layer 
         smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
@@ -1652,28 +1750,21 @@ class MultiHumanTrainer:
         # Evaluate in batches
         metrics_per_frame = []
         has_contact = None
-        for batch in tqdm(pred_loader, desc="Evaluating Pose Estimation", leave=False):
-
-            # - Get predicted SMPL-X params (with pose tuning applied)
-            frame_indices = batch["frame_idx"]      # [B]
-            fnames = batch["frame_name"]      # [B]
-            bsize = int(batch["image"].shape[0])
-            pred_smplx_params = self._apply_pose_tuning(batch["smplx_params"], fnames)
+        for pred_smplx_params, fnames in tqdm(zip(batched_pred_smplx_params, batched_pred_fnames), desc="Evaluating Pose Estimation", leave=False):
 
             # - Get corresponding gt SMPL-X params
+            bsize = len(fnames)
             # -- Loop over batch to get gt SMPL-X params
             gt_smplx_params = []
-            gt_frame_names = []
             for i in range(bsize):
-                sample_dict = gt_dataset[frame_indices[i].item()]
-                smplx_params = sample_dict["smplx_params"]
+                smplx_params = gt_fname_to_smplx_params[fnames[i]]
                 gt_smplx_params.append(smplx_params)
-                gt_frame_names.append(sample_dict["frame_name"])
-
             # -- Stack the returned gt SMPL-X params
             gt_smplx_params_batched = {k: torch.stack([gt_smplx_params[i][k] for i in range(bsize)], dim=0) for k in gt_smplx_params[0].keys()}
-            assert list(gt_frame_names) == list(fnames), "Predicted and GT frame names do not match!"
 
+            # Get corresponding c2ws
+            c2ws = [src_camera_params_over_time[fname]["c2w"] for fname in fnames]
+            c2ws = torch.stack(c2ws, dim=0)  # [B, 4, 4]
 
             # - Compute pose metrics
             # -- MPJPE per frame
@@ -1707,7 +1798,7 @@ class MultiHumanTrainer:
             pcdr = compute_smplx_pcdr_per_frame(
                 pred_smplx_params,
                 gt_smplx_params_batched,
-                batch["c2w"],
+                c2ws,
                 tau=0.15,
                 gamma=0.3,
             )
@@ -1799,7 +1890,7 @@ class MultiHumanTrainer:
             #"Overall Pose Estimation "
             #f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
             #f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
-            #f"CD (mm): {overall_avg['cd_mm']:.4f}, "
+            ## f"CD (mm): {overall_avg['cd_mm']:.4f}, "
             #f"PCDR: {overall_avg['pcdr']:.2f}"
         #)
 
@@ -2278,18 +2369,18 @@ class MultiHumanTrainer:
     def eval_loop(self, epoch):
 
 
-        # Quantitative evaluation against provided ground truth
-        # - Novel view synthesis evaluation
-        if len(self.cfg.nvs_eval.target_camera_ids) == 0:
-            print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
-        else:
-            self.eval_loop_nvs(epoch)
+#        # Quantitative evaluation against provided ground truth
+        ## - Novel view synthesis evaluation
+        #if len(self.cfg.nvs_eval.target_camera_ids) == 0:
+            #print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
+        #else:
+            #self.eval_loop_nvs(epoch)
 
-        # - Segmentation evaluation
-        if self.cfg.test_masks_scene_dir is None:
-            print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
-        else:
-            self.eval_loop_segmentation(epoch)
+        ## - Segmentation evaluation
+        #if self.cfg.test_masks_scene_dir is None:
+            #print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
+        #else:
+            #self.eval_loop_segmentation(epoch)
         
         # - Pose estimation evaluation
         if self.cfg.test_smpl_params_scene_dir is None:
@@ -2307,7 +2398,7 @@ class MultiHumanTrainer:
 
         # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
-        self.eval_loop_qualitative(epoch)
+        # self.eval_loop_qualitative(epoch)
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")

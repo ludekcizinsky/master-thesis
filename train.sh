@@ -20,7 +20,7 @@ cd /home/cizinsky/master-thesis
 
 seq_name="hi4d_pair16_jump"
 num_persons=2
-exp_name="v601_tunable_pose_with_nv_trn_views"
+exp_name="v602_pose_est_refactor_loading"
 source_cam_id=4
 root_gt_dir_path=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
 python training/simple_multi_human_trainer.py scene_name=$seq_name exp_name=$exp_name num_persons=$num_persons root_gt_dir_path=$root_gt_dir_path nvs_eval.source_camera_id=$source_cam_id wandb.enable=true eval_pretrain=true difix.trn_enable=false
