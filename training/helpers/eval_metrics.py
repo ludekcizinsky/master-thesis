@@ -406,6 +406,7 @@ def compute_volumetric_iou(
 # Pose evaluation metrics
 # ---------------------------------------------------------------------------
 
+# ----- MPJPE
 def _flatten_smpl_pose(pose: torch.Tensor) -> torch.Tensor:
     if pose.dim() == 4:
         return pose.reshape(pose.shape[0], pose.shape[1], -1)
@@ -445,6 +446,132 @@ def _smpl_params_to_joints(
     return joints.reshape(bsize, npeople, joints.shape[1], 3)
 
 
+def _smplx_params_to_joints(
+    smplx_params: Dict[str, torch.Tensor],
+    smplx_layer,
+) -> torch.Tensor:
+    if "contact" in smplx_params:
+        smplx_params = {k: v for k, v in smplx_params.items() if k != "contact"}
+
+    betas = smplx_params["betas"]
+    body_pose = smplx_params["body_pose"]
+    root_pose = smplx_params["root_pose"]
+    trans = smplx_params["trans"]
+    jaw_pose = smplx_params.get("jaw_pose")
+    leye_pose = smplx_params.get("leye_pose")
+    reye_pose = smplx_params.get("reye_pose")
+    lhand_pose = smplx_params.get("lhand_pose")
+    rhand_pose = smplx_params.get("rhand_pose")
+    expr = smplx_params.get("expr", smplx_params.get("expression"))
+
+    if betas.dim() != 3:
+        raise ValueError(f"Expected betas shape [B,P,?], got {betas.shape}")
+
+    bsize, npeople = betas.shape[:2]
+
+    def _reshape_param(param: Optional[torch.Tensor], is_pose: bool) -> Optional[torch.Tensor]:
+        if param is None:
+            return None
+        if param.dim() == 2:  # [P, D]
+            param = param.unsqueeze(0)
+        if is_pose:
+            param = _flatten_smpl_pose(param)
+        return param.reshape(bsize * npeople, -1)
+
+    betas = _reshape_param(betas, is_pose=False)
+    body_pose = _reshape_param(body_pose, is_pose=True)
+    root_pose = _reshape_param(root_pose, is_pose=True)
+    trans = _reshape_param(trans, is_pose=False)
+    jaw_pose = _reshape_param(jaw_pose, is_pose=True)
+    leye_pose = _reshape_param(leye_pose, is_pose=True)
+    reye_pose = _reshape_param(reye_pose, is_pose=True)
+    lhand_pose = _reshape_param(lhand_pose, is_pose=True)
+    rhand_pose = _reshape_param(rhand_pose, is_pose=True)
+
+    expr_dim = int(
+        getattr(
+            smplx_layer,
+            "num_expression_coeffs",
+            getattr(smplx_layer, "num_expression", getattr(smplx_layer, "num_expr", 0)),
+        )
+    )
+    if expr_dim > 0:
+        expr = _reshape_param(expr, is_pose=False)
+        if expr is None:
+            expr = torch.zeros((bsize * npeople, expr_dim), device=betas.device, dtype=betas.dtype)
+        elif expr.shape[1] >= expr_dim:
+            expr = expr[:, :expr_dim]
+        else:
+            pad = torch.zeros((expr.shape[0], expr_dim - expr.shape[1]), device=expr.device, dtype=expr.dtype)
+            expr = torch.cat([expr, pad], dim=1)
+    else:
+        expr = torch.zeros((bsize * npeople, 0), device=betas.device, dtype=betas.dtype)
+    smplx_kwargs = {
+        "global_orient": root_pose,
+        "body_pose": body_pose,
+        "jaw_pose": jaw_pose,
+        "leye_pose": leye_pose,
+        "reye_pose": reye_pose,
+        "left_hand_pose": lhand_pose,
+        "right_hand_pose": rhand_pose,
+        "betas": betas,
+        "transl": trans,
+        "expression": expr,
+    }
+    output = smplx_layer(**smplx_kwargs)
+    joints = output.joints
+    return joints.reshape(bsize, npeople, joints.shape[1], 3)
+
+
+def compute_smpl_mpjpe_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_smpl_params: Dict[str, torch.Tensor],
+    smpl_layer,
+    unit: str = "mm",
+) -> torch.Tensor:
+    pred_joints = _smpl_params_to_joints(pred_smpl_params, smpl_layer)
+    gt_joints = _smpl_params_to_joints(gt_smpl_params, smpl_layer)
+    per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
+    per_frame = per_joint.mean(dim=(1, 2))
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported MPJPE unit: {unit}")
+
+    return per_frame * scale
+
+
+def compute_smplx_mpjpe_per_frame(
+    pred_smplx_params: Dict[str, torch.Tensor],
+    gt_smplx_params: Dict[str, torch.Tensor],
+    smplx_layer,
+    unit: str = "mm",
+) -> torch.Tensor:
+    pred_joints = _smplx_params_to_joints(pred_smplx_params, smplx_layer)
+    gt_joints = _smplx_params_to_joints(gt_smplx_params, smplx_layer)
+    per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
+    per_frame = per_joint.mean(dim=(1, 2))
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported MPJPE unit: {unit}")
+
+    return per_frame * scale
+
+
+# ------- Vertex Error
 def _smpl_params_to_vertices(
     smpl_params: Dict[str, torch.Tensor],
     smpl_layer,
@@ -475,30 +602,81 @@ def _smpl_params_to_vertices(
     vertices = output.vertices
     return vertices.reshape(bsize, npeople, vertices.shape[1], 3)
 
-
-def compute_smpl_mpjpe_per_frame(
-    pred_smpl_params: Dict[str, torch.Tensor],
-    gt_smpl_params: Dict[str, torch.Tensor],
-    smpl_layer,
-    unit: str = "mm",
+def _smplx_params_to_vertices(
+    smplx_params: Dict[str, torch.Tensor],
+    smplx_layer,
 ) -> torch.Tensor:
-    pred_joints = _smpl_params_to_joints(pred_smpl_params, smpl_layer)
-    gt_joints = _smpl_params_to_joints(gt_smpl_params, smpl_layer)
-    per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
-    per_frame = per_joint.mean(dim=(1, 2))
+    if "contact" in smplx_params:
+        smplx_params = {k: v for k, v in smplx_params.items() if k != "contact"}
 
-    unit = unit.lower()
-    if unit == "m":
-        scale = 1.0
-    elif unit == "cm":
-        scale = 100.0
-    elif unit == "mm":
-        scale = 1000.0
+    betas = smplx_params["betas"]
+    body_pose = smplx_params["body_pose"]
+    root_pose = smplx_params["root_pose"]
+    trans = smplx_params["trans"]
+    jaw_pose = smplx_params.get("jaw_pose")
+    leye_pose = smplx_params.get("leye_pose")
+    reye_pose = smplx_params.get("reye_pose")
+    lhand_pose = smplx_params.get("lhand_pose")
+    rhand_pose = smplx_params.get("rhand_pose")
+    expr = smplx_params.get("expr", smplx_params.get("expression"))
+
+    if betas.dim() != 3:
+        raise ValueError(f"Expected betas shape [B,P,?], got {betas.shape}")
+
+    bsize, npeople = betas.shape[:2]
+
+    def _reshape_param(param: Optional[torch.Tensor], is_pose: bool) -> Optional[torch.Tensor]:
+        if param is None:
+            return None
+        if param.dim() == 2:  # [P, D]
+            param = param.unsqueeze(0)
+        if is_pose:
+            param = _flatten_smpl_pose(param)
+        return param.reshape(bsize * npeople, -1)
+
+    betas = _reshape_param(betas, is_pose=False)
+    body_pose = _reshape_param(body_pose, is_pose=True)
+    root_pose = _reshape_param(root_pose, is_pose=True)
+    trans = _reshape_param(trans, is_pose=False)
+    jaw_pose = _reshape_param(jaw_pose, is_pose=True)
+    leye_pose = _reshape_param(leye_pose, is_pose=True)
+    reye_pose = _reshape_param(reye_pose, is_pose=True)
+    lhand_pose = _reshape_param(lhand_pose, is_pose=True)
+    rhand_pose = _reshape_param(rhand_pose, is_pose=True)
+
+    expr_dim = int(
+        getattr(
+            smplx_layer,
+            "num_expression_coeffs",
+            getattr(smplx_layer, "num_expression", getattr(smplx_layer, "num_expr", 0)),
+        )
+    )
+    if expr_dim > 0:
+        expr = _reshape_param(expr, is_pose=False)
+        if expr is None:
+            expr = torch.zeros((bsize * npeople, expr_dim), device=betas.device, dtype=betas.dtype)
+        elif expr.shape[1] >= expr_dim:
+            expr = expr[:, :expr_dim]
+        else:
+            pad = torch.zeros((expr.shape[0], expr_dim - expr.shape[1]), device=expr.device, dtype=expr.dtype)
+            expr = torch.cat([expr, pad], dim=1)
     else:
-        raise ValueError(f"Unsupported MPJPE unit: {unit}")
-
-    return per_frame * scale
-
+        expr = torch.zeros((bsize * npeople, 0), device=betas.device, dtype=betas.dtype)
+    smplx_kwargs = {
+        "global_orient": root_pose,
+        "body_pose": body_pose,
+        "jaw_pose": jaw_pose,
+        "leye_pose": leye_pose,
+        "reye_pose": reye_pose,
+        "left_hand_pose": lhand_pose,
+        "right_hand_pose": rhand_pose,
+        "betas": betas,
+        "transl": trans,
+        "expression": expr,
+    }
+    output = smplx_layer(**smplx_kwargs)
+    vertices = output.vertices
+    return vertices.reshape(bsize, npeople, vertices.shape[1], 3)
 
 def compute_smpl_mve_per_frame(
     pred_smpl_params: Dict[str, torch.Tensor],
@@ -524,14 +702,37 @@ def compute_smpl_mve_per_frame(
     return per_frame * scale
 
 
-def compute_smpl_contact_distance_per_frame(
-    pred_smpl_params: Dict[str, torch.Tensor],
+def compute_smplx_mve_per_frame(
+    pred_smplx_params: Dict[str, torch.Tensor],
+    gt_smplx_params: Dict[str, torch.Tensor],
+    smplx_layer,
+    unit: str = "mm",
+) -> torch.Tensor:
+    pred_verts = _smplx_params_to_vertices(pred_smplx_params, smplx_layer)
+    gt_verts = _smplx_params_to_vertices(gt_smplx_params, smplx_layer)
+    per_vertex = torch.linalg.norm(pred_verts - gt_verts, dim=-1)
+    per_frame = per_vertex.mean(dim=(1, 2))
+
+    unit = unit.lower()
+    if unit == "m":
+        scale = 1.0
+    elif unit == "cm":
+        scale = 100.0
+    elif unit == "mm":
+        scale = 1000.0
+    else:
+        raise ValueError(f"Unsupported MVE unit: {unit}")
+
+    return per_frame * scale
+
+
+# ------- Contact Distance
+def _contact_distance_per_frame(
+    pred_verts: torch.Tensor,
     gt_contact: torch.Tensor,
-    smpl_layer,
     unit: str = "mm",
     invalid_value: int = 0,
 ) -> torch.Tensor:
-    pred_verts = _smpl_params_to_vertices(pred_smpl_params, smpl_layer)
     if gt_contact.dim() == 2:
         gt_contact = gt_contact.unsqueeze(0)
     if gt_contact.dim() != 3:
@@ -594,6 +795,32 @@ def compute_smpl_contact_distance_per_frame(
     return per_frame * scale
 
 
+def compute_smpl_contact_distance_per_frame(
+    pred_smpl_params: Dict[str, torch.Tensor],
+    gt_contact: torch.Tensor,
+    smpl_layer,
+    unit: str = "mm",
+    invalid_value: int = 0,
+) -> torch.Tensor:
+    pred_verts = _smpl_params_to_vertices(pred_smpl_params, smpl_layer)
+    return _contact_distance_per_frame(
+        pred_verts, gt_contact, unit=unit, invalid_value=invalid_value
+    )
+
+
+def compute_smplx_contact_distance_per_frame(
+    pred_smplx_params: Dict[str, torch.Tensor],
+    gt_contact: torch.Tensor,
+    smplx_layer,
+    unit: str = "mm",
+    invalid_value: int = 0,
+) -> torch.Tensor:
+    pred_verts = _smplx_params_to_vertices(pred_smplx_params, smplx_layer)
+    return _contact_distance_per_frame(
+        pred_verts, gt_contact, unit=unit, invalid_value=invalid_value
+    )
+
+# ------- PCDR
 def _points_world_to_cam(points_world: torch.Tensor, c2w: torch.Tensor) -> torch.Tensor:
     if c2w.dim() == 2:
         c2w = c2w.unsqueeze(0)
@@ -706,6 +933,18 @@ def compute_smpl_pcdr_per_frame(
     return {
         "pcdr": torch.stack(per_frame_pcdr, dim=0),
     }
+
+
+def compute_smplx_pcdr_per_frame(
+    pred_smplx_params: Dict[str, torch.Tensor],
+    gt_smplx_params: Dict[str, torch.Tensor],
+    c2w: torch.Tensor,
+    tau: float = 0.15,
+    gamma: float = 0.3,
+) -> Dict[str, torch.Tensor]:
+    return compute_smpl_pcdr_per_frame(
+        pred_smplx_params, gt_smplx_params, c2w, tau=tau, gamma=gamma
+    )
 
 # ---------------------------------------------------------------------------
 # Segmentation evaluation metrics

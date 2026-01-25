@@ -75,6 +75,13 @@ loss_weights:
   ssim: 0.4
   depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
 
+# Pose tuning (SMPL-X)
+pose_tuning:
+  enable: true
+  params: ["root_pose", "body_pose", "trans", "betas"]
+  lr: 1e-4
+  reg_w: 1e-4
+
 regularization:
   asap_w: 200.0
   acap_w: 200.0

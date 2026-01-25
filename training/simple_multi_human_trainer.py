@@ -52,10 +52,10 @@ from training.helpers.debug import (
 from training.helpers.gs_to_mesh import get_meshes_from_3dgs
 from training.helpers.eval_metrics import (
     ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
-    compute_smpl_mpjpe_per_frame,
-    compute_smpl_mve_per_frame,
-    compute_smpl_contact_distance_per_frame,
-    compute_smpl_pcdr_per_frame,
+    compute_smplx_mpjpe_per_frame,
+    compute_smplx_mve_per_frame,
+    compute_smplx_contact_distance_per_frame,
+    compute_smplx_pcdr_per_frame,
     gt_mesh_from_sample,
     merge_mesh_dict,
     posed_gs_list_to_serializable_dict,
@@ -284,7 +284,10 @@ class MultiHumanTrainer:
         self._init_train_dataset()
         self._init_test_scene_dir()
 
-        # Preare model
+        # Preare trainable parameters
+        # - (optional) pose tuning
+        self._init_pose_tuning()
+        # - 3dgs
         self._load_model()
 
         # Initialize difix
@@ -362,6 +365,88 @@ class MultiHumanTrainer:
                 meshes_dir,
             )
 
+    # ---------------- Pose tuning utilities ----------------
+    def _init_pose_tuning(self) -> None:
+        pose_cfg = self.cfg.pose_tuning
+        if not pose_cfg.enable:
+            self.pose_tuning_enabled = False
+            self.pose_deltas = None
+            self.pose_frame_index = {}
+            return
+
+        # Map frame names to indices for stable lookup across datasets.
+        frame_names = [Path(p).stem for p in self.trn_dataset.frame_paths]
+        self.pose_frame_index = {name: idx for idx, name in enumerate(frame_names)}
+
+        # Initialize per-frame pose deltas for selected SMPL-X params.
+        sample = self.trn_dataset[0]["smplx_params"]
+        params_to_tune = pose_cfg.params
+        self.pose_deltas = torch.nn.ParameterDict()
+        for key in params_to_tune:
+            if key not in sample:
+                print(f"Pose tuning: key '{key}' not found in SMPL-X params; skipping.")
+                continue
+            shape = sample[key].shape  # [P, ...]
+            dtype = sample[key].dtype
+            self.pose_deltas[key] = torch.nn.Parameter(
+                torch.zeros((len(frame_names),) + shape, device=self.tuner_device, dtype=dtype)
+            )
+
+        if len(self.pose_deltas) == 0:
+            print("Pose tuning enabled but no valid parameters were found; disabling.")
+            self.pose_tuning_enabled = False
+            self.pose_deltas = None
+        else:
+            self.pose_tuning_enabled = True
+            print("Pose tuning enabled for parameters:", list(self.pose_deltas.keys()))
+
+    def _gather_pose_deltas(
+        self, delta_table: torch.Tensor, target: torch.Tensor, frame_names: List[str]
+    ) -> torch.Tensor:
+        deltas = []
+        for name in frame_names:
+            idx = self.pose_frame_index.get(str(name), -1)
+            if idx < 0:
+                raise ValueError(f"Frame name '{name}' not found in pose tuning frame index.")
+            else:
+                deltas.append(delta_table[idx])
+        return torch.stack(deltas, dim=0)
+
+    def _apply_pose_tuning(
+        self, smplx_params: Dict[str, torch.Tensor], frame_names: List[str]
+    ) -> Dict[str, torch.Tensor]:
+        # If disabled, return original params
+        if not self.pose_tuning_enabled:
+            return smplx_params
+
+        # If enabled, apply deltas to selected params
+        tuned = dict(smplx_params)
+        for key, delta_table in self.pose_deltas.items():
+            # - If not optimising the given key, keep original
+            if key not in smplx_params:
+                continue
+            # - Gather deltas for the current batch frames
+            deltas = self._gather_pose_deltas(delta_table, smplx_params[key], frame_names)
+            # - Apply deltas
+            tuned[key] = smplx_params[key] + deltas
+
+        return tuned
+
+    def _pose_tuning_regularization(self) -> torch.Tensor:
+        # If disabled, return zero
+        reg_w = self.cfg.pose_tuning.reg_w
+        if not self.pose_tuning_enabled or reg_w <= 0.0:
+            return torch.zeros((), device=self.tuner_device)
+
+        # If enabled, compute L2 regularization on deltas
+        reg = torch.zeros((), device=self.tuner_device)
+        for p in self.pose_deltas.values():
+            reg = reg + p.pow(2).mean()
+
+        # Finally scale by weight and return
+        return reg * reg_w
+
+
     # ---------------- Model  ------------------------------
     def _load_model(self):
 
@@ -415,12 +500,15 @@ class MultiHumanTrainer:
         return params
 
 
-    def forward(self, batch, background_rgb: Optional[torch.Tensor] = None):
+    def forward(self, batch, background_rgb: Optional[torch.Tensor] = None, apply_tuned_smplx_delta: bool = True) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         # Parse batch data
         Ks = batch["K"] # [B, 4, 4],
         c2ws = batch["c2w"] # [B, 4, 4]
         smplx_params = batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+        frame_names = batch["frame_name"]
+        if apply_tuned_smplx_delta:
+            smplx_params = self._apply_pose_tuning(smplx_params, frame_names)
 
         # Render target views
         num_views = Ks.shape[0]
@@ -523,8 +611,15 @@ class MultiHumanTrainer:
         trn_iter = self._infinite_loader(trn_loader)
 
         # Initialize optimizer
+        # - 3dgs setup
         params = self._trainable_tensors()
-        optimizer = torch.optim.AdamW(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+        opt_groups = [{"params": params, "lr": self.cfg.lr}]
+        # - pose params setup
+        if self.pose_tuning_enabled:
+            pose_lr = float(self.cfg.pose_tuning.lr)
+            opt_groups.append({"params": self.pose_deltas.parameters(), "lr": pose_lr})
+        # - create optimizer
+        optimizer = torch.optim.AdamW(opt_groups, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
 
         # Training loop
         for epoch in range(self.cfg.epochs):
@@ -636,8 +731,9 @@ class MultiHumanTrainer:
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
                 asap_loss, acap_loss = self._canonical_regularization()
                 reg_loss = asap_loss + acap_loss
+                pose_reg_loss = self._pose_tuning_regularization()
 
-                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss
+                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss + pose_reg_loss
                 
                 # Backpropagation
                 loss.backward()
@@ -664,6 +760,7 @@ class MultiHumanTrainer:
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),
                             "loss/acap": acap_loss.item(),
+                            "loss/pose_reg": pose_reg_loss.item(),
                             "epoch": epoch + 1,
                         }
                     )
@@ -926,7 +1023,7 @@ class MultiHumanTrainer:
             batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
             batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
-            # - Forward pass to render novel views using GT smplx params and cameras
+            # - Forward pass to render novel views using smplx params and cameras
             _, _, pred_depth = self.forward(batch) # [B, H, W, 1]
 
 
@@ -995,6 +1092,8 @@ class MultiHumanTrainer:
             # - Parse batch data
             frame_names = batch["frame_name"] # [B]
             rgb_frames = batch["image"] # [B, H, W, 3], 0-1
+            if "smplx_params" in batch:
+                batch["smplx_params"] = self._apply_pose_tuning(batch["smplx_params"], frame_names)
 
             # - Estimate binary masks
             mask_estimation_method = self.cfg.mask_estimator_kind
@@ -1184,7 +1283,8 @@ class MultiHumanTrainer:
                 frame_paths = batch["frame_path"]      # List[B]
 
                 # Forward pass to render novel views
-                renders, _, _ = self.forward(batch)
+                # Note: we use false for apply_tuned_smplx_delta since we are using the gt smplx params for nvs evaluation
+                renders, _, _ = self.forward(batch, apply_tuned_smplx_delta=False) 
 
                 # Apply masks to the gt 
                 masks3 = masks.repeat(1, 1, 1, 3)
@@ -1228,7 +1328,7 @@ class MultiHumanTrainer:
                 # Save renders on white background for visualization
                 render_white_bg_dir = save_dir / "render_white_bg"
                 render_white_bg_dir.mkdir(parents=True, exist_ok=True)
-                renders_white_bg, _, _ = self.forward(batch, background_rgb=(1.0, 1.0, 1.0))
+                renders_white_bg, _, _ = self.forward(batch, background_rgb=(1.0, 1.0, 1.0), apply_tuned_smplx_delta=False)
                 for i in range(renders_white_bg.shape[0]):
                     save_path = render_white_bg_dir / Path(frame_paths[i]).name
                     save_image(renders_white_bg[i].permute(2, 0, 1), str(save_path))
@@ -1521,127 +1621,176 @@ class MultiHumanTrainer:
         skip_frames = load_skip_frames(self.trn_data_dir)
         # - Ground truth dataset
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval pose in world coords
-        gt_dataset = SceneDataset(self.test_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True, skip_frames=skip_frames)
+        gt_dataset = SceneDataset(
+            self.test_data_dir,
+            src_cam_id,
+            device=self.tuner_device,
+            use_smplx=True,
+            use_smpl=False,
+            skip_frames=skip_frames,
+        )
 
         # - Prediction dataset 
-        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, use_smpl=True, skip_frames=skip_frames)
+        pred_dataset = SceneDataset(
+            self.trn_data_dir,
+            src_cam_id,
+            device=self.tuner_device,
+            use_smplx=True,
+            use_smpl=False,
+            skip_frames=skip_frames,
+        )
         pred_loader = DataLoader(
             pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
-        smpl_layer = None
+        # Get SMPL-X layer 
+        smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
+        if smplx_layer is None:
+            raise RuntimeError("SMPL-X layer not available for pose evaluation.")
+        smplx_layer = smplx_layer.to(self.tuner_device).eval()
 
+        # Evaluate in batches
         metrics_per_frame = []
+        has_contact = None
         for batch in tqdm(pred_loader, desc="Evaluating Pose Estimation", leave=False):
 
-            # Parse batch data
+            # - Get predicted SMPL-X params (with pose tuning applied)
             frame_indices = batch["frame_idx"]      # [B]
             fnames = batch["frame_name"]      # [B]
             bsize = int(batch["image"].shape[0])
+            pred_smplx_params = self._apply_pose_tuning(batch["smplx_params"], fnames)
 
-            # Get corresponding gt smpl params
-            # - Loop over batch to get gt smpl params
-            gt_smpl_params = []
+            # - Get corresponding gt SMPL-X params
+            # -- Loop over batch to get gt SMPL-X params
+            gt_smplx_params = []
             gt_frame_names = []
             for i in range(bsize):
                 sample_dict = gt_dataset[frame_indices[i].item()]
-                smpl_params = sample_dict["smpl_params"]
-                gt_smpl_params.append(smpl_params)
+                smplx_params = sample_dict["smplx_params"]
+                gt_smplx_params.append(smplx_params)
                 gt_frame_names.append(sample_dict["frame_name"])
 
-            # - Stack the returned gt smpl params
-            gt_smpl_params_batched = {k: torch.stack([gt_smpl_params[i][k] for i in range(bsize)], dim=0) for k in gt_smpl_params[0].keys()}
+            # -- Stack the returned gt SMPL-X params
+            gt_smplx_params_batched = {k: torch.stack([gt_smplx_params[i][k] for i in range(bsize)], dim=0) for k in gt_smplx_params[0].keys()}
             assert list(gt_frame_names) == list(fnames), "Predicted and GT frame names do not match!"
 
-            # Get smpl layer if not yet done
-            if smpl_layer is None:
-                model_root = Path(self.renderer.smplx_model.smpl_x.human_model_path)
-                smpl_layer = smplx.create(
-                    str(model_root),
-                    "smpl",
-                    gender="neutral",
-                    num_betas=batch["smpl_params"]["betas"].shape[-1],
-                    use_pca=False,
-                ).to(self.tuner_device).eval()
 
-            # Compute pose metrics
-            # - MPJPE per frame
-            mpjpe_per_frame = compute_smpl_mpjpe_per_frame(
-                batch["smpl_params"],
-                gt_smpl_params_batched,
-                smpl_layer,
+            # - Compute pose metrics
+            # -- MPJPE per frame
+            mpjpe_per_frame = compute_smplx_mpjpe_per_frame(
+                pred_smplx_params,
+                gt_smplx_params_batched,
+                smplx_layer,
                 unit="mm",
             )
-            # - MVE per frame
-            mve_per_frame = compute_smpl_mve_per_frame(
-                batch["smpl_params"],
-                gt_smpl_params_batched,
-                smpl_layer,
+            # -- MVE per frame
+            mve_per_frame = compute_smplx_mve_per_frame(
+                pred_smplx_params,
+                gt_smplx_params_batched,
+                smplx_layer,
                 unit="mm",
             )
-            # - Contact distance per frame
-            cd_per_frame = compute_smpl_contact_distance_per_frame(
-                batch["smpl_params"],
-                gt_smpl_params_batched["contact"],
-                smpl_layer,
-                unit="mm",
-            )
-            # - Percentage of Correct Depth Relations
-            pcdr = compute_smpl_pcdr_per_frame(
-                batch["smpl_params"],
-                gt_smpl_params_batched,
+            # -- Contact distance per frame (if available)
+            batch_has_contact = "contact" in gt_smplx_params_batched
+            if has_contact is None:
+                has_contact = batch_has_contact
+            elif has_contact != batch_has_contact:
+                raise ValueError("Inconsistent GT contact availability across batches.")
+            if batch_has_contact:
+                cd_per_frame = compute_smplx_contact_distance_per_frame(
+                    pred_smplx_params,
+                    gt_smplx_params_batched["contact"],
+                    smplx_layer,
+                    unit="mm",
+                )
+            # -- Percentage of Correct Depth Relations
+            pcdr = compute_smplx_pcdr_per_frame(
+                pred_smplx_params,
+                gt_smplx_params_batched,
                 batch["c2w"],
                 tau=0.15,
                 gamma=0.3,
             )
-            for idx, (fname, mpjpe, mve, cd) in enumerate(
-                zip(fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame)
-            ):
-                fid = int(fname)
-                metrics_per_frame.append(
-                    (
-                        fid,
-                        mpjpe.item(),
-                        mve.item(),
-                        cd.item(),
-                        pcdr["pcdr"][idx].item(),
+
+            # - Collect metrics per frame
+            if batch_has_contact:
+                for idx, (fname, mpjpe, mve, cd) in enumerate(
+                    zip(fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame)
+                ):
+                    fid = int(fname)
+                    metrics_per_frame.append(
+                        (
+                            fid,
+                            mpjpe.item(),
+                            mve.item(),
+                            cd.item(),
+                            pcdr["pcdr"][idx].item(),
+                        )
                     )
-                )
+            else:
+                for idx, (fname, mpjpe, mve) in enumerate(
+                    zip(fnames, mpjpe_per_frame, mve_per_frame)
+                ):
+                    fid = int(fname)
+                    metrics_per_frame.append(
+                        (
+                            fid,
+                            mpjpe.item(),
+                            mve.item(),
+                            pcdr["pcdr"][idx].item(),
+                        )
+                    )
 
         # Save metrics to CSV
         # - save per-frame metrics
-        df = pd.DataFrame(
-            metrics_per_frame,
-            columns=[
-                "frame_id",
-                "mpjpe_mm",
-                "mve_mm",
-                "cd_mm",
-                "pcdr",
-            ],
-        )
+        if has_contact:
+            df = pd.DataFrame(
+                metrics_per_frame,
+                columns=[
+                    "frame_id",
+                    "mpjpe_mm",
+                    "mve_mm",
+                    "cd_mm",
+                    "pcdr",
+                ],
+            )
+        else:
+            df = pd.DataFrame(
+                metrics_per_frame,
+                columns=[
+                    "frame_id",
+                    "mpjpe_mm",
+                    "mve_mm",
+                    "pcdr",
+                ],
+            )
         csv_path = save_dir / "pose_estimation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics
-        cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
-        cd_mean = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
         pcdr_mean = df["pcdr"].mean()
         overall_avg = {
             "mpjpe_mm": df["mpjpe_mm"].mean(),
             "mve_mm": df["mve_mm"].mean(),
-            "cd_mm": cd_mean,
             "pcdr": pcdr_mean,
         }
+        if has_contact:
+            cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
+            overall_avg["cd_mm"] = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
         overall_avg_path = save_dir / "pose_estimation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
         
-
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
-            to_log = {f"eval_pose/{metric_name}": v for metric_name, v in overall_avg.items()}
+            to_log = {
+                "eval_pose/mpjpe_mm": overall_avg["mpjpe_mm"],
+                "eval_pose/mve_mm": overall_avg["mve_mm"],
+                "eval_pose/pcdr": overall_avg["pcdr"],
+            }
+            if has_contact:
+                to_log["eval_pose/cd_mm"] = overall_avg["cd_mm"]
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
@@ -1718,6 +1867,7 @@ class MultiHumanTrainer:
             batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
             pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
             smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+            smplx_params = self._apply_pose_tuning(smplx_params, fnames)
             pred_c2ws = [c2w.detach().cpu().numpy() for c2w in pred_batch["c2w"]]  # [B, 4, 4]
 
             # - Fetch GT meshes directly from the GT dataset for matching frame indices.
@@ -1891,7 +2041,7 @@ class MultiHumanTrainer:
 
 
     @torch.no_grad()
-    def eval_loop_in_the_wild(self, epoch):
+    def eval_loop_qualitative(self, epoch):
 
         # Prepare directories to save results
         # - root save directory        
@@ -1945,6 +2095,7 @@ class MultiHumanTrainer:
             batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
             pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
             smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
+            smplx_params = self._apply_pose_tuning(smplx_params, fnames)
 
 
             # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
@@ -2128,34 +2279,35 @@ class MultiHumanTrainer:
 
 
         # Quantitative evaluation against provided ground truth
-        has_run_at_least_one_quant_eval = False
+        # - Novel view synthesis evaluation
         if len(self.cfg.nvs_eval.target_camera_ids) == 0:
             print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
         else:
             self.eval_loop_nvs(epoch)
-            has_run_at_least_one_quant_eval = True
+
+        # - Segmentation evaluation
         if self.cfg.test_masks_scene_dir is None:
             print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
         else:
             self.eval_loop_segmentation(epoch)
-            has_run_at_least_one_quant_eval = True
+        
+        # - Pose estimation evaluation
         if self.cfg.test_smpl_params_scene_dir is None:
             print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
         else:
             self.eval_loop_pose_estimation(epoch)
-            has_run_at_least_one_quant_eval = True
-        if self.cfg.test_meshes_scene_dir is None:
-            print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
-        else:
-            self.eval_loop_reconstruction(epoch)
-            has_run_at_least_one_quant_eval = True
+
+        ## - Reconstruction evaluation
+        #if self.cfg.test_meshes_scene_dir is None:
+            #print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
+        #else:
+            #self.eval_loop_reconstruction(epoch)
+            #has_run_at_least_one_quant_eval = True
 
 
-        # For in-the-wild, we do not have ground truth for quantitative eval
-        # -> run custom qualitative evals only
-        if not has_run_at_least_one_quant_eval:
-            print("No quantitative evaluation datasets specified. Running only qualitative evaluations.")
-            self.eval_loop_in_the_wild(epoch)
+        # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
+        # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
+        self.eval_loop_qualitative(epoch)
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")

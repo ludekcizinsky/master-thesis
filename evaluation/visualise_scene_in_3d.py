@@ -219,12 +219,13 @@ class Args:
     frame_name: Optional[str] = None
     port: int = 8080
     center_scene: bool = True
+    is_minus_y_up: bool = True
     source_camera_id: int = 0
     background_max_depth: float = 5.0
     depth_stride: int = 4
     background_point_size: float = 0.02
-    max_scale: Optional[float] = None
-    max_gaussians: Optional[int] = None
+    max_scale: Optional[float] = 0.5
+    max_gaussians: Optional[int] = 200000
     seed: int = 0
     mesh_opacity: float = 0.8
     posed_3dgs_pattern: str = "*.pt"
@@ -418,7 +419,8 @@ def main(args: Args) -> None:
         center_offset = (bounds[0] + bounds[1]) * 0.5
 
     server = viser.ViserServer(port=args.port)
-    R_fix = tf.SO3.from_x_radians(-np.pi / 2)
+    angle = -np.pi / 2 if args.is_minus_y_up else np.pi / 2
+    R_fix = tf.SO3.from_x_radians(angle)
     server.scene.add_frame(
         "/scene",
         show_axes=False,

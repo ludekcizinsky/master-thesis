@@ -135,10 +135,15 @@ cd /home/cizinsky/master-thesis
 # python evaluation/visualise_meshes_in_3d.py --mesh-dir=$scene_eval_dir
 
 
-# ------ Visualise the eval output of in the wild scene in 3d
-# bash train.sh
+# ------ Visualise the qualitattive output
+# - hi4d pair16 jump
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v601_tunable_pose_with_nv_trn_views/epoch_0015
+python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
+
+# - taichi
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000
-# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --port 8080 --max-scale 0.5 --max-gaussians 200000
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir 
+
 
 # ------ Visualise predicted and ground truth meshes for debug of 3d recon quality
 # # -- Hi4d pair15 fight
@@ -159,18 +164,18 @@ cd /home/cizinsky/master-thesis
 
 
 # -- mmm dance
-# baseline experiment
-baseline_exp_name=v402_mc_mesh_extraction_with_better_hyperparams
-pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$baseline_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# comparison experiment
-comp_exp_name=v402_tsdf_mesh_extraction 
-comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# gt meshes
-gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
-# run visualisation
-python playground/debug_vis_recon_eval.py \
-  --pred-aligned-meshes-dir $pred_meshes_dir \
-  --other-pred-aligned-meshes-dir $comp_meshes_dir \
-  --gt-meshes-dir $gt_meshes_dir \
-  --frame-index 0
+# # baseline experiment
+# baseline_exp_name=v402_mc_mesh_extraction_with_better_hyperparams
+# pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$baseline_exp_name/epoch_0015/aligned_posed_meshes_per_frame
+# # comparison experiment
+# comp_exp_name=v402_tsdf_mesh_extraction 
+# comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
+# # gt meshes
+# gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
+# # run visualisation
+# python playground/debug_vis_recon_eval.py \
+  # --pred-aligned-meshes-dir $pred_meshes_dir \
+  # --other-pred-aligned-meshes-dir $comp_meshes_dir \
+  # --gt-meshes-dir $gt_meshes_dir \
+  # --frame-index 0
 
