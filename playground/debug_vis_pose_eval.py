@@ -137,6 +137,19 @@ def _metrics_table_markdown(
         ]
     )
 
+
+def _discover_pose_types(scene_dir: Path) -> List[str]:
+    suffix = "_pose_estimation_metrics_per_frame.csv"
+    types: List[str] = []
+    for path in scene_dir.glob(f"*{suffix}"):
+        name = path.name
+        if not name.endswith(suffix):
+            continue
+        prefix = name[: -len(suffix)]
+        if prefix:
+            types.append(prefix)
+    return sorted(set(types))
+
 def _load_npz(path: Path) -> Optional[Dict[str, np.ndarray]]:
     if not path.exists():
         return None
@@ -369,7 +382,6 @@ class Args:
     gt_scene_dir: Path
     pred_scene_dir: Path
     comp_pred_scene_dir: Optional[Path] = None
-    metrics_filename: str = "pose_estimation_metrics_per_frame.csv"
     sort_metric: str = "mpjpe_mm"
     top_k: int = 10
     frame_index: int = 0
@@ -391,48 +403,86 @@ def _visualize_comparison_mode(args: Args) -> None:
     if args.comp_pred_scene_dir is None:
         raise ValueError("comp_pred_scene_dir must be provided for comparison mode.")
 
-    baseline_metrics_path = args.pred_scene_dir / args.metrics_filename
-    comp_metrics_path = args.comp_pred_scene_dir / args.metrics_filename
-
-    baseline_metrics, metric_names = _load_metrics_csv(baseline_metrics_path)
-    comp_metrics, comp_metric_names = _load_metrics_csv(comp_metrics_path)
-    if comp_metric_names != metric_names:
+    baseline_pose_types = _discover_pose_types(args.pred_scene_dir)
+    comp_pose_types = _discover_pose_types(args.comp_pred_scene_dir)
+    available_pose_types = sorted(set(baseline_pose_types) & set(comp_pose_types))
+    if not available_pose_types:
         raise ValueError(
-            "Metric columns mismatch between baseline and comparison files: "
-            f"{metric_names} vs {comp_metric_names}"
+            "No common pose types found between baseline and comparison metrics files."
         )
-    if args.sort_metric not in metric_names:
-        raise ValueError(
-            f"sort_metric {args.sort_metric!r} not found in metrics. Available: {metric_names}"
+    current_pose_type = "smpl" if "smpl" in available_pose_types else available_pose_types[0]
+
+    allowed_metrics = ["mpjpe_mm", "mve_mm"]
+
+    def _load_comparison_metrics(pose_type: str):
+        metrics_filename = f"{pose_type}_pose_estimation_metrics_per_frame.csv"
+        baseline_metrics_path = args.pred_scene_dir / metrics_filename
+        comp_metrics_path = args.comp_pred_scene_dir / metrics_filename
+
+        baseline_metrics, metric_names = _load_metrics_csv(baseline_metrics_path)
+        comp_metrics, comp_metric_names = _load_metrics_csv(comp_metrics_path)
+        if comp_metric_names != metric_names:
+            raise ValueError(
+                "Metric columns mismatch between baseline and comparison files: "
+                f"{metric_names} vs {comp_metric_names}"
+            )
+
+        metric_names = [m for m in metric_names if m in allowed_metrics]
+        if not metric_names:
+            raise ValueError(
+                f"None of the allowed metrics {allowed_metrics} found in {baseline_metrics_path}"
+            )
+        for frame_id in list(baseline_metrics.keys()):
+            baseline_metrics[frame_id] = {
+                k: v for k, v in baseline_metrics[frame_id].items() if k in metric_names
+            }
+        for frame_id in list(comp_metrics.keys()):
+            comp_metrics[frame_id] = {
+                k: v for k, v in comp_metrics[frame_id].items() if k in metric_names
+            }
+        if args.sort_metric not in metric_names:
+            raise ValueError(
+                f"sort_metric {args.sort_metric!r} must be one of {metric_names}"
+            )
+
+        baseline_frames = set(baseline_metrics.keys())
+        comp_frames = set(comp_metrics.keys())
+        if baseline_frames != comp_frames:
+            missing_in_comp = sorted(baseline_frames - comp_frames)
+            missing_in_base = sorted(comp_frames - baseline_frames)
+            raise ValueError(
+                "Frame mismatch between baseline and comparison metrics. "
+                f"Missing in comp: {missing_in_comp[:10]} "
+                f"Missing in baseline: {missing_in_base[:10]}"
+            )
+
+        delta_metrics: Dict[int, Dict[str, float]] = {}
+        for frame_id in baseline_frames:
+            delta_metrics[frame_id] = {
+                name: comp_metrics[frame_id][name] - baseline_metrics[frame_id][name]
+                for name in metric_names
+            }
+
+        sorted_frames = sorted(
+            baseline_frames,
+            key=lambda fid: baseline_metrics[fid][args.sort_metric]
+            - comp_metrics[fid][args.sort_metric],
+            reverse=True,
         )
+        if args.top_k > 0:
+            sorted_frames = sorted_frames[: min(args.top_k, len(sorted_frames))]
+        if not sorted_frames:
+            raise ValueError("No frames available for visualization after sorting.")
 
-    baseline_frames = set(baseline_metrics.keys())
-    comp_frames = set(comp_metrics.keys())
-    if baseline_frames != comp_frames:
-        missing_in_comp = sorted(baseline_frames - comp_frames)
-        missing_in_base = sorted(comp_frames - baseline_frames)
-        raise ValueError(
-            "Frame mismatch between baseline and comparison metrics. "
-            f"Missing in comp: {missing_in_comp[:10]} "
-            f"Missing in baseline: {missing_in_base[:10]}"
-        )
+        return baseline_metrics, comp_metrics, delta_metrics, metric_names, sorted_frames
 
-    delta_metrics: Dict[int, Dict[str, float]] = {}
-    for frame_id in baseline_frames:
-        delta_metrics[frame_id] = {
-            name: comp_metrics[frame_id][name] - baseline_metrics[frame_id][name]
-            for name in metric_names
-        }
-
-    sorted_frames = sorted(
-        baseline_frames,
-        key=lambda fid: baseline_metrics[fid][args.sort_metric] - comp_metrics[fid][args.sort_metric],
-        reverse=True,
-    )
-    if args.top_k > 0:
-        sorted_frames = sorted_frames[: min(args.top_k, len(sorted_frames))]
-    if not sorted_frames:
-        raise ValueError("No frames available for visualization after sorting.")
+    (
+        baseline_metrics,
+        comp_metrics,
+        delta_metrics,
+        metric_names,
+        sorted_frames,
+    ) = _load_comparison_metrics(current_pose_type)
 
     gt_smplx_dir = args.gt_scene_dir / "smplx"
     pred_smplx_dir = args.pred_scene_dir / "smplx"
@@ -564,7 +614,9 @@ def _visualize_comparison_mode(args: Args) -> None:
     pred_smpl_base = np.array([220, 80, 80], dtype=np.float32)
     comp_smpl_base = np.array([200, 140, 40], dtype=np.float32)
 
-    for frame_id in sorted_frames:
+    def _create_frame_nodes(frame_id: int) -> None:
+        if frame_id in gt_nodes:
+            return
         gt_frame_path = _select_frame(gt_frames, 0, str(frame_id))
         pred_frame_path = _select_frame(pred_frames, 0, str(frame_id))
         comp_frame_path = _select_frame(comp_pred_frames, 0, str(frame_id))
@@ -692,6 +744,9 @@ def _visualize_comparison_mode(args: Args) -> None:
             pred_smpl_nodes[frame_id] = pred_smpl_node
             comp_smpl_nodes[frame_id] = comp_smpl_node
 
+    for frame_id in sorted_frames:
+        _create_frame_nodes(frame_id)
+
     initial_frame_id = sorted_frames[0]
     if args.frame_name and args.frame_name.isdigit():
         requested = int(args.frame_name)
@@ -701,11 +756,17 @@ def _visualize_comparison_mode(args: Args) -> None:
     current_frame_id = initial_frame_id
 
     with server.gui.add_folder("Frame selection"):
-        dropdown = server.gui.add_dropdown(
+        pose_type_dropdown = server.gui.add_dropdown(
+            "Eval pose type",
+            available_pose_types,
+            initial_value=current_pose_type,
+        )
+        frame_dropdown = server.gui.add_dropdown(
             "Frame", [str(fid) for fid in sorted_frames], initial_value=str(initial_frame_id)
         )
         metrics_markdown = server.gui.add_markdown(
-            _metrics_table_markdown(
+            f"**Eval pose type:** `{current_pose_type}`\n\n"
+            + _metrics_table_markdown(
                 baseline_metrics[current_frame_id],
                 comp_metrics[current_frame_id],
                 delta_metrics[current_frame_id],
@@ -728,10 +789,12 @@ def _visualize_comparison_mode(args: Args) -> None:
         if comp_smpl_root is not None:
             comp_smpl_checkbox = server.gui.add_checkbox("Show SMPL", True)
 
-    def _apply_visibility(frame_id: int) -> None:
+    def _apply_visibility(frame_id: int, *, force: bool = False) -> None:
         nonlocal current_frame_id
-        if frame_id == current_frame_id:
+        if not force and frame_id == current_frame_id:
             return
+        if frame_id not in gt_nodes:
+            _create_frame_nodes(frame_id)
         if current_frame_id in gt_nodes:
             gt_nodes[current_frame_id].visible = False
         if current_frame_id in pred_nodes:
@@ -746,11 +809,14 @@ def _visualize_comparison_mode(args: Args) -> None:
             comp_smpl_nodes[current_frame_id].visible = False
 
         current_frame_id = frame_id
-        metrics_markdown.content = _metrics_table_markdown(
-            baseline_metrics[frame_id],
-            comp_metrics[frame_id],
-            delta_metrics[frame_id],
-            metric_names,
+        metrics_markdown.content = (
+            f"**Eval pose type:** `{current_pose_type}`\n\n"
+            + _metrics_table_markdown(
+                baseline_metrics[frame_id],
+                comp_metrics[frame_id],
+                delta_metrics[frame_id],
+                metric_names,
+            )
         )
 
         if frame_id in gt_nodes:
@@ -791,9 +857,30 @@ def _visualize_comparison_mode(args: Args) -> None:
     if current_frame_id in comp_smpl_nodes:
         comp_smpl_nodes[current_frame_id].visible = comp_smpl_checkbox.value  # type: ignore[name-defined]
 
-    @dropdown.on_update
+    def _set_pose_type(pose_type: str) -> None:
+        nonlocal baseline_metrics, comp_metrics, delta_metrics, metric_names, sorted_frames, current_pose_type
+        if pose_type == current_pose_type:
+            return
+        (
+            baseline_metrics,
+            comp_metrics,
+            delta_metrics,
+            metric_names,
+            sorted_frames,
+        ) = _load_comparison_metrics(pose_type)
+        current_pose_type = pose_type
+        frame_dropdown.options = [str(fid) for fid in sorted_frames]
+        for frame_id in sorted_frames:
+            _create_frame_nodes(frame_id)
+        _apply_visibility(int(frame_dropdown.value), force=True)
+
+    @frame_dropdown.on_update
     def _(_event=None) -> None:
-        _apply_visibility(int(dropdown.value))
+        _apply_visibility(int(frame_dropdown.value))
+
+    @pose_type_dropdown.on_update
+    def _(_event=None) -> None:
+        _set_pose_type(str(pose_type_dropdown.value))
 
     @gt_checkbox.on_update
     def _(_event=None) -> None:
