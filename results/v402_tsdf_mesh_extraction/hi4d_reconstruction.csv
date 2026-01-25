@@ -1,0 +1,6 @@
+scene,V_IoU,Chamfer_cm,P2S_cm,Normal_Consistency
+hi4d_pair15_fight,0.2726,4.2369,2.2259,0.7214
+hi4d_pair16_jump,0.2681,4.1656,2.0380,0.7277
+hi4d_pair17_dance,0.2950,4.1310,2.0938,0.7427
+hi4d_pair19_piggyback,0.2483,5.2639,3.3133,0.6676
+avg,0.2710,4.4493,2.4177,0.7148
