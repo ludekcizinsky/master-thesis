@@ -540,6 +540,7 @@ def _visualize_comparison_mode(args: Args) -> None:
         center_offset = (bounds[0] + bounds[1]) * 0.5
 
     server = viser.ViserServer(port=args.port)
+    server.gui.configure_theme(control_width="large")
     angle = -np.pi / 2 if args.is_minus_y_up else np.pi / 2
     R_fix = tf.SO3.from_x_radians(angle)
     server.scene.add_frame(
@@ -977,6 +978,7 @@ def main(args: Args) -> None:
         center_offset = (bounds[0] + bounds[1]) * 0.5
 
     server = viser.ViserServer(port=args.port)
+    server.gui.configure_theme(control_width="large")
     angle = -np.pi / 2 if args.is_minus_y_up else np.pi / 2
     R_fix = tf.SO3.from_x_radians(angle)
     server.scene.add_frame(
