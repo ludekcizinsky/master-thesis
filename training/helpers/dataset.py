@@ -355,8 +355,9 @@ class SceneDataset(Dataset):
             "body_pose": body_pose,
             "root_pose": add_key("global_orient"),   # [P,3] world axis-angle
             "trans": add_key("transl"),           # [P,3] world translation
-            "contact": add_key("contact"), # [P, N_contact] - may be dummy depending on source
         }
+        if "contact" in npz:
+            smpl["contact"] = add_key("contact")  # [P, N_contact]
 
         return smpl
     

@@ -43,7 +43,8 @@ from training.helpers.dataset import (
     fetch_masks_if_exist,
     intr_to_4x4,
     extr_to_w2c_4x4,
-    root_dir_to_smplx_dir
+    root_dir_to_smplx_dir,
+    root_dir_to_smpl_dir
 )
 from training.helpers.debug import (
     save_depth_comparison, 
@@ -259,7 +260,8 @@ def get_all_scene_dir_cams(scene_dir: Path, device: torch.device) -> Dict[int, D
 
 def load_pose_dir(
     pose_dir: Path,
-    pose_type: str = "smplx",
+    pose_type: str,
+    device: torch.device = torch.device("cuda")
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     # list all files in the pose dir
     pose_files = sorted(list(pose_dir.glob("*.npz")))
@@ -269,9 +271,9 @@ def load_pose_dir(
     for path in pose_files:
         frame_name = path.stem
         if pose_type == "smpl":
-            data = SceneDataset._load_smpl(path)
+            data = SceneDataset._load_smpl(path, device=device)
         elif pose_type == "smplx":
-            data = SceneDataset._load_smplx(path)
+            data = SceneDataset._load_smplx(path, device=device)
         else:
             raise ValueError(f"Unknown pose type: {pose_type}")
         frame_to_pose_params[frame_name] = data
@@ -287,7 +289,17 @@ def pose_params_dict_to_batch(pose_params: Dict[str, Dict[str, torch.Tensor]], b
     We want to convert this to a batched version where we will retuern a list of batches
     where batch is a dict of key -> tensor of shape [B, P, ...] 
     """
-    keys = list(next(iter(pose_params.values())).keys())
+    # Union of keys across all frames (some frames may not have optional keys like "contact")
+    keys = sorted({k for params in pose_params.values() for k in params.keys()})
+    # Find exemplar tensors for missing-key padding
+    exemplar = {}
+    for k in keys:
+        for params in pose_params.values():
+            if k in params:
+                exemplar[k] = params[k]
+                break
+        if k not in exemplar:
+            raise ValueError(f"Missing exemplar for pose key '{k}'")
     batched_pose_params = []
     batched_fnames = []
     current_batch = {k: [] for k in keys}
@@ -295,10 +307,13 @@ def pose_params_dict_to_batch(pose_params: Dict[str, Dict[str, torch.Tensor]], b
     for frame_name, params in pose_params.items():
         # add another frame to the current batch
         for k in keys:
-            current_batch[k].append(params[k])
+            if k in params:
+                current_batch[k].append(params[k])
+            else:
+                current_batch[k].append(torch.zeros_like(exemplar[k]))
         current_fnames.append(frame_name)
 
-        # how we filled the batch? 
+        # have we filled the batch? 
         if len(current_batch[keys[0]]) == batch_size:
             # stack and add to batched list
             batch = {k: torch.stack(current_batch[k], dim=0) for k in keys}
@@ -1715,7 +1730,7 @@ class MultiHumanTrainer:
                 wandb.log(to_log)
 
     @torch.no_grad()
-    def eval_loop_pose_estimation(self, epoch):
+    def eval_loop_pose_estimation(self, epoch, pose_type="smplx"):
 
         # Parse source camera ID
         src_cam_id = self.cfg.nvs_eval.source_camera_id
@@ -1738,47 +1753,72 @@ class MultiHumanTrainer:
 
         # Convert the saved pose-tuned SMPL-X params to SMPL format
         # (will create save_dir / "smpl" directory with the converted SMPL params)
-        subprocess.run([
-            "bash",
-            "submodules/smplx/tools/run_conversion.sh",
-            str(save_dir),
-            "smplx",
-            "smpl",
-        ], check=True)
+        if pose_type == "smpl":
+            subprocess.run([
+                "bash",
+                "submodules/smplx/tools/run_conversion.sh",
+                str(save_dir),
+                "smplx",
+                "smpl",
+            ], check=True)
+        pose_tuned_smpl_params_dir = save_dir / "smpl"
 
         # Init datasets
-        # - pose
         batch_size = self.cfg.batch_size
-        gt_smplx_dir = root_dir_to_smplx_dir(self.test_data_dir)
-        gt_fname_to_smplx_params = load_pose_dir(gt_smplx_dir)
-        pred_smplx_dir = pose_tuned_smplx_params_dir
-        pred_fname_to_smplx_params = load_pose_dir(pred_smplx_dir)
-        batched_pred_smplx_params, batched_pred_fnames = pose_params_dict_to_batch(pred_fname_to_smplx_params, batch_size)
+        # - pose
+        # --- GT
+        gt_pose_dir = root_dir_to_smplx_dir(self.test_data_dir) if pose_type == "smplx" else root_dir_to_smpl_dir(self.test_data_dir)
+        gt_fname_to_pose_params = load_pose_dir(
+            gt_pose_dir, pose_type=pose_type, device=self.tuner_device
+        )
+        # --- Pred
+        pred_pose_dir = pose_tuned_smplx_params_dir if pose_type == "smplx" else pose_tuned_smpl_params_dir
+        pred_fname_to_pose_params = load_pose_dir(
+            pred_pose_dir, pose_type=pose_type, device=self.tuner_device
+        )
+        batched_pred_pose_params, batched_pred_fnames = pose_params_dict_to_batch(pred_fname_to_pose_params, batch_size)
 
         # - cameras
         all_cameras = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
         src_camera_params_over_time = all_cameras[src_cam_id]
 
-        # Get SMPL-X layer 
-        smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
-        if smplx_layer is None:
-            raise RuntimeError("SMPL-X layer not available for pose evaluation.")
-        smplx_layer = smplx_layer.to(self.tuner_device).eval()
+        # Get pose layer
+        if pose_type == "smplx":
+            smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
+            if smplx_layer is None:
+                raise RuntimeError("SMPL-X layer not available for pose evaluation.")
+            pose_layer = smplx_layer.to(self.tuner_device).eval()
+        else:  # smpl
+            sample_params = next(iter(pred_fname_to_pose_params.values()), None)
+            if sample_params is None:
+                raise RuntimeError("No predicted SMPL params available for pose evaluation.")
+            num_betas = int(sample_params["betas"].shape[-1])
+            model_root = Path(self.renderer.smplx_model.smpl_x.human_model_path)
+            pose_layer = smplx.create(
+                str(model_root),
+                "smpl",
+                gender="neutral",
+                num_betas=num_betas,
+                use_pca=False,
+            ).to(self.tuner_device).eval()
 
         # Evaluate in batches
         metrics_per_frame = []
-        has_contact = None
-        for pred_smplx_params, fnames in tqdm(zip(batched_pred_smplx_params, batched_pred_fnames), desc="Evaluating Pose Estimation", leave=False):
+        has_contact = False
+        for pred_pose_params, fnames in tqdm(zip(batched_pred_pose_params, batched_pred_fnames), desc="Evaluating Pose Estimation", leave=False):
 
             # - Get corresponding gt SMPL-X params
             bsize = len(fnames)
             # -- Loop over batch to get gt SMPL-X params
-            gt_smplx_params = []
-            for i in range(bsize):
-                smplx_params = gt_fname_to_smplx_params[fnames[i]]
-                gt_smplx_params.append(smplx_params)
-            # -- Stack the returned gt SMPL-X params
-            gt_smplx_params_batched = {k: torch.stack([gt_smplx_params[i][k] for i in range(bsize)], dim=0) for k in gt_smplx_params[0].keys()}
+            gt_pose_params_dict = {fname: gt_fname_to_pose_params[fname] for fname in fnames}
+            # -- Stack the returned GT pose params (union keys, fill missing with zeros)
+            gt_batched_pose_params, _ = pose_params_dict_to_batch(gt_pose_params_dict, batch_size=bsize)
+            gt_pose_params = gt_batched_pose_params[0]
+            # -- Track which frames actually have contact annotations
+            contact_mask = torch.tensor(
+                ["contact" in gt_fname_to_pose_params[fname] for fname in fnames],
+                device=self.tuner_device,
+            )
 
             # Get corresponding c2ws
             c2ws = [src_camera_params_over_time[fname]["c2w"] for fname in fnames]
@@ -1787,110 +1827,88 @@ class MultiHumanTrainer:
             # - Compute pose metrics
             # -- MPJPE per frame
             mpjpe_per_frame = compute_pose_mpjpe_per_frame(
-                pred_smplx_params,
-                gt_smplx_params_batched,
-                smplx_layer,
+                pred_pose_params,
+                gt_pose_params,
+                pose_layer,
                 unit="mm",
-                pose_type="smplx",
+                pose_type=pose_type,
             )
             # -- MVE per frame
             mve_per_frame = compute_pose_mve_per_frame(
-                pred_smplx_params,
-                gt_smplx_params_batched,
-                smplx_layer,
+                pred_pose_params,
+                gt_pose_params,
+                pose_layer,
                 unit="mm",
-                pose_type="smplx",
+                pose_type=pose_type,
             )
             # -- Contact distance per frame (if available)
-            batch_has_contact = "contact" in gt_smplx_params_batched
-            if has_contact is None:
-                has_contact = batch_has_contact
-            elif has_contact != batch_has_contact:
-                raise ValueError("Inconsistent GT contact availability across batches.")
+            batch_has_contact = bool(contact_mask.any().item())
+            has_contact = has_contact or batch_has_contact
             if batch_has_contact:
                 cd_per_frame = compute_pose_contact_distance_per_frame(
-                    pred_smplx_params,
-                    gt_smplx_params_batched["contact"],
-                    smplx_layer,
+                    pred_pose_params,
+                    gt_pose_params["contact"],
+                    pose_layer,
                     unit="mm",
-                    pose_type="smplx",
+                    pose_type=pose_type,
                 )
             # -- Percentage of Correct Depth Relations
             pcdr = compute_pose_pcdr_per_frame(
-                pred_smplx_params,
-                gt_smplx_params_batched,
+                pred_pose_params,
+                gt_pose_params,
                 c2ws,
                 tau=0.15,
                 gamma=0.3,
-                pose_type="smplx",
+                pose_type=pose_type,
             )
 
-            # - Collect metrics per frame
-            if batch_has_contact:
-                for idx, (fname, mpjpe, mve, cd) in enumerate(
-                    zip(fnames, mpjpe_per_frame, mve_per_frame, cd_per_frame)
-                ):
-                    fid = int(fname)
-                    metrics_per_frame.append(
-                        (
-                            fid,
-                            mpjpe.item(),
-                            mve.item(),
-                            cd.item(),
-                            pcdr["pcdr"][idx].item(),
-                        )
+            # - Collect metrics per frame (use NaN for frames without contact)
+            for idx, (fname, mpjpe, mve) in enumerate(
+                zip(fnames, mpjpe_per_frame, mve_per_frame)
+            ):
+                fid = int(fname)
+                if batch_has_contact and bool(contact_mask[idx].item()):
+                    cd_val = cd_per_frame[idx].item()
+                else:
+                    cd_val = float("nan")
+                metrics_per_frame.append(
+                    (
+                        fid,
+                        mpjpe.item(),
+                        mve.item(),
+                        cd_val,
+                        pcdr["pcdr"][idx].item(),
                     )
-            else:
-                for idx, (fname, mpjpe, mve) in enumerate(
-                    zip(fnames, mpjpe_per_frame, mve_per_frame)
-                ):
-                    fid = int(fname)
-                    metrics_per_frame.append(
-                        (
-                            fid,
-                            mpjpe.item(),
-                            mve.item(),
-                            pcdr["pcdr"][idx].item(),
-                        )
-                    )
+                )
 
         # Save metrics to CSV
-        # - save per-frame metrics
-        if has_contact:
-            df = pd.DataFrame(
-                metrics_per_frame,
-                columns=[
-                    "frame_id",
-                    "mpjpe_mm",
-                    "mve_mm",
-                    "cd_mm",
-                    "pcdr",
-                ],
-            )
-        else:
-            df = pd.DataFrame(
-                metrics_per_frame,
-                columns=[
-                    "frame_id",
-                    "mpjpe_mm",
-                    "mve_mm",
-                    "pcdr",
-                ],
-            )
-        csv_path = save_dir / "pose_estimation_metrics_per_frame.csv"
+        # - save per-frame metrics (always include cd_mm; drop if unused)
+        df = pd.DataFrame(
+            metrics_per_frame,
+            columns=[
+                "frame_id",
+                "mpjpe_mm",
+                "mve_mm",
+                "cd_mm",
+                "pcdr",
+            ],
+        )
+        if not has_contact:
+            df = df.drop(columns=["cd_mm"])
+        csv_path = save_dir / f"{pose_type}_pose_estimation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics
-        pcdr_mean = df["pcdr"].mean()
         overall_avg = {
             "mpjpe_mm": df["mpjpe_mm"].mean(),
             "mve_mm": df["mve_mm"].mean(),
-            "pcdr": pcdr_mean,
+            "pcdr": df["pcdr"].mean(),
         }
         if has_contact:
-            cd_nonzero = df["cd_mm"][df["cd_mm"] > 0]
-            overall_avg["cd_mm"] = cd_nonzero.mean() if not cd_nonzero.empty else 0.0
-        overall_avg_path = save_dir / "pose_estimation_overall_results.txt"
+            cd_vals = df["cd_mm"].replace(0.0, np.nan).dropna()
+            cd_mean = cd_vals.mean() if not cd_vals.empty else np.nan
+            overall_avg["cd_mm"] = 0.0 if pd.isna(cd_mean) else cd_mean
+        overall_avg_path = save_dir / f"{pose_type}_pose_estimation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
@@ -1898,23 +1916,33 @@ class MultiHumanTrainer:
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
             to_log = {
-                "eval_pose/mpjpe_mm": overall_avg["mpjpe_mm"],
-                "eval_pose/mve_mm": overall_avg["mve_mm"],
-                "eval_pose/pcdr": overall_avg["pcdr"],
+                f"{pose_type}_eval_pose/mpjpe_mm": overall_avg["mpjpe_mm"],
+                f"{pose_type}_eval_pose/mve_mm": overall_avg["mve_mm"],
+                f"{pose_type}_eval_pose/pcdr": overall_avg["pcdr"],
             }
-            if has_contact:
-                to_log["eval_pose/cd_mm"] = overall_avg["cd_mm"]
+            if has_contact and "cd_mm" in overall_avg:
+                to_log[f"{pose_type}_eval_pose/cd_mm"] = overall_avg["cd_mm"]
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
-#        # - debug
-        #print(
-            #"Overall Pose Estimation "
-            #f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
-            #f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
-            ## f"CD (mm): {overall_avg['cd_mm']:.4f}, "
-            #f"PCDR: {overall_avg['pcdr']:.2f}"
-        #)
+        # - debug
+        debug_cd = overall_avg.get("cd_mm", None)
+        if debug_cd is not None:
+            print(
+                "Overall Pose Estimation "
+                f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
+                f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+                f"CD (mm): {overall_avg['cd_mm']:.4f}, "
+                f"PCDR: {overall_avg['pcdr']:.2f}"
+            )
+        else:
+            print(
+                    "Overall Pose Estimation "
+                    f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
+                    f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+                    f"PCDR: {overall_avg['pcdr']:.2f}"
+                )
+
 
     @torch.no_grad()
     def eval_loop_reconstruction(self, epoch):
@@ -2408,7 +2436,8 @@ class MultiHumanTrainer:
         if self.cfg.test_smpl_params_scene_dir is None:
             print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
         else:
-            self.eval_loop_pose_estimation(epoch)
+            self.eval_loop_pose_estimation(epoch, pose_type="smplx")
+            self.eval_loop_pose_estimation(epoch, pose_type="smpl")
 
         ## - Reconstruction evaluation
         #if self.cfg.test_meshes_scene_dir is None:
