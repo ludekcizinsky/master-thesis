@@ -2419,18 +2419,18 @@ class MultiHumanTrainer:
     def eval_loop(self, epoch):
 
 
-#        # Quantitative evaluation against provided ground truth
-        ## - Novel view synthesis evaluation
-        #if len(self.cfg.nvs_eval.target_camera_ids) == 0:
-            #print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
-        #else:
-            #self.eval_loop_nvs(epoch)
+        # Quantitative evaluation against provided ground truth
+        # - Novel view synthesis evaluation
+        if len(self.cfg.nvs_eval.target_camera_ids) == 0:
+            print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
+        else:
+            self.eval_loop_nvs(epoch)
 
-        ## - Segmentation evaluation
-        #if self.cfg.test_masks_scene_dir is None:
-            #print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
-        #else:
-            #self.eval_loop_segmentation(epoch)
+        # - Segmentation evaluation
+        if self.cfg.test_masks_scene_dir is None:
+            print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
+        else:
+            self.eval_loop_segmentation(epoch)
         
         # - Pose estimation evaluation
         if self.cfg.test_smpl_params_scene_dir is None:
@@ -2439,17 +2439,15 @@ class MultiHumanTrainer:
             self.eval_loop_pose_estimation(epoch, pose_type="smplx")
             self.eval_loop_pose_estimation(epoch, pose_type="smpl")
 
-        ## - Reconstruction evaluation
-        #if self.cfg.test_meshes_scene_dir is None:
-            #print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
-        #else:
-            #self.eval_loop_reconstruction(epoch)
-            #has_run_at_least_one_quant_eval = True
-
+        # - Reconstruction evaluation
+        if self.cfg.test_meshes_scene_dir is None:
+            print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
+        else:
+            self.eval_loop_reconstruction(epoch)
 
         # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
-        # self.eval_loop_qualitative(epoch)
+        self.eval_loop_qualitative(epoch)
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
