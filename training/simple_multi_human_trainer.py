@@ -34,7 +34,8 @@ sys.path.insert(
 from training.helpers.gs_renderer import GS3DRenderer
 from training.helpers.dataset import (
     SceneDataset, 
-    fetch_data_if_available, 
+    fetch_data_if_available,
+    fetch_cameras_if_exist, 
     root_dir_to_image_dir, 
     root_dir_to_mask_dir, 
     root_dir_to_skip_frames_path, 
@@ -1141,6 +1142,11 @@ class MultiHumanTrainer:
         print("NV camera traversal initialized:")
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
+
+        # fetch all trn nv camera ids params into the trn data dir
+        cam_scene_dir = Path(self.cfg.cameras_scene_dir)
+        for cam_id in self.camera_ids:
+            fetch_cameras_if_exist(cam_scene_dir, self.trn_data_dir, cam_id, dict())
 
     @torch.no_grad()
     def prepare_nv_rgb_frames(self, cam_id: int, prev_cam_id: int, difix_pipe: Optional[DifixPipeline] = None):

@@ -458,6 +458,17 @@ def fetch_masks_if_exist(masks_scene_dir: Path, tgt_scene_dir: Path, camera_id: 
     else:
         return False
 
+def fetch_cameras_if_exist(cam_scene_dir: Optional[Path], tgt_scene_dir: Path, camera_id: int, was_it_fetched: dict):
+    if cam_scene_dir is not None:
+        src_cameras_dir = root_dir_to_all_cameras_dir(cam_scene_dir) / f"{camera_id}"
+        tgt_cameras_dir = root_dir_to_all_cameras_dir(tgt_scene_dir) / f"{camera_id}"
+        tgt_cameras_dir.parent.mkdir(parents=True, exist_ok=True)
+        if src_cameras_dir.exists():
+            subprocess.run(["cp", "-r", str(src_cameras_dir), str(tgt_cameras_dir.parent)])
+        was_it_fetched["cameras"] = True
+    else:
+        was_it_fetched["cameras"] = False 
+
 
 def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_dir: Path, masks_scene_dir: Path, cam_scene_dir: Optional[Path] = None,  
                                 smplx_params_scene_dir: Optional[Path] = None, depths_scene_dir: Optional[Path] = None, smpl_params_scene_dir: Optional[Path] = None, meshes_scene_dir: Optional[Path] = None,
@@ -503,15 +514,8 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
     was_it_fetched["masks"] = masks_were_fetched
 
     # Camera parameters
-    if cam_scene_dir is not None:
-        src_cameras_dir = root_dir_to_all_cameras_dir(cam_scene_dir) / f"{camera_id}"
-        tgt_cameras_dir = root_dir_to_all_cameras_dir(tgt_scene_dir) / f"{camera_id}"
-        tgt_cameras_dir.parent.mkdir(parents=True, exist_ok=True)
-        if src_cameras_dir.exists():
-            subprocess.run(["cp", "-r", str(src_cameras_dir), str(tgt_cameras_dir.parent)])
-        was_it_fetched["cameras"] = True
-    else:
-        was_it_fetched["cameras"] = False 
+    fetch_cameras_if_exist(cam_scene_dir, tgt_scene_dir, camera_id, was_it_fetched)
+
 
     # SMPLX parameters
     if smplx_params_scene_dir is not None:
