@@ -363,6 +363,8 @@ class MultiHumanTrainer:
         # Preare trainable parameters
         # - (optional) pose tuning
         self._init_pose_tuning()
+        self.pose_tuning_active = False
+        self.gs_tuning_active = False
         # - 3dgs
         self._load_model()
 
@@ -511,7 +513,7 @@ class MultiHumanTrainer:
     def _pose_tuning_regularization(self) -> torch.Tensor:
         # If disabled, return zero
         reg_w = self.cfg.pose_tuning.reg_w
-        if not self.pose_tuning_enabled or reg_w <= 0.0:
+        if not self.pose_tuning_enabled or not self.pose_tuning_active or reg_w <= 0.0:
             return torch.zeros((), device=self.tuner_device)
 
         # If enabled, compute L2 regularization on deltas
@@ -521,6 +523,38 @@ class MultiHumanTrainer:
 
         # Finally scale by weight and return
         return reg * reg_w
+
+    @staticmethod
+    def _epoch_in_range(epoch: int, start: int, end: int) -> bool:
+        return start <= epoch <= end
+
+    def _update_optimization_schedule(self, epoch: int) -> None:
+        # Pose schedule 
+        pose_start = int(self.cfg.pose_tuning.start_epoch)
+        pose_end = int(self.cfg.pose_tuning.end_epoch)
+        pose_active = self.pose_tuning_enabled and self._epoch_in_range(epoch, pose_start, pose_end)
+
+        # GS schedule 
+        gs_start = int(self.cfg.gs_tuning.start_epoch)
+        gs_end = int(self.cfg.gs_tuning.end_epoch)
+        gs_active = self._epoch_in_range(epoch, gs_start, gs_end)
+
+        # Toggle trainability
+        if self.pose_tuning_active != pose_active:
+            print(f"Pose tuning active: {pose_active} (epoch {epoch})")
+        if self.gs_tuning_active != gs_active:
+            print(f"3DGS tuning active: {gs_active} (epoch {epoch})")
+
+        self.pose_tuning_active = pose_active
+        self.gs_tuning_active = gs_active
+
+        if self.pose_tuning_enabled and self.pose_deltas is not None:
+            for p in self.pose_deltas.parameters():
+                p.requires_grad_(pose_active)
+
+        for p in self.gs_train_params:
+            if torch.is_tensor(p):
+                p.requires_grad_(gs_active)
 
     @torch.no_grad()
     def _save_pose_tuned_smplx_params(self, dataset: SceneDataset, out_dir: Path) -> None:
@@ -733,6 +767,7 @@ class MultiHumanTrainer:
         # Initialize optimizer
         # - 3dgs setup
         params = self._trainable_tensors()
+        self.gs_train_params = params
         opt_groups = [{"params": params, "lr": self.cfg.lr}]
         # - pose params setup
         if self.pose_tuning_enabled:
@@ -743,6 +778,8 @@ class MultiHumanTrainer:
 
         # Training loop
         for epoch in range(self.cfg.epochs):
+            # Update optimization schedule for this epoch
+            self._update_optimization_schedule(epoch)
 
             # If we augmented the training data this epoch, rebuild the dataloader
             # using the augmented dataset (with more cameras)
@@ -750,7 +787,7 @@ class MultiHumanTrainer:
                 trn_loader = self._build_loader(self.trn_dataset)
                 trn_iter = self._infinite_loader(trn_loader)
 
-            # Pre-optimization visualization (epoch 0).
+            # Pre-optimization evaluation (epoch 0).
             if self.cfg.eval_pretrain and epoch == 0:
                 self.eval_loop(epoch)
 
@@ -2426,11 +2463,11 @@ class MultiHumanTrainer:
         else:
             self.eval_loop_nvs(epoch)
 
-        # - Segmentation evaluation
-        if self.cfg.test_masks_scene_dir is None:
-            print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
-        else:
-            self.eval_loop_segmentation(epoch)
+#        # - Segmentation evaluation
+        #if self.cfg.test_masks_scene_dir is None:
+            #print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
+        #else:
+            #self.eval_loop_segmentation(epoch)
         
         # - Pose estimation evaluation
         if self.cfg.test_smpl_params_scene_dir is None:
@@ -2439,11 +2476,11 @@ class MultiHumanTrainer:
             self.eval_loop_pose_estimation(epoch, pose_type="smplx")
             self.eval_loop_pose_estimation(epoch, pose_type="smpl")
 
-        # - Reconstruction evaluation
-        if self.cfg.test_meshes_scene_dir is None:
-            print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
-        else:
-            self.eval_loop_reconstruction(epoch)
+#        # - Reconstruction evaluation
+        #if self.cfg.test_meshes_scene_dir is None:
+            #print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
+        #else:
+            #self.eval_loop_reconstruction(epoch)
 
         # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
