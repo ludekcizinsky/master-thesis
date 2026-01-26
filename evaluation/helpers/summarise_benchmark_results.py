@@ -26,6 +26,13 @@ class TaskSpec:
     avg_formats: Dict[str, str] = field(default_factory=dict)
 
 @dataclass
+class OursSpec:
+    label: str
+    task: TaskSpec
+    task_metric_map: Dict[str, str]
+    extra_values: Dict[str, object] = field(default_factory=dict)
+
+@dataclass
 class BaselineSpec:
     name: str
     title: str
@@ -37,6 +44,10 @@ class BaselineSpec:
     best_directions: Dict[str, Literal["min", "max"]]
     formats: Dict[str, str]
     task_metric_map: Dict[str, str]
+    extra_columns: Sequence[str] = field(default_factory=list)
+    extra_headers: Dict[str, str] = field(default_factory=dict)
+    baseline_defaults: Dict[str, object] = field(default_factory=dict)
+    ours_specs: Sequence[OursSpec] = field(default_factory=list)
 
 DATASET_LABELS = {"hi4d": "Hi4D", "mmm": "MMM"}
 
@@ -152,12 +163,19 @@ def _dataset_label(ds_name: str) -> str:
     return DATASET_LABELS.get(ds_name, ds_name)
 
 def _load_baseline_table(
-    baseline_path: Path, required_columns: Sequence[str], name: str
+    baseline_path: Path,
+    required_columns: Sequence[str],
+    name: str,
+    defaults: Dict[str, object],
 ) -> pd.DataFrame:
     if not baseline_path.is_file():
         print(f"Warning: {name} baseline file not found at {baseline_path}")
         return pd.DataFrame(columns=required_columns)
     df = pd.read_csv(baseline_path)
+    missing = [col for col in required_columns if col not in df.columns]
+    fillable = [col for col in missing if col in defaults]
+    for col in fillable:
+        df[col] = defaults[col]
     missing = [col for col in required_columns if col not in df.columns]
     if missing:
         raise ValueError(
@@ -181,7 +199,11 @@ def _baseline_markdown_table(df: pd.DataFrame, spec: BaselineSpec) -> str:
         else:
             best_values[metric] = series.max() if direction == "max" else series.min()
 
-    headers = ["Method", *[spec.metric_headers[m] for m in spec.metric_order]]
+    headers = [
+        "Method",
+        *[spec.extra_headers.get(col, col) for col in spec.extra_columns],
+        *[spec.metric_headers[m] for m in spec.metric_order],
+    ]
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join(["---"] * len(headers)) + " |",
@@ -189,6 +211,8 @@ def _baseline_markdown_table(df: pd.DataFrame, spec: BaselineSpec) -> str:
 
     for _, row in df.iterrows():
         values: List[str] = [str(row["method"])]
+        for col in spec.extra_columns:
+            values.append(str(row.get(col, "")))
         for metric in spec.metric_order:
             value = pd.to_numeric(row.get(metric), errors="coerce")
             display = _format_baseline_value(value, spec.formats[metric])
@@ -219,11 +243,17 @@ def _baseline_dataset_order(
 def _ours_row_for_dataset(
     args: Args,
     spec: BaselineSpec,
+    ours_spec: OursSpec,
     dataset_label: str,
     label_to_scene_key: Dict[str, str],
     scene_indices_by_ds: Dict[str, List[int]],
 ) -> Dict[str, object]:
-    ours_row: Dict[str, object] = {"dataset": dataset_label, "method": "Ours"}
+    ours_row: Dict[str, object] = {
+        "dataset": dataset_label,
+        "method": ours_spec.label,
+    }
+    for col in spec.extra_columns:
+        ours_row[col] = ours_spec.extra_values.get(col, spec.baseline_defaults.get(col))
     ds_name = label_to_scene_key.get(dataset_label)
     if ds_name is None:
         print(
@@ -251,7 +281,7 @@ def _ours_row_for_dataset(
             ours_row[metric] = float("nan")
         return ours_row
 
-    if spec.task.kind == "csv_camera":
+    if ours_spec.task.kind == "csv_camera":
         dataset_src_cam_ids = (
             [args.src_cam_ids[i] for i in indices] if args.src_cam_ids else []
         )
@@ -259,11 +289,15 @@ def _ours_row_for_dataset(
         dataset_src_cam_ids = []
 
     numeric_df = _collect_task_results_numeric(
-        args, spec.task, dataset_scenes, dataset_src_cam_ids
+        args, ours_spec.task, dataset_scenes, dataset_src_cam_ids
     )
     avg = numeric_df.loc["avg"]
-    for metric, source_col in spec.task_metric_map.items():
-        ours_row[metric] = float(avg[source_col])
+    for metric in spec.metric_order:
+        source_col = ours_spec.task_metric_map.get(metric)
+        if source_col is None:
+            ours_row[metric] = float("nan")
+        else:
+            ours_row[metric] = float(avg[source_col])
     return ours_row
 
 
@@ -273,9 +307,21 @@ def _baseline_sections_for_spec(
     scene_indices_by_ds: Dict[str, List[int]],
 ) -> List[str]:
     baseline_dir = Path(__file__).resolve().parents[1] / "baselines"
-    required_columns = ["dataset", "method", *spec.metric_order]
+    required_columns = [
+        "dataset",
+        "method",
+        *spec.extra_columns,
+        *spec.metric_order,
+    ]
     baseline_path = baseline_dir / spec.baseline_filename
-    baseline_df = _load_baseline_table(baseline_path, required_columns, spec.name)
+    baseline_df = _load_baseline_table(
+        baseline_path, required_columns, spec.name, spec.baseline_defaults
+    )
+    ours_specs = (
+        list(spec.ours_specs)
+        if spec.ours_specs
+        else [OursSpec("Ours", spec.task, spec.task_metric_map)]
+    )
 
     label_to_scene_key = {
         _dataset_label(ds_name): ds_name for ds_name in scene_indices_by_ds
@@ -284,9 +330,17 @@ def _baseline_sections_for_spec(
 
     sections: List[str] = []
     for dataset_label in dataset_order:
-        ours_row = _ours_row_for_dataset(
-            args, spec, dataset_label, label_to_scene_key, scene_indices_by_ds
-        )
+        ours_rows = [
+            _ours_row_for_dataset(
+                args,
+                spec,
+                ours_spec,
+                dataset_label,
+                label_to_scene_key,
+                scene_indices_by_ds,
+            )
+            for ours_spec in ours_specs
+        ]
 
         baseline_rows = baseline_df.loc[
             baseline_df["dataset"] == dataset_label
@@ -298,7 +352,7 @@ def _baseline_sections_for_spec(
             )
 
         combined_records = baseline_rows.to_dict("records")
-        combined_records.append(ours_row)
+        combined_records.extend(ours_rows)
         combined_df = pd.DataFrame(combined_records, columns=required_columns)
         for metric in spec.metric_order:
             combined_df[metric] = pd.to_numeric(combined_df[metric], errors="coerce")
@@ -349,14 +403,25 @@ def main(args: Args) -> None:
             avg_formats={"SSIM": ".3f", "PSNR": ".1f", "LPIPS": ".4f"},
         ),
         TaskSpec(
-            name="pose_estimation",
-            title="Pose Estimation",
+            name="pose_estimation_smpl",
+            title="Pose Estimation (SMPL)",
             kind="kv",
-            filename="pose_estimation_overall_results.txt",
+            filename="smpl_pose_estimation_overall_results.txt",
             columns=[
                 ("MPJPE_mm", "mpjpe_mm"),
                 ("MVE_mm", "mve_mm"),
                 ("CD_mm", "cd_mm"),
+                ("PCDR", "pcdr"),
+            ],
+        ),
+        TaskSpec(
+            name="pose_estimation_smplx",
+            title="Pose Estimation (SMPL-X)",
+            kind="kv",
+            filename="smplx_pose_estimation_overall_results.txt",
+            columns=[
+                ("MPJPE_mm", "mpjpe_mm"),
+                ("MVE_mm", "mve_mm"),
                 ("PCDR", "pcdr"),
             ],
         ),
@@ -437,9 +502,10 @@ def main(args: Args) -> None:
         "We highlight the best results for each dataset and metric in **bold**."
     )
     pose_description = (
-        "We assess human pose estimation using four metrics: MPJPE [mm], MVE [mm], "
-        "Contact Distance (CD) [mm], and Percentage of Correct Depth Relations (PCDR) "
-        "with a threshold of 0.15m. We highlight the best results for each dataset and "
+        "We assess human pose estimation using MPJPE [mm], MVE [mm], Contact Distance "
+        "(CD) [mm], and Percentage of Correct Depth Relations (PCDR) with a threshold "
+        "of 0.15m. Baselines are reported in SMPL space. SMPL-X does not include CD, "
+        "which is shown as N/A. We highlight the best results for each dataset and "
         "metric in **bold**."
     )
     segmentation_description = (
@@ -469,7 +535,7 @@ def main(args: Args) -> None:
             title="Pose Estimation",
             description=pose_description,
             baseline_filename="pose.csv",
-            task=task_by_name["pose_estimation"],
+            task=task_by_name["pose_estimation_smpl"],
             metric_order=["mpjpe", "mve", "cd", "pcdr"],
             metric_headers={
                 "mpjpe": "MPJPE ↓",
@@ -490,6 +556,32 @@ def main(args: Args) -> None:
                 "cd": "CD_mm",
                 "pcdr": "PCDR",
             },
+            extra_columns=["space"],
+            extra_headers={"space": "Space"},
+            baseline_defaults={"space": "SMPL"},
+            ours_specs=[
+                OursSpec(
+                    label="Ours (SMPL)",
+                    task=task_by_name["pose_estimation_smpl"],
+                    task_metric_map={
+                        "mpjpe": "MPJPE_mm",
+                        "mve": "MVE_mm",
+                        "cd": "CD_mm",
+                        "pcdr": "PCDR",
+                    },
+                    extra_values={"space": "SMPL"},
+                ),
+                OursSpec(
+                    label="Ours (SMPL-X)",
+                    task=task_by_name["pose_estimation_smplx"],
+                    task_metric_map={
+                        "mpjpe": "MPJPE_mm",
+                        "mve": "MVE_mm",
+                        "pcdr": "PCDR",
+                    },
+                    extra_values={"space": "SMPL-X"},
+                ),
+            ],
         ),
         BaselineSpec(
             name="reconstruction",
