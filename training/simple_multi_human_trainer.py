@@ -967,8 +967,10 @@ class MultiHumanTrainer:
                     sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
                 else:
                     sil_loss = torch.zeros((), device=loss_pred_mask.device, dtype=loss_pred_mask.dtype)
-                if depths is not None:
-                    depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth, loss_gt_depth_masked)
+                if depths is not None and is_src_cam.any():
+                    loss_pred_depth_src = loss_pred_depth[is_src_cam]
+                    loss_gt_depth_src = loss_gt_depth_masked[is_src_cam]
+                    depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth_src, loss_gt_depth_src)
                 else:
                     depth_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
@@ -1032,14 +1034,15 @@ class MultiHumanTrainer:
                         debug_image_path = debug_save_dir / f"rgb_loss_input_cam{cam_id}_{frame_name}.png"
                         save_image(image.permute(0, 3, 1, 2), str(debug_image_path))
 
-                    # - save depth comparison images
-                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
-                    debug_save_dir.mkdir(parents=True, exist_ok=True)
-                    for i in range(pred_depth.shape[0]):
-                        frame_name = fnames[i] 
-                        cam_id = cam_ids[i].item()
-                        save_path = debug_save_dir / f"depth_comparison_cam{cam_id}_frame_{frame_name}.png"
-                        save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
+                    # - save depth comparison images (only if depth supervision is available)
+                    if depths is not None:
+                        debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
+                        debug_save_dir.mkdir(parents=True, exist_ok=True)
+                        for i in range(pred_depth.shape[0]):
+                            frame_name = fnames[i]
+                            cam_id = cam_ids[i].item()
+                            save_path = debug_save_dir / f"depth_comparison_cam{cam_id}_frame_{frame_name}.png"
+                            save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
                     # - save render and mask comparison images
                     debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "gt_input"

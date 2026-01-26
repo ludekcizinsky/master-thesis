@@ -73,8 +73,8 @@ loss_weights:
   rgb: 20.0
   sil: 4.0
   ssim: 0.4
-  depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
-  interpenetration: 0.1
+  depth: 0.0 
+  interpenetration: 0.0
 
 # Interpenetration loss (posed GS overlap)
 interpenetration_margin: 0.01   # meters
