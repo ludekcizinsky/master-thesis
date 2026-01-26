@@ -251,6 +251,25 @@ def _update_bounds(
     return np.minimum(min_bound, vmin), np.maximum(max_bound, vmax)
 
 
+def _format_min_y_markdown(
+    smpl_verts: Optional[np.ndarray], smplx_verts: Optional[np.ndarray]
+) -> str:
+    lines = ["**Min Y per person (world coords)**", ""]
+    if smpl_verts is None:
+        lines.append("- SMPL: n/a")
+    else:
+        for pid in range(smpl_verts.shape[0]):
+            min_y = float(np.min(smpl_verts[pid][:, 1]))
+            lines.append(f"- SMPL person {pid}: {min_y:.4f}")
+    if smplx_verts is None:
+        lines.append("- SMPL-X: n/a")
+    else:
+        for pid in range(smplx_verts.shape[0]):
+            min_y = float(np.min(smplx_verts[pid][:, 1]))
+            lines.append(f"- SMPL-X person {pid}: {min_y:.4f}")
+    return "\n".join(lines)
+
+
 @dataclass
 class Args:
     scene_dir: Path
@@ -402,6 +421,12 @@ def main(args: Args) -> None:
             initial_value=min(max(args.frame_index, 0), len(frames) - 1),
         )
         frame_label = server.gui.add_text("File", frames[int(frame_slider.value)])
+        min_y_markdown = server.gui.add_markdown(
+            _format_min_y_markdown(
+                smpl_verts_per_frame[int(frame_slider.value)],
+                smplx_verts_per_frame[int(frame_slider.value)],
+            )
+        )
 
     current_idx = int(frame_slider.value)
 
@@ -414,6 +439,10 @@ def main(args: Args) -> None:
 
         current_idx = frame_idx
         frame_label.value = frames[frame_idx]
+        min_y_markdown.content = _format_min_y_markdown(
+            smpl_verts_per_frame[frame_idx],
+            smplx_verts_per_frame[frame_idx],
+        )
 
         smpl_nodes[frame_idx].visible = show_smpl.value
         smplx_nodes[frame_idx].visible = show_smplx.value

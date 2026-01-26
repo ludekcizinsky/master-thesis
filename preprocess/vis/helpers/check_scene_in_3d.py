@@ -35,7 +35,7 @@ class Config:
     max_3dgs_scale: float = 0.02
     port: int = 8080
     center_scene: bool = True
-    max_frames: int = 10
+    frame_idx_range: Tuple[int, int] = (0, 10)
     vis_3dgs: bool = False
 
 def _load_skip_frames(scene_dir: Path) -> set[int]:
@@ -144,6 +144,19 @@ def _center_offset_from_vertices(verts: np.ndarray) -> np.ndarray:
     vmin = verts_flat.min(axis=0)
     vmax = verts_flat.max(axis=0)
     return (vmin + vmax) * 0.5
+
+
+def _ground_y_from_mesh(mesh_dir: Path, frame_id: str) -> Optional[float]:
+    if not mesh_dir.exists():
+        return None
+    mesh_path = mesh_dir / f"{frame_id}.obj"
+    if not mesh_path.exists():
+        return None
+    mesh = trimesh.load_mesh(mesh_path, process=False)
+    if not isinstance(mesh, trimesh.Trimesh) or mesh.vertices.size == 0:
+        return None
+    verts = np.asarray(mesh.vertices, dtype=np.float32)
+    return float(verts[:, 1].min())
 
 
 def _compute_center_offset(
@@ -358,9 +371,19 @@ def main() -> None:
     if not frames:
         raise FileNotFoundError("No frames left after applying skip_frames.csv.")
 
-    frames = frames[: cfg.max_frames]
+    start_idx, end_idx = cfg.frame_idx_range
+    if start_idx < 0 or end_idx < 0:
+        raise ValueError("frame_idx_range must be non-negative.")
+    if end_idx <= start_idx:
+        raise ValueError("frame_idx_range end must be greater than start.")
+    if start_idx >= len(frames):
+        raise ValueError(
+            f"frame_idx_range start {start_idx} is out of bounds for {len(frames)} frames."
+        )
+    end_idx = min(end_idx, len(frames))
+    frames = frames[start_idx:end_idx]
     if not frames:
-        raise FileNotFoundError("No frames left after applying max_frames.")
+        raise FileNotFoundError("No frames left after applying frame_idx_range.")
 
     # Load and prepare posed 3D Gaussians (optional; can be heavy).
     all_posed_3dgs: List[Dict[str, np.ndarray]] = []
@@ -394,6 +417,14 @@ def main() -> None:
     # hi4d uses +y is up while the rest is -y up
     # we need to convert to +z is up (viser's default).
     sign = 1.0 if "hi4d" in str(cfg.scene_dir).lower() else -1.0
+
+    # If meshes are available and +y is up, align ground to y=0 based on the first frame.
+    if sign > 0 and frames:
+        ground_y = _ground_y_from_mesh(mesh_dir, frames[0])
+        if ground_y is not None:
+            center_offset = center_offset.copy()
+            center_offset[1] = ground_y
+
     R_fix = tf.SO3.from_x_radians(sign * np.pi / 2)
 
     # Create the Viser server and a centered root frame.
