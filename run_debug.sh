@@ -92,11 +92,20 @@ cd /home/cizinsky/master-thesis
   # --frame-index 0
 
 # ----- Pose eval debug visualisation
-gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0000
-comp_pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0015
-python playground/debug_vis_pose_eval.py \
-  --gt-scene-dir $gt_scene_dir \
-  --pred-scene-dir $pred_scene_dir \
-  --comp-pred-scene-dir $comp_pred_scene_dir \
-  --no-is-minus-y-up
+# gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
+# pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0000
+# comp_pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0015
+# python playground/debug_vis_pose_eval.py \
+  # --gt-scene-dir $gt_scene_dir \
+  # --pred-scene-dir $pred_scene_dir \
+  # --comp-pred-scene-dir $comp_pred_scene_dir \
+  # --no-is-minus-y-up
+
+
+# ------ Debug pose conversion
+gt_scene_dir=/scratch/izar/cizinsky/thesis/debug/jump16_new_conversion
+bash submodules/smplx/tools/run_conversion.sh $gt_scene_dir smpl smplx
+python playground/debug_pose_conversion.py \
+  --scene-dir $gt_scene_dir \
+  --no-is-minus-y-up \
+  --frame-idx-range 10 20
