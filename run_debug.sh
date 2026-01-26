@@ -48,31 +48,35 @@ cd /home/cizinsky/master-thesis
 
 
 # ------ Visualise the qualitattive output
+# - hi4d pair15 fight
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v605_first_tune_pose_then_3dgs/epoch_0000
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
+
 # - hi4d pair16 jump
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v601_tunable_pose_with_nv_trn_views/epoch_0015
 # python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
 
 # - taichi
-# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v303_tsdf_mesh/epoch_0000
-# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir 
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v605_first_tune_pose_then_3dgs/epoch_0000
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --frame-index 0
 
 
 # ------ Visualise predicted and ground truth meshes for debug of 3d recon quality
-# # -- Hi4d pair15 fight
-# # baseline experiment
-# baseline_exp_name=v402_mc_mesh_extraction_with_better_hyperparams
-# pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$baseline_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# # comparison experiment
-# comp_exp_name=v402_tsdf_mesh_extraction 
-# comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# # gt meshes
-# gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/meshes
-# # run visualisation
-# python playground/debug_vis_recon_eval.py \
-  # --pred-aligned-meshes-dir $pred_meshes_dir \
-  # --other-pred-aligned-meshes-dir $comp_meshes_dir \
-  # --gt-meshes-dir $gt_meshes_dir \
-  # --frame-index 0
+# -- Hi4d pair15 fight
+# baseline experiment
+baseline_exp_name=v402_tsdf_mesh_extraction
+pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$baseline_exp_name/epoch_0000/posed_meshes_per_frame
+# comparison experiment
+comp_exp_name=v402_tsdf_mesh_extraction 
+comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
+# gt meshes
+gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/meshes
+# run visualisation
+python playground/debug_vis_recon_eval.py \
+  --pred-aligned-meshes-dir $pred_meshes_dir \
+  --gt-meshes-dir $gt_meshes_dir \
+  --frame-index 0 \
+  # --other-pred-aligned-meshes-dir $comp_meshes_dir
 
 
 # -- mmm dance
@@ -92,14 +96,14 @@ cd /home/cizinsky/master-thesis
   # --frame-index 0
 
 # ----- Pose eval debug visualisation
-gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
-pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0000
-comp_pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0015
-python playground/debug_vis_pose_eval.py \
-  --gt-scene-dir $gt_scene_dir \
-  --pred-scene-dir $pred_scene_dir \
-  --comp-pred-scene-dir $comp_pred_scene_dir \
-  --no-is-minus-y-up
+# gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
+# pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0000
+# comp_pred_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v602_pose_est_refactor_loading/epoch_0015
+# python playground/debug_vis_pose_eval.py \
+  # --gt-scene-dir $gt_scene_dir \
+  # --pred-scene-dir $pred_scene_dir \
+  # --comp-pred-scene-dir $comp_pred_scene_dir \
+  # --no-is-minus-y-up
 
 
 # ------ Debug pose conversion

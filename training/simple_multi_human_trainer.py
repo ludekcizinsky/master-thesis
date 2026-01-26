@@ -720,6 +720,92 @@ class MultiHumanTrainer:
 
         return asap_loss, acap_loss
 
+    def _subsample_gaussians(
+        self, xyz: torch.Tensor, scales: torch.Tensor, max_points: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Randomly subsample gaussian centers/scales to cap pairwise cost."""
+        if max_points <= 0 or xyz.shape[0] <= max_points:
+            return xyz, scales
+        idx = torch.randperm(xyz.shape[0], device=xyz.device)[:max_points]
+        return xyz[idx], scales[idx]
+
+    def _interpenetration_loss_from_posed(
+        self, posed_gs_list: List
+    ) -> torch.Tensor:
+        """Pairwise overlap penalty between posed per-person GS sets."""
+        if len(posed_gs_list) < 2:
+            return torch.zeros((), device=self.tuner_device)
+
+        margin = float(getattr(self.cfg, "interpenetration_margin", 0.01))
+        max_points = int(getattr(self.cfg, "interpenetration_max_points", 2000))
+
+        total = torch.zeros((), device=posed_gs_list[0].xyz.device)
+        pair_count = 0
+        for idx_a in range(len(posed_gs_list)):
+            gs_a = posed_gs_list[idx_a]
+            xyz_a = gs_a.xyz
+            scale_a = torch.exp(gs_a.scaling).mean(dim=-1)
+            xyz_a, scale_a = self._subsample_gaussians(xyz_a, scale_a, max_points)
+
+            for idx_b in range(idx_a + 1, len(posed_gs_list)):
+                gs_b = posed_gs_list[idx_b]
+                xyz_b = gs_b.xyz
+                scale_b = torch.exp(gs_b.scaling).mean(dim=-1)
+                xyz_b, scale_b = self._subsample_gaussians(xyz_b, scale_b, max_points)
+
+                if xyz_a.numel() == 0 or xyz_b.numel() == 0:
+                    continue
+
+                # Broadcast to get all pairwise vector differences: [Na,1,3] - [1,Nb,3] -> [Na,Nb,3],
+                # so diff[i, j] == xyz_a[i] - xyz_b[j].
+                diff = xyz_a[:, None, :] - xyz_b[None, :, :]
+                # Pairwise center distances for all (a, b) gaussian pairs.
+                dists = torch.linalg.norm(diff, dim=-1)
+                # Sum of effective radii (+ margin) for each (a, b) pair.
+                radii_sum = scale_a[:, None] + scale_b[None, :] + margin
+                # Positive overlap amount; zero when spheres are separated.
+                penetration = torch.clamp(radii_sum - dists, min=0.0)
+                if penetration.numel() == 0:
+                    continue
+
+                total = total + penetration.mean()
+                pair_count += 1
+
+        if pair_count == 0:
+            return torch.zeros((), device=posed_gs_list[0].xyz.device)
+        return total / pair_count
+
+    def _compute_interpenetration_loss(
+        self, batch: Dict[str, torch.Tensor], smplx_params: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Compute interpenetration loss per view and average."""
+        if len(self.gs_model_list) < 2:
+            return torch.zeros((), device=self.tuner_device)
+
+        num_views = smplx_params["root_pose"].shape[0]
+        losses = []
+        for view_idx in range(num_views):
+            smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
+            posed_gs_list = []
+            for person_idx in range(len(self.gs_model_list)):
+                person_canon_3dgs = self.gs_model_list[person_idx]
+                person_query_pt = self.query_points[person_idx]
+                person_smplx_data = {
+                    k: v[person_idx : person_idx + 1] for k, v in smplx_single_view.items()
+                }
+                posed_gs, _ = self.renderer.animate_single_view_and_person(
+                    person_canon_3dgs,
+                    person_query_pt,
+                    person_smplx_data,
+                )
+                posed_gs_list.append(posed_gs)
+
+            losses.append(self._interpenetration_loss_from_posed(posed_gs_list))
+
+        if not losses:
+            return torch.zeros((), device=self.tuner_device)
+        return torch.stack(losses).mean()
+
     @staticmethod
     def _infinite_loader(loader):
         while True:
@@ -890,7 +976,15 @@ class MultiHumanTrainer:
                 reg_loss = asap_loss + acap_loss
                 pose_reg_loss = self._pose_tuning_regularization()
 
-                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss + pose_reg_loss
+                inter_weight = float(self.cfg.loss_weights.get("interpenetration", 0.0))
+                if inter_weight > 0.0 and len(self.gs_model_list) > 1:
+                    smplx_params_for_loss = self._apply_pose_tuning(batch["smplx_params"], fnames)
+                    inter_loss_raw = self._compute_interpenetration_loss(batch, smplx_params_for_loss)
+                    inter_loss = inter_weight * inter_loss_raw
+                else:
+                    inter_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+
+                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss + pose_reg_loss + inter_loss
                 
                 # Backpropagation
                 loss.backward()
@@ -914,6 +1008,7 @@ class MultiHumanTrainer:
                             "loss/sil": sil_loss.item(),
                             "loss/ssim": ssim_loss.item(),
                             "loss/depth": depth_loss.item(),
+                            "loss/interpenetration": inter_loss.item(),
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),
                             "loss/acap": acap_loss.item(),
