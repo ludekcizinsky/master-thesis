@@ -31,7 +31,7 @@ sys.path.insert(
         os.path.join(os.path.dirname(__file__), "..", "submodules", "lhm")
     ),
 )
-from training.helpers.gs_renderer import GS3DRenderer
+from training.helpers.gs_renderer import GS3DRenderer, Camera
 from training.helpers.dataset import (
     SceneDataset, 
     fetch_data_if_available,
@@ -808,6 +808,147 @@ class MultiHumanTrainer:
             return torch.zeros((), device=posed_gs_list[0].xyz.device)
         return total / pair_count
 
+    def _render_individual_depths(
+        self,
+        smplx_params_single_view: Dict[str, torch.Tensor],
+        c2w: torch.Tensor,
+        K: torch.Tensor,
+        height: int,
+        width: int,
+        num_people: int,
+    ) -> Optional[torch.Tensor]:
+        """
+        Render per-person depth maps for a single view.
+
+        Returns:
+            depths: [P, H, W] or None if no people.
+        """
+
+        camera = Camera.from_c2w(c2w, K, height, width)
+        depths = []
+        for person_idx in range(num_people):
+            person_canon_3dgs = self.gs_model_list[person_idx]
+            person_query_pt = self.query_points[person_idx]
+            person_smplx_data = {
+                k: v[person_idx : person_idx + 1] for k, v in smplx_params_single_view.items()
+            }
+            posed_gs, _ = self.renderer.animate_single_view_and_person(
+                person_canon_3dgs,
+                person_query_pt,
+                person_smplx_data,
+            )
+            render_res = self.renderer.forward_single_view_gsplat(
+                posed_gs,
+                camera,
+            )
+            depth_map = render_res["comp_depth"][0, ..., 0]  # [H, W]
+            depths.append(depth_map)
+
+        return torch.stack(depths, dim=0)
+
+    def _depth_order_loss_from_maps(
+        self, depths: torch.Tensor, masks: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute depth order loss from per-person depth maps and per-person masks.
+
+        Args:
+            depths: [P, H, W]
+            masks: [P, H, W, 1]
+        Returns:
+            Scalar loss (mean over valid pixels).
+        """
+        if depths.dim() != 3 or masks.dim() != 4:
+            raise ValueError(
+                f"Unexpected shapes for depth order loss: depths {depths.shape}, masks {masks.shape}"
+            )
+
+        mask_vals = masks[..., 0]
+        if mask_vals.shape[1:] != depths.shape[1:]:
+            raise ValueError(
+                f"Mask and depth spatial dimensions do not match: depths {depths.shape}, masks {masks.shape}"
+            )
+
+        depth_valid = depths > 0.0
+        if not depth_valid.any():
+            raise ValueError("No valid depth values for depth order loss.")
+
+        stacked_depths = depths
+        stacked_valid = depth_valid
+
+        large_val = torch.tensor(
+            torch.finfo(stacked_depths.dtype).max,
+            device=stacked_depths.device,
+            dtype=stacked_depths.dtype,
+        )
+        masked_depths = torch.where(stacked_valid, stacked_depths, large_val)
+        front_depth, _ = masked_depths.min(dim=0)
+        front_valid = stacked_valid.any(dim=0)
+
+        # Only trust pixels belonging to a single actor (avoid overlaps).
+        mask_sum = mask_vals.sum(dim=0)
+        single_actor = mask_sum <= (1.0 + 1e-2)
+        non_empty = mask_sum >= 0.7
+
+        sam_mask_idx = mask_vals.argmax(dim=0, keepdim=True)  # [1, H, W]
+        gathered_depths = torch.gather(stacked_depths, dim=0, index=sam_mask_idx).squeeze(0)
+        gathered_valid = torch.gather(
+            stacked_valid.float(), dim=0, index=sam_mask_idx
+        ).squeeze(0).bool()
+
+        valid_mask = front_valid & single_actor & non_empty & gathered_valid
+        if not valid_mask.any():
+            raise ValueError("No valid pixels for depth order loss.")
+
+        diff = gathered_depths[valid_mask] - front_depth[valid_mask]
+        exclude_mask = diff.abs() >= 1e-8
+        if not exclude_mask.any():
+            return torch.zeros((), device=self.tuner_device)
+
+        loss = F.softplus(diff[exclude_mask]).mean()
+        return loss
+
+    def _compute_depth_order_loss(
+        self,
+        batch: Dict[str, torch.Tensor],
+        valid_individual_masks_src: List[torch.Tensor],
+        src_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute depth order loss for source-view samples in the batch."""
+        if not valid_individual_masks_src:
+            return torch.zeros((), device=self.tuner_device)
+
+        smplx_params = self._apply_pose_tuning(batch["smplx_params"], batch["frame_name"])
+        Ks = batch["K"]
+        c2ws = batch["c2w"]
+        render_h, render_w = self.trn_render_hw
+
+        losses = []
+        for list_idx, batch_idx in enumerate(src_indices.tolist()):
+            masks = valid_individual_masks_src[list_idx]
+            if masks.numel() == 0:
+                continue
+            num_people = min(len(self.gs_model_list), masks.shape[0])
+            if num_people <= 0:
+                continue
+
+            masks = masks[:num_people]
+            smplx_single_view = {k: v[batch_idx][:num_people] for k, v in smplx_params.items()}
+            depths = self._render_individual_depths(
+                smplx_single_view,
+                c2ws[batch_idx],
+                Ks[batch_idx],
+                render_h,
+                render_w,
+                num_people,
+            )
+            loss = self._depth_order_loss_from_maps(depths, masks)
+            losses.append(loss)
+
+        if not losses:
+            return torch.zeros((), device=self.tuner_device)
+        return torch.stack(losses).mean()
+
     def _compute_interpenetration_loss(
         self, batch: Dict[str, torch.Tensor], smplx_params: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
@@ -945,6 +1086,7 @@ class MultiHumanTrainer:
                 # Source view only: get individual person masks and validate
                 individual_masks = batch.get("individual_mask")
                 individual_valid = batch.get("individual_mask_valid")
+                valid_individual_masks_src = []
                 if individual_masks is not None and individual_valid is not None and is_src_cam.any():
                     # 1) keep individual masks for source view only
                     individual_masks_src = individual_masks[is_src_cam]
@@ -1007,8 +1149,11 @@ class MultiHumanTrainer:
                     loss_masks = masks
 
                 # Compute loss
+                # - RGB
                 rgb_loss = self.cfg.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
-                # - only compute silhouette loss on the source camera.
+
+                # - Silhouette
+                #   only compute silhouette loss on the source camera.
                 #   (Novel-view masks may be bootstrapped and noisy; using them for silhouette supervision
                 #   can inject strong, conflicting gradients.)
                 if is_src_cam.any():
@@ -1017,18 +1162,20 @@ class MultiHumanTrainer:
                     sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
                 else:
                     sil_loss = torch.zeros((), device=loss_pred_mask.device, dtype=loss_pred_mask.dtype)
+
+                # - Depth
                 if depths is not None and is_src_cam.any():
                     loss_pred_depth_src = loss_pred_depth[is_src_cam]
                     loss_gt_depth_src = loss_gt_depth_masked[is_src_cam]
                     depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth_src, loss_gt_depth_src)
                 else:
                     depth_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+
+                # - SSIM
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
                 ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
-                asap_loss, acap_loss = self._canonical_regularization()
-                reg_loss = asap_loss + acap_loss
-                pose_reg_loss = self._pose_tuning_regularization()
 
+                # - Interpenetration
                 inter_weight = float(self.cfg.loss_weights.get("interpenetration", 0.0))
                 if inter_weight > 0.0 and len(self.gs_model_list) > 1:
                     smplx_params_for_loss = self._apply_pose_tuning(batch["smplx_params"], fnames)
@@ -1037,7 +1184,39 @@ class MultiHumanTrainer:
                 else:
                     inter_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
 
-                loss = rgb_loss + sil_loss + ssim_loss + reg_loss + depth_loss + pose_reg_loss + inter_loss
+                # - Depth Order
+                depth_order_weight = float(self.cfg.loss_weights.get("depth_order", 0.0))
+                if depth_order_weight > 0.0 and is_src_cam.any():
+                    src_indices = torch.nonzero(is_src_cam, as_tuple=False).squeeze(-1)
+                    depth_order_raw = self._compute_depth_order_loss(
+                        batch,
+                        valid_individual_masks_src,
+                        src_indices,
+                    )
+                    depth_order_loss = depth_order_weight * depth_order_raw
+                else:
+                    depth_order_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+
+                # - Regularization
+                if self.gs_tuning_active:
+                    asap_loss, acap_loss = self._canonical_regularization()
+                else:
+                    asap_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+                    acap_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+                reg_loss = asap_loss + acap_loss
+                pose_reg_loss = self._pose_tuning_regularization()
+
+                # - Combine losses
+                loss = (
+                    rgb_loss
+                    + sil_loss
+                    + ssim_loss
+                    + reg_loss
+                    + depth_loss
+                    + pose_reg_loss
+                    + inter_loss
+                    + depth_order_loss
+                )
                 
                 # Backpropagation
                 loss.backward()
@@ -1051,6 +1230,7 @@ class MultiHumanTrainer:
                     asap=f"{asap_loss.item():.4f}",
                     acap=f"{acap_loss.item():.4f}",
                     depth=f"{depth_loss.item():.4f}",
+                    dorder=f"{depth_order_loss.item():.4f}",
                 )
 
                 if self.wandb_run is not None:
@@ -1061,6 +1241,7 @@ class MultiHumanTrainer:
                             "loss/sil": sil_loss.item(),
                             "loss/ssim": ssim_loss.item(),
                             "loss/depth": depth_loss.item(),
+                            "loss/depth_order": depth_order_loss.item(),
                             "loss/interpenetration": inter_loss.item(),
                             "loss/reg": reg_loss.item(),
                             "loss/asap": asap_loss.item(),

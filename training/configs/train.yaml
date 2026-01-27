@@ -74,6 +74,7 @@ loss_weights:
   sil: 4.0
   ssim: 0.4
   depth: 0.0 
+  depth_order: 0.1
   interpenetration: 0.0
 
 # Interpenetration loss (posed GS overlap)
