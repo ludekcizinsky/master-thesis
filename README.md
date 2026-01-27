@@ -33,3 +33,4 @@ b. try to add some tunable 2dgs like params that would turn our underlying repre
 15. clean up the args to the renderer and give shoutout to LHM authors that I have adapted their 3dgs model
 16. figure out how to exclude properly the misc folder when uploading the preprocessed data
 17. adding LR scheduler to the training pipeline
+18. sam3 works in general well, but it still fails in cases where people interact closely, e.g. it assigns part of the person A's hand to person B - e.g. mmm walkdance segmentation results.

@@ -59,13 +59,20 @@ scene_dir/
 ---
 
 This folder contains per-frame segmentation masks for each camera.
-Masks are stored as `.png` images under `img_seg_mask/<cam_id>/all`.
+United masks for all persons are stored as `.png` images under `img_seg_mask/<cam_id>/all`.
+While per-person masks are stored under `img_seg_mask/<cam_id>/<person_id>`.
 
 ```
 scene_dir/
 ├── seg/
 │   ├── img_seg_mask/
 │   │   ├── XX                          # camera id e.g. 4, 16 etc.
+│   │   │   ├── 0/                      # person 0
+│   │   │   │   ├── 000001.png          # binary mask
+│   │   │   │   ├── 000002.png
+│   │   │   ├── 1/                      # person 1
+│   │   │   │   ├── 000001.png          # binary mask
+│   │   │   │   ├── 000002.png
 │   │   │   ├── all/
 │   │   │   │   ├── 000001.png          # binary mask
 │   │   │   │   ├── 000002.png

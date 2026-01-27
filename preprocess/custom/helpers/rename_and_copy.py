@@ -10,6 +10,18 @@ def root_dir_to_target_format_mask_dir(root_dir: Path, cam_id: int) -> Path:
 def root_dir_to_source_format_mask_dir(root_dir: Path) -> Path:
     return root_dir / "masks" / "union"
 
+def root_dir_to_source_format_mask_root_dir(root_dir: Path) -> Path:
+    return root_dir / "masks"
+
+def root_dir_to_target_format_mask_person_dir(root_dir: Path, cam_id: int, person_id: str) -> Path:
+    return root_dir / "seg" / "img_seg_mask" / f"{cam_id}" / f"{person_id}"
+
+def normalize_person_id(person_dir_name: str) -> str:
+    if person_dir_name.isdigit():
+        return str(int(person_dir_name))
+    stripped = person_dir_name.lstrip("0")
+    return stripped if stripped != "" else "0"
+
 def root_dir_to_target_format_image_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "images" / f"{cam_id}"
 
@@ -63,6 +75,31 @@ def main() -> None:
         current_frame_number += 1
         dest = masks_dir / new_name
         shutil.copy2(item, dest)
+
+    # Per-person masks (all subdirs except "union")
+    masks_root_dir = root_dir_to_source_format_mask_root_dir(scene_root_dir)
+    person_mask_dirs = [
+        d for d in sorted(masks_root_dir.iterdir())
+        if d.is_dir() and d.name != "union"
+    ]
+    for person_dir in person_mask_dirs:
+        person_id = normalize_person_id(person_dir.name)
+        person_masks_dir = root_dir_to_target_format_mask_person_dir(
+            scene_root_dir,
+            cam_id=cfg.src_cam_id,
+            person_id=person_id,
+        )
+        person_masks_dir.mkdir(parents=True, exist_ok=True)
+        sorted_person_mask_files = sorted(
+            f for f in person_dir.iterdir()
+            if f.is_file() and f.suffix == ".png"
+        )
+        current_frame_number = cfg.first_frame_number
+        for item in sorted_person_mask_files:
+            new_name = f"{current_frame_number:0{cfg.fname_num_digits}d}.png"
+            current_frame_number += 1
+            dest = person_masks_dir / new_name
+            shutil.copy2(item, dest)
 
     # Depths
     curr_depths_dir = root_dir_to_source_format_depth_dir(scene_root_dir)
