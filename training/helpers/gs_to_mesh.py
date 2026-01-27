@@ -5,6 +5,8 @@ from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import open3d as o3d
+import torch
+import trimesh
 from skimage.measure import marching_cubes
 
 from training.helpers.gs_renderer import Camera
@@ -21,6 +23,21 @@ class TsdfConfig:
     tsdf_depth_trunc: float = 12.0
     tsdf_alpha_thresh: float = 0.3
     tsdf_min_cluster_triangles: int = 100
+    tsdf_virtual_cam_enable: bool = True
+    tsdf_virtual_cam_count: int = 12
+    tsdf_virtual_cam_height_offset: float = 0.5
+    tsdf_virtual_cam_radius_scale: float = 1.0
+    tsdf_virtual_cam_min_radius: float = 0.2
+    tsdf_virtual_cam_include_bottom: bool = True
+    tsdf_virtual_cam_ring_count: int = 8
+    tsdf_virtual_cam_ring_radius: float = 2.0
+    tsdf_postprocess_enable: bool = True
+    tsdf_postprocess_fill_holes: bool = True
+    tsdf_postprocess_smooth: bool = True
+    tsdf_postprocess_smooth_method: str = "taubin"
+    tsdf_postprocess_smooth_iters: int = 10
+    tsdf_postprocess_taubin_lambda: float = 0.5
+    tsdf_postprocess_taubin_mu: float = -0.53
 
 @dataclass
 class MarchingCubesConfig:
@@ -190,6 +207,194 @@ def get_meshes_using_mc(
 # TSDF based extraction
 # ---------------------------------------------------------
 
+def _normalize_vec(vec: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    norm = float(np.linalg.norm(vec))
+    if norm < eps:
+        return vec.astype(np.float32)
+    return (vec / norm).astype(np.float32)
+
+
+def _estimate_world_up(
+    tsdf_camera_files: Dict[int, Dict[str, Dict]],
+    tsdf_cam_ids: List[int],
+    frame_name: str,
+) -> np.ndarray:
+    up_vectors = []
+    for cam_id in tsdf_cam_ids:
+        cam_sample = tsdf_camera_files[cam_id][frame_name]
+        c2w = cam_sample["c2w"]
+        up = c2w[:3, 1].detach().cpu().numpy().astype(np.float32)
+        up_vectors.append(_normalize_vec(up))
+    if not up_vectors:
+        return np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    mean_up = np.mean(np.stack(up_vectors, axis=0), axis=0)
+    return _normalize_vec(mean_up)
+
+
+def _look_at_c2w(
+    eye: np.ndarray,
+    target: np.ndarray,
+    up: np.ndarray,
+    forward_is_positive_z: bool,
+) -> np.ndarray:
+    forward = target - eye
+    forward = _normalize_vec(forward)
+    if np.linalg.norm(forward) < 1e-8:
+        return np.eye(4, dtype=np.float32)
+    up = _normalize_vec(up)
+    z_axis = forward if forward_is_positive_z else -forward
+    x_axis = np.cross(up, z_axis)
+    if np.linalg.norm(x_axis) < 1e-6:
+        fallback = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        if abs(float(np.dot(fallback, z_axis))) > 0.9:
+            fallback = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        x_axis = np.cross(fallback, z_axis)
+    x_axis = _normalize_vec(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis = _normalize_vec(y_axis)
+    c2w = np.eye(4, dtype=np.float32)
+    c2w[:3, 0] = x_axis
+    c2w[:3, 1] = y_axis
+    c2w[:3, 2] = z_axis
+    c2w[:3, 3] = eye.astype(np.float32)
+    return c2w
+
+
+def _person_center_and_head(
+    posed_gs,
+    world_up: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    xyz = posed_gs.xyz.detach().cpu().numpy().astype(np.float32)
+    center = np.median(xyz, axis=0)
+    proj = xyz @ world_up
+    max_proj = float(np.max(proj))
+    center_proj = float(np.dot(center, world_up))
+    head_top = center + (max_proj - center_proj) * world_up
+    return center, head_top
+
+
+def _estimate_camera_radius(
+    tsdf_camera_files: Dict[int, Dict[str, Dict]],
+    tsdf_cam_ids: List[int],
+    frame_name: str,
+    center: np.ndarray,
+    world_up: np.ndarray,
+) -> float:
+    dists = []
+    for cam_id in tsdf_cam_ids:
+        cam_sample = tsdf_camera_files[cam_id][frame_name]
+        c2w = cam_sample["c2w"]
+        cam_pos = c2w[:3, 3].detach().cpu().numpy().astype(np.float32)
+        vec = cam_pos - center
+        vec = vec - np.dot(vec, world_up) * world_up
+        dist = float(np.linalg.norm(vec))
+        if dist > 1e-6:
+            dists.append(dist)
+    if not dists:
+        return 1.0
+    return float(np.median(dists))
+
+
+def _virtual_top_cameras_for_person(
+    posed_gs,
+    tsdf_camera_files: Dict[int, Dict[str, Dict]],
+    tsdf_cam_ids: List[int],
+    frame_name: str,
+    world_up: np.ndarray,
+    cfg: TsdfConfig,
+    forward_is_positive_z: bool,
+) -> List[np.ndarray]:
+    if cfg.tsdf_virtual_cam_count <= 0:
+        return []
+    center, head_top = _person_center_and_head(posed_gs, world_up)
+    radius = _estimate_camera_radius(tsdf_camera_files, tsdf_cam_ids, frame_name, center, world_up)
+    radius = max(cfg.tsdf_virtual_cam_min_radius, radius * cfg.tsdf_virtual_cam_radius_scale)
+    cam_center = head_top + world_up * float(cfg.tsdf_virtual_cam_height_offset)
+    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    if abs(float(np.dot(ref, world_up))) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    basis_u = _normalize_vec(np.cross(world_up, ref))
+    basis_v = _normalize_vec(np.cross(world_up, basis_u))
+    cams = []
+    for idx in range(int(cfg.tsdf_virtual_cam_count)):
+        theta = 2.0 * np.pi * float(idx) / float(cfg.tsdf_virtual_cam_count)
+        pos = cam_center + radius * (np.cos(theta) * basis_u + np.sin(theta) * basis_v)
+        c2w = _look_at_c2w(pos, center, world_up, forward_is_positive_z)
+        cams.append(c2w)
+    return cams
+
+
+def _virtual_ring_cameras_for_person(
+    posed_gs,
+    world_up: np.ndarray,
+    cfg: TsdfConfig,
+    forward_is_positive_z: bool,
+) -> List[np.ndarray]:
+    if cfg.tsdf_virtual_cam_ring_count <= 0:
+        return []
+    center, _ = _person_center_and_head(posed_gs, world_up)
+    radius = float(cfg.tsdf_virtual_cam_ring_radius)
+    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    if abs(float(np.dot(ref, world_up))) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    basis_u = _normalize_vec(np.cross(world_up, ref))
+    basis_v = _normalize_vec(np.cross(world_up, basis_u))
+    cams = []
+    for idx in range(int(cfg.tsdf_virtual_cam_ring_count)):
+        theta = 2.0 * np.pi * float(idx) / float(cfg.tsdf_virtual_cam_ring_count)
+        pos = center + radius * (np.cos(theta) * basis_u + np.sin(theta) * basis_v)
+        c2w = _look_at_c2w(pos, center, world_up, forward_is_positive_z)
+        cams.append(c2w)
+    return cams
+
+
+def _postprocess_mesh(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    cfg: TsdfConfig,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if not cfg.tsdf_postprocess_enable:
+        return vertices, faces
+    if vertices.size == 0 or faces.size == 0:
+        return vertices, faces
+    mesh_tm = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    if cfg.tsdf_postprocess_fill_holes:
+        try:
+            mesh_tm.fill_holes()
+        except Exception:
+            try:
+                trimesh.repair.fill_holes(mesh_tm)
+            except Exception:
+                pass
+    if not cfg.tsdf_postprocess_smooth:
+        return (
+            np.asarray(mesh_tm.vertices, dtype=np.float32),
+            np.asarray(mesh_tm.faces, dtype=np.int32),
+        )
+    mesh_o3d = o3d.geometry.TriangleMesh()
+    mesh_o3d.vertices = o3d.utility.Vector3dVector(mesh_tm.vertices)
+    mesh_o3d.triangles = o3d.utility.Vector3iVector(mesh_tm.faces)
+    mesh_o3d.remove_degenerate_triangles()
+    mesh_o3d.remove_duplicated_triangles()
+    mesh_o3d.remove_duplicated_vertices()
+    mesh_o3d.remove_non_manifold_edges()
+    if cfg.tsdf_postprocess_smooth_method == "taubin":
+        mesh_o3d = mesh_o3d.filter_smooth_taubin(
+            number_of_iterations=int(cfg.tsdf_postprocess_smooth_iters),
+            lambda_filter=float(cfg.tsdf_postprocess_taubin_lambda),
+            mu=float(cfg.tsdf_postprocess_taubin_mu),
+        )
+    else:
+        mesh_o3d = mesh_o3d.filter_smooth_simple(
+            number_of_iterations=int(cfg.tsdf_postprocess_smooth_iters)
+        )
+    mesh_o3d.compute_vertex_normals()
+    return (
+        np.asarray(mesh_o3d.vertices, dtype=np.float32),
+        np.asarray(mesh_o3d.triangles, dtype=np.int32),
+    )
+
+
 def tsdf_fuse_depths(
     depth_entries: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
     voxel_size: float,
@@ -251,6 +456,22 @@ def get_meshes_from_3dgs(gs_to_mesh_method: str,
         tsdf_cfg = TsdfConfig()
         alpha_thresh = tsdf_cfg.tsdf_alpha_thresh
         n_persons = len(all_posed_gs_list)
+        height, width = render_hw
+        use_virtual_cams = bool(tsdf_cfg.tsdf_virtual_cam_enable) and int(tsdf_cfg.tsdf_virtual_cam_count) > 0
+        if use_virtual_cams and len(tsdf_cam_ids) > 0:
+            ref_cam_sample = tsdf_camera_files[tsdf_cam_ids[0]][frame_name]
+            K_ref = ref_cam_sample["K"]
+            K_ref_np = K_ref.detach().cpu().numpy().astype(np.float32)
+            world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            if n_persons > 0:
+                ref_center, _ = _person_center_and_head(all_posed_gs_list[0], world_up)
+                cam_pos = ref_cam_sample["c2w"][:3, 3].detach().cpu().numpy().astype(np.float32)
+                cam_forward = ref_cam_sample["c2w"][:3, 2].detach().cpu().numpy().astype(np.float32)
+                forward_is_positive_z = float(np.dot(cam_forward, (ref_center - cam_pos))) >= 0.0
+            else:
+                forward_is_positive_z = False
+        else:
+            use_virtual_cams = False
 
         # Step 1: Get depth maps from all cameras for each person
         depth_entries_by_person: Dict[int, List[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
@@ -262,7 +483,6 @@ def get_meshes_from_3dgs(gs_to_mesh_method: str,
             cam_sample = tsdf_camera_files[cam_id][frame_name]
             K = cam_sample["K"]
             c2w = cam_sample["c2w"]
-            height, width = render_hw
 
             for person_idx, posed_gs in enumerate(all_posed_gs_list):
 
@@ -300,6 +520,62 @@ def get_meshes_from_3dgs(gs_to_mesh_method: str,
                     )
                 )
 
+        if use_virtual_cams:
+            up_directions = [world_up]
+            if tsdf_cfg.tsdf_virtual_cam_include_bottom:
+                up_directions.append(-world_up)
+            for person_idx, posed_gs in enumerate(all_posed_gs_list):
+                ring_c2ws = _virtual_ring_cameras_for_person(
+                    posed_gs,
+                    world_up,
+                    tsdf_cfg,
+                    forward_is_positive_z,
+                )
+                virtual_c2ws: List[np.ndarray] = []
+                virtual_c2ws.extend(ring_c2ws)
+                for up_dir in up_directions:
+                    virtual_c2ws.extend(
+                        _virtual_top_cameras_for_person(
+                            posed_gs,
+                            tsdf_camera_files,
+                            tsdf_cam_ids,
+                            frame_name,
+                            up_dir,
+                            tsdf_cfg,
+                            forward_is_positive_z,
+                        )
+                    )
+                for c2w_np in virtual_c2ws:
+                    c2w = torch.from_numpy(c2w_np).float().to(K_ref.device)
+                    render_res = render_func(
+                        posed_gs,
+                        Camera.from_c2w(c2w, K_ref, height, width),
+                    )
+                    depth = (
+                        render_res["comp_depth"][0, ..., 0]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32)
+                    )
+                    if alpha_thresh > 0.0:
+                        alpha = (
+                            render_res["comp_mask"][0, ..., 0]
+                            .detach()
+                            .cpu()
+                            .numpy()
+                            .astype(np.float32)
+                        )
+                        depth = np.where(alpha >= alpha_thresh, depth, 0.0)
+                    depth = np.where(np.isfinite(depth), depth, 0.0)
+                    depth_entries_by_person[person_idx].append(
+                        (
+                            depth,
+                            K_ref_np,
+                            c2w_np.astype(np.float32),
+                        )
+                    )
+
         # Step 2: Fuse depths into meshes per person
         meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         for person_idx in range(n_persons):
@@ -314,6 +590,8 @@ def get_meshes_from_3dgs(gs_to_mesh_method: str,
                 depth_trunc=tsdf_cfg.tsdf_depth_trunc,
                 min_cluster_triangles=tsdf_cfg.tsdf_min_cluster_triangles,
             )
+
+            vertices, faces = _postprocess_mesh(vertices, faces, tsdf_cfg)
 
             # - Store mesh for this person
             meshes_for_frame[person_idx] = (vertices, faces)

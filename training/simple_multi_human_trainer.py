@@ -2876,6 +2876,7 @@ class MultiHumanTrainer:
                     f"P2S ({metrics_units}): {p2s[idx].item():.4f}, "
                     f"Normal Consistency: {normal_consistency[idx].item():.4f} "
                 )
+            # quit()
 
         # Save the results
         # - save per-frame metrics

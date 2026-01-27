@@ -65,36 +65,29 @@ cd /home/cizinsky/master-thesis
 # ------ Visualise predicted and ground truth meshes for debug of 3d recon quality
 # # -- Hi4d pair15 fight
 # # baseline experiment
-# baseline_exp_name=v402_tsdf_mesh_extraction
-# pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$baseline_exp_name/epoch_0000/posed_meshes_per_frame
-# # comparison experiment
-# comp_exp_name=v402_tsdf_mesh_extraction 
-# comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
+# baseline_exp_name=v801_test_improved_tsdf
+# pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$baseline_exp_name/epoch_0000/aligned_posed_meshes_per_frame
 # # gt meshes
 # gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair15_1/pair15/fight15/meshes
 # # run visualisation
 # python playground/debug_vis_recon_eval.py \
   # --pred-aligned-meshes-dir $pred_meshes_dir \
   # --gt-meshes-dir $gt_meshes_dir \
-  # --frame-index 0 \
-  # --other-pred-aligned-meshes-dir $comp_meshes_dir
+  # --frame-index 0
 
 
 # -- mmm dance
-# # baseline experiment
-# baseline_exp_name=v402_mc_mesh_extraction_with_better_hyperparams
-# pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$baseline_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# # comparison experiment
-# comp_exp_name=v402_tsdf_mesh_extraction 
-# comp_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$comp_exp_name/epoch_0015/aligned_posed_meshes_per_frame
-# # gt meshes
-# gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
-# # run visualisation
-# python playground/debug_vis_recon_eval.py \
-  # --pred-aligned-meshes-dir $pred_meshes_dir \
-  # --other-pred-aligned-meshes-dir $comp_meshes_dir \
-  # --gt-meshes-dir $gt_meshes_dir \
-  # --frame-index 0
+bash train.sh
+# baseline experiment
+baseline_exp_name=v801_test_improved_tsdf
+pred_meshes_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/$baseline_exp_name/epoch_0000/aligned_posed_meshes_per_frame
+# gt meshes
+gt_meshes_dir=/scratch/izar/cizinsky/ait_datasets/full/mmm/dance/meshes
+# run visualisation
+python playground/debug_vis_recon_eval.py \
+  --pred-aligned-meshes-dir $pred_meshes_dir \
+  --gt-meshes-dir $gt_meshes_dir \
+  --frame-index 0
 
 # ----- Pose eval debug visualisation
 # gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16
@@ -129,6 +122,6 @@ cd /home/cizinsky/master-thesis
 # python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $gt_scene_dir --src_cam_id 4 --frame-idx-range 30 40
 
 # ------ Run mask refinement for a scene
-scene_name=taichi
-prompt_frame=0
-python playground/poc_sam3_prompting.py --scene-name $scene_name --prompt-frame $prompt_frame
+# scene_name=taichi
+# prompt_frame=0
+# python playground/poc_sam3_prompting.py --scene-name $scene_name --prompt-frame $prompt_frame

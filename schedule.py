@@ -62,7 +62,7 @@ class Scene:
 class ScheduleConfig:
     job_name_prefix: str = "difix_v9_baseline"
     exp_name: str = "difix_v8_baseline"
-    time: str = "05:00:00"
+    time: str = "06:00:00"
     slurm_script: str = "train.slurm"
     scene_name_includes: str | None = None
     dry_run: bool = False
