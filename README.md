@@ -32,3 +32,4 @@ b. try to add some tunable 2dgs like params that would turn our underlying repre
 14. I wonder how well the 3dgs of depth anything 3 would work for our use case
 15. clean up the args to the renderer and give shoutout to LHM authors that I have adapted their 3dgs model
 16. figure out how to exclude properly the misc folder when uploading the preprocessed data
+17. adding LR scheduler to the training pipeline
