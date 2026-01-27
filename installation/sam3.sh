@@ -28,3 +28,4 @@ pip install pycocotools
 pip install psutil
 pip install matplotlib pandas 
 pip install scikit-learn
+pip install tyro
