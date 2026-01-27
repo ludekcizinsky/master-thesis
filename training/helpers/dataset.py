@@ -578,5 +578,14 @@ def fetch_data_if_available(tgt_scene_dir: Path, camera_id: int, frames_scene_di
         was_it_fetched["skip_frames"] = True
     else:
         was_it_fetched["skip_frames"] = False
+
+    # (Optional) meta.npz
+    meta_file_path = frames_scene_dir / "meta.npz"
+    if meta_file_path.exists():
+        tgt_meta_file_path = tgt_scene_dir / "meta.npz"
+        subprocess.run(["cp", str(meta_file_path), str(tgt_meta_file_path)])
+        was_it_fetched["meta"] = True
+    else:
+        was_it_fetched["meta"] = False
     
     return was_it_fetched

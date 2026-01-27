@@ -127,6 +127,37 @@ def save_image(tensor: torch.Tensor, filename: str):
     image = (image * 255).clip(0, 255).astype("uint8")
     Image.fromarray(image).save(filename)
 
+
+def _normalize_gender(value: str) -> str:
+    gender = value.strip().lower()
+    if gender in ("m", "male", "man", "masc", "masculine"):
+        return "male"
+    if gender in ("f", "female", "woman", "fem", "feminine"):
+        return "female"
+    if gender in ("neutral", "n", "none", "unknown", "unk"):
+        return "neutral"
+    return "neutral"
+
+
+def _load_scene_genders(scene_dir: Path) -> Optional[List[str]]:
+    meta_path = scene_dir / "meta.npz"
+    if not meta_path.exists():
+        return None
+    with np.load(meta_path, allow_pickle=True) as data:
+        if "genders" not in data.files:
+            raise KeyError(f"Missing 'genders' key in {meta_path}")
+        genders = data["genders"]
+    if isinstance(genders, np.ndarray):
+        genders = genders.tolist()
+    if isinstance(genders, (str, bytes)):
+        genders = [genders]
+    normalized: List[str] = []
+    for g in genders:
+        if isinstance(g, bytes):
+            g = g.decode("utf-8", errors="ignore")
+        normalized.append(_normalize_gender(str(g)))
+    return normalized
+
 def save_binary_mask(tensor: torch.Tensor, filename: str):
     """
     Accepts HWC, CHW, or BCHW where C=1; if batch > 1, saves the first item.
@@ -1923,25 +1954,56 @@ class MultiHumanTrainer:
         all_cameras = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
         src_camera_params_over_time = all_cameras[src_cam_id]
 
-        # Get pose layer
+        # Get pose layers (per-person)
+        sample_params = next(iter(pred_fname_to_pose_params.values()), None)
+        if sample_params is None:
+            raise RuntimeError("No predicted SMPL params available for pose evaluation.")
+        num_people = int(sample_params["betas"].shape[0])
+        # - SMPLX
+        # -> we are using the renderer's SMPL-X model to get the SMPL-X layer because it may have some custom settings
+        # and it works, but in the future, it would be nice to look into this and use the smplx.create(...) function instead for more flexibility
         if pose_type == "smplx":
             smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
             if smplx_layer is None:
                 raise RuntimeError("SMPL-X layer not available for pose evaluation.")
-            pose_layer = smplx_layer.to(self.tuner_device).eval()
-        else:  # smpl
-            sample_params = next(iter(pred_fname_to_pose_params.values()), None)
-            if sample_params is None:
-                raise RuntimeError("No predicted SMPL params available for pose evaluation.")
+            base_layer = smplx_layer.to(self.tuner_device).eval()
+            pred_layers = [base_layer for _ in range(num_people)]
+            gt_layers = [base_layer for _ in range(num_people)]
+        # - SMPL
+        else:
+            # -- Load GT SMPL genders from meta.npz  
             num_betas = int(sample_params["betas"].shape[-1])
             model_root = Path(self.renderer.smplx_model.smpl_x.human_model_path)
-            pose_layer = smplx.create(
-                str(model_root),
-                "smpl",
-                gender="neutral",
-                num_betas=num_betas,
-                use_pca=False,
-            ).to(self.tuner_device).eval()
+            scene_genders = _load_scene_genders(Path(self.test_data_dir))
+            if scene_genders is None:
+                raise RuntimeError(
+                    f"Missing meta.npz genders in {self.test_data_dir} for SMPL evaluation."
+                )
+            if len(scene_genders) != num_people:
+                raise RuntimeError(
+                    f"Expected {num_people} genders, got {len(scene_genders)} in {self.test_data_dir}."
+                )
+
+            # -- Cache SMPL layers per gender - this avoids re-loading the model multiple times
+            gender_cache: Dict[str, torch.nn.Module] = {}
+            def _get_layer(gender: str) -> torch.nn.Module:
+                gender = _normalize_gender(gender)
+                if gender not in gender_cache:
+                    gender_cache[gender] = smplx.create(
+                        str(model_root),
+                        "smpl",
+                        gender=gender,
+                        num_betas=num_betas,
+                        use_pca=False,
+                    ).to(self.tuner_device).eval()
+                return gender_cache[gender]
+
+            # -- Create per-person SMPL layers using the cached SMPL models / layers
+            pred_layers = [_get_layer("neutral") for _ in range(num_people)] # use neutral for prediction
+            gt_layers = [_get_layer(scene_genders[p]) for p in range(num_people)] # use the loaded genders from meta.npz for GT
+
+        # - Finally, for pred and gt, create the pose_layers dict such that we have a list of layers per person
+        pose_layers = {"pred": pred_layers, "gt": gt_layers}
 
         # Evaluate in batches
         metrics_per_frame = []
@@ -1970,7 +2032,7 @@ class MultiHumanTrainer:
             mpjpe_per_frame = compute_pose_mpjpe_per_frame(
                 pred_pose_params,
                 gt_pose_params,
-                pose_layer,
+                pose_layers,
                 unit="mm",
                 pose_type=pose_type,
             )
@@ -1978,7 +2040,7 @@ class MultiHumanTrainer:
             mve_per_frame = compute_pose_mve_per_frame(
                 pred_pose_params,
                 gt_pose_params,
-                pose_layer,
+                pose_layers,
                 unit="mm",
                 pose_type=pose_type,
             )
@@ -1989,7 +2051,7 @@ class MultiHumanTrainer:
                 cd_per_frame = compute_pose_contact_distance_per_frame(
                     pred_pose_params,
                     gt_pose_params["contact"],
-                    pose_layer,
+                    pose_layers,
                     unit="mm",
                     pose_type=pose_type,
                 )
