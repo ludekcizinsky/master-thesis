@@ -34,6 +34,9 @@ smplx_params_scene_dir: ${preprocessing_dir} # we use this for the movement of 3
 depths_scene_dir: ${preprocessing_dir}  
 smpl_params_scene_dir: ${preprocessing_dir} # for now, this is just here to be able to compute pose metrics during eval, these are derived from smplx params
 use_depth: true
+enable_alternate_opt: false
+confidence_threshold: 0.75 # confidence threshold for IoU to consider a frame reliable
+confidence_update_every: 5 # how often (in epochs) to update frame reliability
 
 # test
 test_cameras_scene_dir: ${root_gt_dir_path}
@@ -74,7 +77,7 @@ loss_weights:
   sil: 4.0
   ssim: 0.4
   depth: 0.0 
-  depth_order: 0.1
+  depth_order: 0.0
   interpenetration: 0.0
 
 # Interpenetration loss (posed GS overlap)

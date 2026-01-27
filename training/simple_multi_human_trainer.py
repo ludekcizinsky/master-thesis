@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from collections import deque
 
 
@@ -373,6 +373,13 @@ class MultiHumanTrainer:
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
+        self.enable_alternate_opt = bool(cfg.get("enable_alternate_opt", False))
+        self.confidence_threshold = float(cfg.get("confidence_threshold", 0.8))
+        self.confidence_update_every = int(cfg.get("confidence_update_every", 5))
+        self.reliable_frame_names: Optional[set] = None
+        self.unreliable_frame_names: Optional[set] = None
+        self.frame_quality_avg_iou: Optional[float] = None
+        self.frame_quality_reliable_ratio: Optional[float] = None
         self.tuner_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.preprocess_dir = Path(cfg.preprocessing_dir)
         self.output_dir = Path(cfg.output_dir)
@@ -483,6 +490,10 @@ class MultiHumanTrainer:
             self.pose_tuning_enabled = False
             self.pose_deltas = None
             self.pose_frame_index = {}
+            self.pose_param_keys = []
+            self.beta_param_keys = []
+            self.pose_params = []
+            self.beta_params = []
             return
 
         # Map frame names to indices for stable lookup across datasets.
@@ -507,9 +518,17 @@ class MultiHumanTrainer:
             print("Pose tuning enabled but no valid parameters were found; disabling.")
             self.pose_tuning_enabled = False
             self.pose_deltas = None
+            self.pose_param_keys = []
+            self.beta_param_keys = []
+            self.pose_params = []
+            self.beta_params = []
         else:
             self.pose_tuning_enabled = True
             print("Pose tuning enabled for parameters:", list(self.pose_deltas.keys()))
+            self.pose_param_keys = [k for k in self.pose_deltas.keys() if k != "betas"]
+            self.beta_param_keys = [k for k in self.pose_deltas.keys() if k == "betas"]
+            self.pose_params = [self.pose_deltas[k] for k in self.pose_param_keys]
+            self.beta_params = [self.pose_deltas[k] for k in self.beta_param_keys]
 
     def _gather_pose_deltas(
         self, delta_table: torch.Tensor, target: torch.Tensor, frame_names: List[str]
@@ -580,6 +599,9 @@ class MultiHumanTrainer:
 
         self.pose_tuning_active = pose_active
         self.gs_tuning_active = gs_active
+
+        if self.enable_alternate_opt and self.pose_tuning_active and self.gs_tuning_active:
+            raise RuntimeError("Pose and 3DGS optimization cannot be active at the same time.")
 
         if self.pose_tuning_enabled and self.pose_deltas is not None:
             for p in self.pose_deltas.parameters():
@@ -808,6 +830,47 @@ class MultiHumanTrainer:
             return torch.zeros((), device=posed_gs_list[0].xyz.device)
         return total / pair_count
 
+    def _render_individual_alphas(
+        self,
+        smplx_params_single_view: Dict[str, torch.Tensor],
+        c2w: torch.Tensor,
+        K: torch.Tensor,
+        height: int,
+        width: int,
+        num_people: int,
+    ) -> Optional[torch.Tensor]:
+        """
+        Render per-person alpha maps for a single view.
+
+        Returns:
+            alphas: [P, H, W] or None if no people.
+        """
+        if num_people <= 0:
+            return None
+        camera = Camera.from_c2w(c2w, K, height, width)
+        alphas = []
+        for person_idx in range(num_people):
+            person_canon_3dgs = self.gs_model_list[person_idx]
+            person_query_pt = self.query_points[person_idx]
+            person_smplx_data = {
+                k: v[person_idx : person_idx + 1] for k, v in smplx_params_single_view.items()
+            }
+            posed_gs, _ = self.renderer.animate_single_view_and_person(
+                person_canon_3dgs,
+                person_query_pt,
+                person_smplx_data,
+            )
+            render_res = self.renderer.forward_single_view_gsplat(
+                posed_gs,
+                camera,
+            )
+            alpha_map = render_res["comp_mask"][0, ..., 0]  # [H, W]
+            alphas.append(alpha_map)
+
+        if not alphas:
+            return None
+        return torch.stack(alphas, dim=0)
+
     def _render_individual_depths(
         self,
         smplx_params_single_view: Dict[str, torch.Tensor],
@@ -980,6 +1043,135 @@ class MultiHumanTrainer:
             return torch.zeros((), device=self.tuner_device)
         return torch.stack(losses).mean()
 
+    def _update_frame_reliability(self, epoch: int) -> None:
+        """Compute and cache reliable/unreliable frame names based on alpha-mask IoU."""
+        if not self.enable_alternate_opt:
+            return
+
+        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        skip_frames = load_skip_frames(self.trn_data_dir)
+        src_dataset = SceneDataset(
+            self.trn_data_dir,
+            src_cam_id,
+            device=self.tuner_device,
+            sample_every=1,
+            skip_frames=skip_frames,
+        )
+        if not hasattr(src_dataset, "individual_mask_paths") or src_dataset.num_individual_masks == 0:
+            raise RuntimeError("Individual masks are required to compute frame reliability.")
+
+        reliable = set()
+        unreliable = set()
+        avg_ious = []
+
+        with torch.no_grad():
+            for idx in range(len(src_dataset)):
+                sample = src_dataset[idx]
+                frame_name = str(sample["frame_name"])
+
+                if "individual_mask" not in sample or "individual_mask_valid" not in sample:
+                    raise RuntimeError("Missing individual masks for reliability computation.")
+
+                masks_list = filter_individual_masks_by_validity(
+                    sample["individual_mask"], sample["individual_mask_valid"]
+                )
+                if len(masks_list) != 1:
+                    raise RuntimeError("Unexpected individual mask structure for reliability computation.")
+                masks = masks_list[0]
+                num_people = masks.shape[0]
+                if num_people != len(self.gs_model_list):
+                    raise RuntimeError(
+                        f"Expected {len(self.gs_model_list)} individual masks, got {num_people}."
+                    )
+
+                smplx_params = sample["smplx_params"]
+                smplx_params_batch = {k: v.unsqueeze(0) for k, v in smplx_params.items()}
+                transform = self.tranform_mat_neutral_pose
+                if transform.dim() == 4:
+                    smplx_params_batch["transform_mat_neutral_pose"] = transform.unsqueeze(0).to(
+                        self.tuner_device
+                    )
+                else:
+                    smplx_params_batch["transform_mat_neutral_pose"] = transform.to(self.tuner_device)
+                smplx_params_tuned = self._apply_pose_tuning(smplx_params_batch, [frame_name])
+                smplx_single_view = {k: v[0][:num_people] for k, v in smplx_params_tuned.items()}
+
+                H, W = sample["image"].shape[:2]
+                alphas = self._render_individual_alphas(
+                    smplx_single_view,
+                    sample["c2w"],
+                    sample["K"],
+                    H,
+                    W,
+                    num_people,
+                )
+                if alphas is None:
+                    raise RuntimeError("Failed to render alpha maps for reliability computation.")
+
+                pred_masks = alphas > 0.5
+                gt_masks = masks[..., 0] > 0.5
+                if pred_masks.shape != gt_masks.shape:
+                    raise RuntimeError(
+                        f"Mask shape mismatch: pred {pred_masks.shape}, gt {gt_masks.shape}"
+                    )
+
+                per_person_iou = []
+                for p in range(num_people):
+                    inter = (pred_masks[p] & gt_masks[p]).sum()
+                    union = (pred_masks[p] | gt_masks[p]).sum()
+                    if union.item() == 0:
+                        raise RuntimeError("Empty union when computing frame reliability IoU.")
+                    per_person_iou.append((inter.float() / union.float()).item())
+
+                avg_iou = float(sum(per_person_iou) / len(per_person_iou))
+                avg_ious.append(avg_iou)
+                if avg_iou >= self.confidence_threshold:
+                    reliable.add(frame_name)
+                else:
+                    unreliable.add(frame_name)
+
+        if not avg_ious:
+            raise RuntimeError("No frames available for reliability computation.")
+
+        self.reliable_frame_names = reliable
+        self.unreliable_frame_names = unreliable
+        self.frame_quality_avg_iou = float(sum(avg_ious) / len(avg_ious))
+        self.frame_quality_reliable_ratio = float(len(reliable) / len(avg_ious)) * 100.0
+        print(
+            f"[Frame Quality] Epoch {epoch + 1}: "
+            f"avg_iou={self.frame_quality_avg_iou:.4f}, "
+            f"reliable={self.frame_quality_reliable_ratio:.2f}% "
+            f"({len(reliable)}/{len(avg_ious)})"
+        )
+
+        if self.wandb_run is not None:
+            wandb.log(
+                {
+                    "frame_quality/avg_iou": self.frame_quality_avg_iou,
+                    "frame_quality/reliable_ratio": self.frame_quality_reliable_ratio,
+                    "epoch": epoch + 1,
+                }
+            )
+
+    def _filter_batch_by_indices(
+        self, batch: Dict[str, Any], indices: List[int]
+    ) -> Dict[str, Any]:
+        if not indices:
+            return batch
+        bsize = len(batch.get("frame_name", []))
+        idx_list = list(indices)
+        filtered: Dict[str, Any] = {}
+        for key, value in batch.items():
+            if key == "smplx_params" and isinstance(value, dict):
+                filtered[key] = {k: v[idx_list] for k, v in value.items()}
+            elif torch.is_tensor(value) and value.shape[0] == bsize:
+                filtered[key] = value[idx_list]
+            elif isinstance(value, (list, tuple)) and len(value) == bsize:
+                filtered[key] = [value[i] for i in idx_list]
+            else:
+                filtered[key] = value
+        return filtered
+
     @staticmethod
     def _infinite_loader(loader):
         while True:
@@ -1028,18 +1220,49 @@ class MultiHumanTrainer:
         # - 3dgs setup
         params = self._trainable_tensors()
         self.gs_train_params = params
-        opt_groups = [{"params": params, "lr": self.cfg.lr}]
+        gs_optimizer = torch.optim.AdamW(
+            [{"params": params, "lr": self.cfg.lr}],
+            lr=self.cfg.lr,
+            weight_decay=self.cfg.weight_decay,
+        )
         # - pose params setup
-        if self.pose_tuning_enabled:
+        if self.pose_tuning_enabled and self.pose_params:
             pose_lr = float(self.cfg.pose_tuning.lr)
-            opt_groups.append({"params": self.pose_deltas.parameters(), "lr": pose_lr})
-        # - create optimizer
-        optimizer = torch.optim.AdamW(opt_groups, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
+            pose_optimizer = torch.optim.AdamW(
+                [{"params": self.pose_params, "lr": pose_lr}],
+                lr=pose_lr,
+                weight_decay=self.cfg.weight_decay,
+            )
+        else:
+            pose_optimizer = None
+
+        if self.pose_tuning_enabled and self.beta_params:
+            beta_lr = float(self.cfg.pose_tuning.lr)
+            betas_optimizer = torch.optim.AdamW(
+                [{"params": self.beta_params, "lr": beta_lr}],
+                lr=beta_lr,
+                weight_decay=self.cfg.weight_decay,
+            )
+        else:
+            betas_optimizer = None
 
         # Training loop
         for epoch in range(self.cfg.epochs):
+
             # Update optimization schedule for this epoch
             self._update_optimization_schedule(epoch)
+
+            # Update frame reliability if needed
+            if self.enable_alternate_opt:
+                update_every = max(1, int(self.confidence_update_every))
+                if self.pose_tuning_active:
+                    if self.reliable_frame_names is None or (epoch + 1) % update_every == 0 or epoch == 0:
+                        self._update_frame_reliability(epoch)
+                elif self.gs_tuning_active:
+                    if self.reliable_frame_names is None:
+                        raise RuntimeError(
+                            "Frame reliability must be computed before 3DGS optimization."
+                        )
 
             # If we augmented the training data this epoch, rebuild the dataloader
             # using the augmented dataset (with more cameras)
@@ -1055,6 +1278,7 @@ class MultiHumanTrainer:
             total_ds_size = trn_ds_size 
             n_batches_per_current_epoch = total_ds_size // self.cfg.batch_size
             running_loss = 0.0
+            processed_batches = 0
             pbar = tqdm(
                 total=n_batches_per_current_epoch,
                 desc=f"Epoch {epoch + 1}/{self.cfg.epochs}",
@@ -1075,13 +1299,51 @@ class MultiHumanTrainer:
                 masks = batch["mask"] # [B, H, W, 1],
                 depths = batch.get("depth", None) # [B, H, W, 1],
                 bsize = int(frames.shape[0])
-                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
                 # Identify source camera samples in the batch
                 src_cam_id = self.cfg.nvs_eval.source_camera_id
                 cam_id_tensor = batch["cam_id"]  # [B]
                 is_src_cam = (cam_id_tensor == src_cam_id)  # [B]
+
+                # In GS phase, keep only reliable frames in the batch; skip if none.
+                if self.enable_alternate_opt and self.gs_tuning_active:
+                    if self.reliable_frame_names is None:
+                        raise RuntimeError("Reliable frame set not available for 3DGS optimization.")
+                    reliable_indices = [
+                        i for i, name in enumerate(fnames) if str(name) in self.reliable_frame_names
+                    ]
+                    if not reliable_indices:
+                        batch_idx += 1
+                        pbar.update(1)
+                        continue
+                    batch = self._filter_batch_by_indices(batch, reliable_indices)
+                    fnames = batch["frame_name"]
+                    cam_ids = batch["cam_id"]
+                    frames = batch["image"]
+                    masks = batch["mask"]
+                    depths = batch.get("depth", None)
+                    bsize = int(frames.shape[0])
+                    cam_id_tensor = batch["cam_id"]
+                    is_src_cam = (cam_id_tensor == src_cam_id)
+
+                # Add neutral-pose transform matrices to batch
+                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
+                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
+
+                # Build per-sample reliable mask if in pose-tuning phase
+                batch_reliable_mask = None
+                if self.enable_alternate_opt and self.pose_tuning_active:
+                    if self.reliable_frame_names is None or self.unreliable_frame_names is None:
+                        raise RuntimeError("Reliable frame set not available for pose optimization.")
+                    batch_reliable_mask = []
+                    for name in fnames:
+                        frame_key = str(name)
+                        if (
+                            frame_key not in self.reliable_frame_names
+                            and frame_key not in self.unreliable_frame_names
+                        ):
+                            raise RuntimeError(f"Frame '{frame_key}' missing reliability label.")
+                        batch_reliable_mask.append(frame_key in self.reliable_frame_names)
 
                 # Source view only: get individual person masks and validate
                 individual_masks = batch.get("individual_mask")
@@ -1103,7 +1365,12 @@ class MultiHumanTrainer:
                             )
 
                 # Reset gradients
-                optimizer.zero_grad(set_to_none=True)
+                if self.pose_tuning_active and pose_optimizer is not None:
+                    pose_optimizer.zero_grad(set_to_none=True)
+                if self.pose_tuning_active and betas_optimizer is not None:
+                    betas_optimizer.zero_grad(set_to_none=True)
+                if self.gs_tuning_active:
+                    gs_optimizer.zero_grad(set_to_none=True)
 
                 # Forward pass
                 pred_rgb, pred_mask, pred_depth = self.forward(batch)
@@ -1177,7 +1444,9 @@ class MultiHumanTrainer:
 
                 # - Interpenetration
                 inter_weight = float(self.cfg.loss_weights.get("interpenetration", 0.0))
-                if inter_weight > 0.0 and len(self.gs_model_list) > 1:
+                if self.enable_alternate_opt and not self.pose_tuning_active:
+                    inter_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+                elif inter_weight > 0.0 and len(self.gs_model_list) > 1:
                     smplx_params_for_loss = self._apply_pose_tuning(batch["smplx_params"], fnames)
                     inter_loss_raw = self._compute_interpenetration_loss(batch, smplx_params_for_loss)
                     inter_loss = inter_weight * inter_loss_raw
@@ -1186,7 +1455,9 @@ class MultiHumanTrainer:
 
                 # - Depth Order
                 depth_order_weight = float(self.cfg.loss_weights.get("depth_order", 0.0))
-                if depth_order_weight > 0.0 and is_src_cam.any():
+                if self.enable_alternate_opt and not self.pose_tuning_active:
+                    depth_order_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
+                elif depth_order_weight > 0.0 and is_src_cam.any():
                     src_indices = torch.nonzero(is_src_cam, as_tuple=False).squeeze(-1)
                     depth_order_raw = self._compute_depth_order_loss(
                         batch,
@@ -1220,11 +1491,62 @@ class MultiHumanTrainer:
                 
                 # Backpropagation
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(params, self.cfg.grad_clip)
-                optimizer.step()
+                # Zero out betas grads for unreliable frames so only reliable frames update betas.
+                if (
+                    self.enable_alternate_opt
+                    and self.pose_tuning_active
+                    and betas_optimizer is not None
+                    and batch_reliable_mask is not None
+                ):
+                    betas_param = None
+                    if self.pose_deltas is not None and "betas" in self.pose_deltas:
+                        betas_param = self.pose_deltas["betas"]
+                    if betas_param is None:
+                        raise RuntimeError("Betas parameter not found for pose tuning.")
+                    if betas_param.grad is not None:
+                        unreliable_indices = []
+                        for name, is_reliable in zip(fnames, batch_reliable_mask):
+                            if not is_reliable:
+                                idx = self.pose_frame_index.get(str(name), -1)
+                                if idx < 0:
+                                    raise RuntimeError(
+                                        f"Frame name '{name}' not found in pose tuning frame index."
+                                    )
+                                unreliable_indices.append(idx)
+                        if unreliable_indices:
+                            unique_indices = sorted(set(unreliable_indices))
+                            betas_param.grad[unique_indices] = 0.0
+
+                # Select which params to clip this step.
+                clip_params = []
+                if self.pose_tuning_active and pose_optimizer is not None:
+                    # - Pose params (excluding betas).
+                    clip_params.extend(self.pose_params)
+                if self.pose_tuning_active and betas_optimizer is not None:
+                    if not self.enable_alternate_opt or (batch_reliable_mask and any(batch_reliable_mask)):
+                        # - Betas (only if any reliable frames in batch, when alternating).
+                        clip_params.extend(self.beta_params)
+                if self.gs_tuning_active:
+                    # - 3DGS params.
+                    clip_params.extend(self.gs_train_params)
+
+                # And finally clip grads
+                if clip_params:
+                    # Apply global grad clipping to selected params.
+                    torch.nn.utils.clip_grad_norm_(clip_params, self.cfg.grad_clip)
+
+                # Step optimizers for the active parameter groups.
+                if self.pose_tuning_active and pose_optimizer is not None:
+                    pose_optimizer.step()
+                if self.pose_tuning_active and betas_optimizer is not None:
+                    if not self.enable_alternate_opt or (batch_reliable_mask and any(batch_reliable_mask)):
+                        betas_optimizer.step()
+                if self.gs_tuning_active:
+                    gs_optimizer.step()
 
                 # Log the results
                 running_loss += loss.item()
+                processed_batches += 1
                 pbar.set_postfix(
                    loss=f"{loss.item():.4f}",
                     asap=f"{asap_loss.item():.4f}",
@@ -1291,12 +1613,13 @@ class MultiHumanTrainer:
             # - Progress bar stuff
             pbar.close()
             # - Log epoch level metrics
-            avg_loss = running_loss / max(1, n_batches_per_current_epoch)
+            avg_loss = running_loss / max(1, processed_batches)
             if self.wandb_run is not None:
                 to_log = {
                     "loss/combined_epoch": avg_loss, 
                     "epoch": epoch + 1, 
                     "loss/n_batches_per_epoch": n_batches_per_current_epoch,
+                    "loss/processed_batches": processed_batches,
                     "loss/total_ds_size": total_ds_size,
                     "loss/trn_ds_size": trn_ds_size,
                 }
@@ -1323,6 +1646,19 @@ class MultiHumanTrainer:
 
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
+        if self.enable_alternate_opt:
+            if self.unreliable_frame_names is None:
+                raise RuntimeError("Unreliable frame set not available for training data augmentation.")
+            unreliable_indices = []
+            for name in self.unreliable_frame_names:
+                try:
+                    unreliable_indices.append(int(str(name)))
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"Failed to parse unreliable frame name '{name}' as int."
+                    ) from exc
+            if unreliable_indices:
+                skip_frames = sorted(set(skip_frames).union(unreliable_indices))
 
         # Re-build the trn dataset -> this time using sample_every from config 
         self.trn_datasets = list() 
@@ -2840,7 +3176,7 @@ class MultiHumanTrainer:
             print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
         else:
             self.eval_loop_pose_estimation(epoch, pose_type="smplx")
-            self.eval_loop_pose_estimation(epoch, pose_type="smpl")
+            # self.eval_loop_pose_estimation(epoch, pose_type="smpl")
 
 #        # - Reconstruction evaluation
         #if self.cfg.test_meshes_scene_dir is None:
@@ -2850,7 +3186,7 @@ class MultiHumanTrainer:
 
         # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
-        self.eval_loop_qualitative(epoch)
+        # self.eval_loop_qualitative(epoch)
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
