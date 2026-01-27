@@ -202,6 +202,37 @@ def _reshape_body_pose_flat(pose: torch.Tensor, joints: int) -> torch.Tensor:
     return flat.view(1, expected)
 
 
+def _normalize_gender(value: str) -> str:
+    gender = value.strip().lower()
+    if gender in ("m", "male", "man", "masc", "masculine"):
+        return "male"
+    if gender in ("f", "female", "woman", "fem", "feminine"):
+        return "female"
+    if gender in ("neutral", "n", "none", "unknown", "unk"):
+        return "neutral"
+    return "neutral"
+
+
+def _load_scene_genders(scene_dir: Path) -> Optional[List[str]]:
+    meta_path = scene_dir / "meta.npz"
+    if not meta_path.exists():
+        return None
+    with np.load(meta_path, allow_pickle=True) as data:
+        if "genders" not in data.files:
+            raise KeyError(f"Missing 'genders' key in {meta_path}")
+        genders = data["genders"]
+    if isinstance(genders, np.ndarray):
+        genders = genders.tolist()
+    if isinstance(genders, (str, bytes)):
+        genders = [genders]
+    normalized: List[str] = []
+    for g in genders:
+        if isinstance(g, bytes):
+            g = g.decode("utf-8", errors="ignore")
+        normalized.append(_normalize_gender(str(g)))
+    return normalized
+
+
 def _extract_person_params(smplx_data: Dict[str, np.ndarray], pid: int) -> Optional[Dict[str, np.ndarray]]:
     required = [
         "betas",
@@ -298,6 +329,8 @@ def _smpl_vertices(
     layer,
     smpl_data: Dict[str, np.ndarray],
     device: torch.device,
+    genders: Optional[List[str]] = None,
+    layer_by_gender: Optional[Dict[str, object]] = None,
 ) -> Optional[np.ndarray]:
     transl_key = "transl" if "transl" in smpl_data else "trans" if "trans" in smpl_data else None
     if transl_key is None or "betas" not in smpl_data:
@@ -306,15 +339,20 @@ def _smpl_vertices(
     if num_people <= 0:
         return None
 
-    expected_betas = int(getattr(layer, "num_betas", smpl_data["betas"].shape[-1]))
-
     verts_out = []
     for pid in range(num_people):
         params_np = _extract_smpl_person_params(smpl_data, pid)
         if params_np is None:
             continue
+        gender = genders[pid] if genders is not None and pid < len(genders) else "neutral"
+        use_layer = layer_by_gender.get(gender) if layer_by_gender is not None else None
+        if use_layer is None:
+            use_layer = layer
+        if use_layer is None:
+            continue
         params = {k: torch.tensor(v, dtype=torch.float32, device=device) for k, v in params_np.items()}
 
+        expected_betas = int(getattr(use_layer, "num_betas", params["betas"].shape[-1]))
         betas = _pad_or_truncate(params["betas"].view(1, -1), expected_betas)
         call_args = dict(
             global_orient=_reshape_vec3(params["global_orient"]),
@@ -323,7 +361,7 @@ def _smpl_vertices(
             transl=_reshape_vec3(params["transl"]),
         )
         with torch.no_grad():
-            output = layer(**call_args)
+            output = use_layer(**call_args)
         verts_out.append(output.vertices[0].detach().cpu().numpy())
 
     if not verts_out:
@@ -516,6 +554,12 @@ def _visualize_comparison_mode(args: Args) -> None:
         _sorted_frame_files(comp_pred_smpl_dir, args.smpl_pattern) if comp_pred_smpl_dir.exists() else []
     )
 
+    gt_scene_genders = _load_scene_genders(args.gt_scene_dir)
+    if gt_scene_genders is None:
+        print(f"[info] No meta.npz genders found in {args.gt_scene_dir}; using default gender.")
+    else:
+        print(f"[info] Found meta.npz genders for GT: {gt_scene_genders}")
+
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
     smplx_layer = _build_smplx_layer(args.model_folder, args.gender, args.smplx_model_ext, device)
     smpl_layer = (
@@ -523,8 +567,19 @@ def _visualize_comparison_mode(args: Args) -> None:
         if gt_smpl_frames or pred_smpl_frames or comp_pred_smpl_frames
         else None
     )
+    gt_smpl_layer_by_gender = None
+    if smpl_layer is not None and gt_scene_genders is not None:
+        gt_smpl_layer_by_gender = {
+            g: _build_smpl_layer(args.model_folder, g, args.smpl_model_ext, device)
+            for g in sorted(set(gt_scene_genders))
+        }
     smplx_faces = np.asarray(smplx_layer.faces, dtype=np.int32)
-    smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32) if smpl_layer is not None else None
+    if smpl_layer is not None:
+        smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32)
+    elif gt_smpl_layer_by_gender:
+        smpl_faces = np.asarray(next(iter(gt_smpl_layer_by_gender.values())).faces, dtype=np.int32)
+    else:
+        smpl_faces = None
 
     gt_nodes: Dict[int, viser.FrameHandle] = {}
     pred_nodes: Dict[int, viser.FrameHandle] = {}
@@ -566,7 +621,13 @@ def _visualize_comparison_mode(args: Args) -> None:
                 gt_smpl_path = _select_frame(gt_smpl_frames, 0, str(frame_id))
                 gt_smpl_data = _load_npz(gt_smpl_path)
                 if gt_smpl_data is not None:
-                    gt_smpl_verts = _smpl_vertices(smpl_layer, gt_smpl_data, device)
+                    gt_smpl_verts = _smpl_vertices(
+                        smpl_layer,
+                        gt_smpl_data,
+                        device,
+                        genders=gt_scene_genders,
+                        layer_by_gender=gt_smpl_layer_by_gender,
+                    )
             if pred_smpl_frames:
                 pred_smpl_path = _select_frame(pred_smpl_frames, 0, str(frame_id))
                 pred_smpl_data = _load_npz(pred_smpl_path)
@@ -689,7 +750,13 @@ def _visualize_comparison_mode(args: Args) -> None:
                 gt_smpl_path = _select_frame(gt_smpl_frames, 0, str(frame_id))
                 gt_smpl_data = _load_npz(gt_smpl_path)
                 if gt_smpl_data is not None:
-                    gt_smpl_verts = _smpl_vertices(smpl_layer, gt_smpl_data, device)
+                    gt_smpl_verts = _smpl_vertices(
+                        smpl_layer,
+                        gt_smpl_data,
+                        device,
+                        genders=gt_scene_genders,
+                        layer_by_gender=gt_smpl_layer_by_gender,
+                    )
             if pred_smpl_frames:
                 pred_smpl_path = _select_frame(pred_smpl_frames, 0, str(frame_id))
                 pred_smpl_data = _load_npz(pred_smpl_path)
@@ -970,6 +1037,8 @@ def main(args: Args) -> None:
         else []
     )
 
+    gt_scene_genders = _load_scene_genders(args.gt_scene_dir)
+
     gt_frame_path = _select_frame(gt_frames, args.frame_index, args.frame_name)
     pred_frame_path = _select_frame(pred_frames, args.frame_index, args.frame_name)
     comp_pred_frame_path = (
@@ -998,8 +1067,19 @@ def main(args: Args) -> None:
         or comp_pred_smpl_frame_path is not None
         else None
     )
+    gt_smpl_layer_by_gender = None
+    if smpl_layer is not None and gt_scene_genders is not None:
+        gt_smpl_layer_by_gender = {
+            g: _build_smpl_layer(args.model_folder, g, args.smpl_model_ext, device)
+            for g in sorted(set(gt_scene_genders))
+        }
     faces = np.asarray(smplx_layer.faces, dtype=np.int32)
-    smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32) if smpl_layer is not None else None
+    if smpl_layer is not None:
+        smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32)
+    elif gt_smpl_layer_by_gender:
+        smpl_faces = np.asarray(next(iter(gt_smpl_layer_by_gender.values())).faces, dtype=np.int32)
+    else:
+        smpl_faces = None
 
     gt_data = _load_npz(gt_frame_path)
     pred_data = _load_npz(pred_frame_path)
@@ -1026,7 +1106,13 @@ def main(args: Args) -> None:
         if gt_smpl_frame_path is not None:
             gt_smpl_data = _load_npz(gt_smpl_frame_path)
             if gt_smpl_data is not None:
-                gt_smpl_verts = _smpl_vertices(smpl_layer, gt_smpl_data, device)
+                gt_smpl_verts = _smpl_vertices(
+                    smpl_layer,
+                    gt_smpl_data,
+                    device,
+                    genders=gt_scene_genders,
+                    layer_by_gender=gt_smpl_layer_by_gender,
+                )
         if pred_smpl_frame_path is not None:
             pred_smpl_data = _load_npz(pred_smpl_frame_path)
             if pred_smpl_data is not None:
