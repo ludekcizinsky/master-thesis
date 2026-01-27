@@ -26,6 +26,9 @@ def root_dir_to_image_dir(root_dir: Path, cam_id: int) -> Path:
 def root_dir_to_mask_dir(root_dir: Path, cam_id: int) -> Path:
     return root_dir / "seg" / "img_seg_mask" / f"{cam_id}" / "all"
 
+def root_dir_to_mask_root_dir(root_dir: Path, cam_id: int) -> Path:
+    return root_dir / "seg" / "img_seg_mask" / f"{cam_id}"
+
 def root_dir_to_smplx_dir(root_dir: Path) -> Path:
     return root_dir / "smplx"
 
@@ -46,6 +49,35 @@ def root_dir_to_mesh_dir(root_dir: Path) -> Path:
 
 def root_dir_to_skip_frames_path(root_dir: Path) -> Path:
     return root_dir / "skip_frames.csv"
+
+def build_individual_mask_validity(num_valid: int, max_people: int, device: torch.device) -> torch.Tensor:
+    valid = torch.zeros(max_people, device=device, dtype=torch.bool)
+    if num_valid > 0:
+        valid[: min(num_valid, max_people)] = True
+    return valid
+
+def filter_individual_masks_by_validity(
+    individual_masks: torch.Tensor, valid: torch.Tensor
+) -> List[torch.Tensor]:
+    """
+    Filter padded individual masks based on a validity boolean mask.
+
+    Args:
+        individual_masks: [B, P, H, W, 1] or [P, H, W, 1]
+        valid: [B, P] or [P]
+    Returns:
+        List of tensors, one per batch item, each of shape [P_valid, H, W, 1].
+    """
+    if individual_masks.dim() == 4:
+        return [individual_masks[valid.bool()]]
+    if individual_masks.dim() != 5:
+        raise ValueError(f"Unexpected individual_masks shape: {individual_masks.shape}")
+    if valid.dim() != 2:
+        raise ValueError(f"Unexpected valid shape: {valid.shape}")
+    filtered = []
+    for i in range(individual_masks.shape[0]):
+        filtered.append(individual_masks[i][valid[i].bool()])
+    return filtered
 
 class SceneDataset(Dataset):
     
@@ -69,6 +101,7 @@ class SceneDataset(Dataset):
         self.use_masks = bool(use_masks)
         self.use_cameras = bool(use_cameras)
         self.use_smplx = bool(use_smplx)
+        self.max_people = 5
 
         # Load frame paths (with optional subsampling)
         # Important: we use frame path names to match masks, SMPLX, depth, etc.
@@ -84,6 +117,15 @@ class SceneDataset(Dataset):
         if self.use_masks:
             self.masks_dir = root_dir_to_mask_dir(scene_root_dir, src_cam_id)
             self._load_mask_paths()
+            self.individual_mask_dirs = self._find_individual_mask_dirs()
+            self.num_individual_masks = len(self.individual_mask_dirs)
+            if self.num_individual_masks > 0:
+                if self.num_individual_masks > self.max_people:
+                    raise ValueError(
+                        f"Found {self.num_individual_masks} individual mask dirs, "
+                        f"but max_people is set to {self.max_people}."
+                    )
+                self._load_individual_mask_paths()
 
         # Load depth paths (if provided)
         if use_depth:
@@ -152,6 +194,42 @@ class SceneDataset(Dataset):
                 self.mask_paths.append(mask_path)
         if missing:
             raise RuntimeError(f"Missing masks for frames (by stem): {missing[:5]}")
+
+    def _find_individual_mask_dirs(self) -> List[Path]:
+        masks_root_dir = root_dir_to_mask_root_dir(self.root_dir, self.src_cam_id)
+        if not masks_root_dir.exists():
+            return []
+        candidate_dirs = [
+            d for d in masks_root_dir.iterdir()
+            if d.is_dir() and d.name != "all"
+        ]
+
+        def _sort_key(path: Path):
+            name = path.name
+            if name.isdigit():
+                return (0, int(name))
+            return (1, name)
+
+        return sorted(candidate_dirs, key=_sort_key)
+
+    def _load_individual_mask_paths(self):
+        self.individual_mask_paths = []
+        for person_dir in self.individual_mask_dirs:
+            person_paths = []
+            missing = []
+            for p in self.frame_paths:
+                base = p.stem
+                candidates = [person_dir / f"{base}{ext}" for ext in (".png", ".jpg", ".jpeg")]
+                mask_path = next((c for c in candidates if c.exists()), None)
+                if mask_path is None:
+                    missing.append(base)
+                else:
+                    person_paths.append(mask_path)
+            if missing:
+                raise RuntimeError(
+                    f"Missing individual masks in '{person_dir.name}' for frames (by stem): {missing[:5]}"
+                )
+            self.individual_mask_paths.append(person_paths)
 
     def _load_smplx_paths(self):
         self.smplx_paths = []
@@ -418,6 +496,26 @@ class SceneDataset(Dataset):
         }
         if self.use_masks:
             to_return_values["mask"] = self._load_mask(self.mask_paths[idx])
+            if self.max_people is not None:
+                per_person_masks = []
+                if hasattr(self, "individual_mask_paths") and self.num_individual_masks > 0:
+                    per_person_masks = [
+                        self._load_mask(person_paths[idx])
+                        for person_paths in self.individual_mask_paths
+                    ]
+                if not per_person_masks:
+                    zero_mask = torch.zeros_like(to_return_values["mask"])
+                    per_person_masks = [zero_mask for _ in range(self.max_people)]
+                elif len(per_person_masks) < self.max_people:
+                    zero_mask = torch.zeros_like(per_person_masks[0])
+                    per_person_masks.extend(
+                        [zero_mask for _ in range(self.max_people - len(per_person_masks))]
+                    )
+                to_return_values["individual_mask"] = torch.stack(per_person_masks, dim=0)
+                num_valid = self.num_individual_masks if hasattr(self, "num_individual_masks") else 0
+                to_return_values["individual_mask_valid"] = build_individual_mask_validity(
+                    num_valid, self.max_people, self.device
+                )
         if self.use_cameras:
             intr, extr = self._load_camera_from_frame(self.camera_paths[idx])
             w2c = extr_to_w2c_4x4(extr, self.device)
@@ -449,11 +547,11 @@ class SceneDataset(Dataset):
 def fetch_masks_if_exist(masks_scene_dir: Path, tgt_scene_dir: Path, camera_id: int):
     if masks_scene_dir is None:
         return False
-    src_masks_dir = root_dir_to_mask_dir(masks_scene_dir, camera_id)
-    tgt_masks_dir = root_dir_to_mask_dir(tgt_scene_dir, camera_id)
-    tgt_masks_dir.parent.mkdir(parents=True, exist_ok=True)
-    if src_masks_dir.exists():
-        subprocess.run(["cp", "-r", str(src_masks_dir), str(tgt_masks_dir.parent)])
+    src_masks_root = root_dir_to_mask_root_dir(masks_scene_dir, camera_id)
+    tgt_masks_root = root_dir_to_mask_root_dir(tgt_scene_dir, camera_id)
+    tgt_masks_root.parent.mkdir(parents=True, exist_ok=True)
+    if src_masks_root.exists():
+        subprocess.run(["cp", "-r", str(src_masks_root), str(tgt_masks_root.parent)])
         return True
     else:
         return False

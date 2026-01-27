@@ -42,6 +42,7 @@ from training.helpers.dataset import (
     root_dir_to_depth_dir,
     root_dir_to_all_cameras_dir,
     fetch_masks_if_exist,
+    filter_individual_masks_by_validity,
     intr_to_4x4,
     extr_to_w2c_4x4,
     root_dir_to_smplx_dir,
@@ -936,10 +937,28 @@ class MultiHumanTrainer:
                 batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
                 batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
 
-                # create a mask for samples in the batch that come from src camera
+                # Identify source camera samples in the batch
                 src_cam_id = self.cfg.nvs_eval.source_camera_id
                 cam_id_tensor = batch["cam_id"]  # [B]
                 is_src_cam = (cam_id_tensor == src_cam_id)  # [B]
+
+                # Source view only: get individual person masks and validate
+                individual_masks = batch.get("individual_mask")
+                individual_valid = batch.get("individual_mask_valid")
+                if individual_masks is not None and individual_valid is not None and is_src_cam.any():
+                    # 1) keep individual masks for source view only
+                    individual_masks_src = individual_masks[is_src_cam]
+                    individual_valid_src = individual_valid[is_src_cam]
+                    # 2) keep only valid (non-padded) masks
+                    valid_individual_masks_src = filter_individual_masks_by_validity(
+                        individual_masks_src, individual_valid_src
+                    )
+                    # Assert source-view individual masks are non-zero
+                    for masks_per_sample in valid_individual_masks_src:
+                        if masks_per_sample.numel() == 0 or masks_per_sample.sum() <= 0:
+                            raise AssertionError(
+                                f"Individual masks for source cam {src_cam_id} are empty in batch."
+                            )
 
                 # Reset gradients
                 optimizer.zero_grad(set_to_none=True)
