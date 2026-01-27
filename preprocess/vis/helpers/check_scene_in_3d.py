@@ -75,6 +75,37 @@ def _color_for_person(base: np.ndarray, pid: int) -> Tuple[int, int, int]:
     return tuple(int(c) for c in color)
 
 
+def _normalize_gender(value: str) -> str:
+    gender = value.strip().lower()
+    if gender in ("m", "male", "man", "masc", "masculine"):
+        return "male"
+    if gender in ("f", "female", "woman", "fem", "feminine"):
+        return "female"
+    if gender in ("neutral", "n", "none", "unknown", "unk"):
+        return "neutral"
+    return "neutral"
+
+
+def _load_scene_genders(scene_dir: Path) -> Optional[List[str]]:
+    meta_path = scene_dir / "meta.npz"
+    if not meta_path.exists():
+        return None
+    with np.load(meta_path, allow_pickle=True) as data:
+        if "genders" not in data.files:
+            raise KeyError(f"Missing 'genders' key in {meta_path}")
+        genders = data["genders"]
+    if isinstance(genders, np.ndarray):
+        genders = genders.tolist()
+    if isinstance(genders, (str, bytes)):
+        genders = [genders]
+    normalized: List[str] = []
+    for g in genders:
+        if isinstance(g, bytes):
+            g = g.decode("utf-8", errors="ignore")
+        normalized.append(_normalize_gender(str(g)))
+    return normalized
+
+
 def _pad_or_truncate(vec: torch.Tensor, target_dim: int) -> torch.Tensor:
     current_dim = int(vec.shape[-1])
     if current_dim == target_dim:
@@ -223,6 +254,8 @@ def _smpl_vertices(
     layer,
     params: Dict[str, np.ndarray],
     device: torch.device,
+    genders: Optional[List[str]] = None,
+    layer_by_gender: Optional[Dict[str, object]] = None,
 ) -> Optional[np.ndarray]:
     required = {"betas", "global_orient", "body_pose", "transl"}
     if not required.issubset(params.keys()):
@@ -237,23 +270,37 @@ def _smpl_vertices(
     body_pose = body_pose.reshape(-1, 69)
     transl = transl.reshape(-1, 3)
 
-    expected_betas = int(getattr(layer, "num_betas", betas.shape[-1]))
-    betas = _pad_or_truncate(betas, expected_betas)
+    verts_out = []
+    num_people = global_orient.shape[0]
+    for pid in range(num_people):
+        gender = genders[pid] if genders is not None and pid < len(genders) else "neutral"
+        use_layer = layer_by_gender.get(gender) if layer_by_gender is not None else None
+        if use_layer is None:
+            use_layer = layer
+        if use_layer is None:
+            continue
 
-    with torch.no_grad():
-        output = layer(
-            global_orient=global_orient,
-            body_pose=body_pose,
-            betas=betas,
-            transl=transl,
-        )
-    return output.vertices.detach().cpu().numpy()
+        expected_betas = int(getattr(use_layer, "num_betas", betas.shape[-1]))
+        betas_pid = _pad_or_truncate(betas[pid : pid + 1], expected_betas)
+        with torch.no_grad():
+            output = use_layer(
+                global_orient=global_orient[pid : pid + 1],
+                body_pose=body_pose[pid : pid + 1],
+                betas=betas_pid,
+                transl=transl[pid : pid + 1],
+            )
+        verts_out.append(output.vertices.detach().cpu().numpy())
+    if not verts_out:
+        return None
+    return np.concatenate(verts_out, axis=0)
 
 
 def _smplx_vertices(
     layer,
     params: Dict[str, np.ndarray],
     device: torch.device,
+    genders: Optional[List[str]] = None,
+    layer_by_gender: Optional[Dict[str, object]] = None,
 ) -> Optional[np.ndarray]:
     required = {
         "betas",
@@ -298,39 +345,52 @@ def _smplx_vertices(
     if trans.ndim == 1:
         trans = trans[None, :]
 
-    expected_betas = int(getattr(layer, "num_betas", betas.shape[-1]))
-    betas = _pad_or_truncate(betas, expected_betas)
+    verts_out = []
+    num_people = root_pose.shape[0]
+    for pid in range(num_people):
+        gender = genders[pid] if genders is not None and pid < len(genders) else "neutral"
+        use_layer = layer_by_gender.get(gender) if layer_by_gender is not None else None
+        if use_layer is None:
+            use_layer = layer
+        if use_layer is None:
+            continue
 
-    expr_dim = int(getattr(layer, "num_expression_coeffs", 0))
-    if expr_dim > 0:
-        expr = params.get("expression")
-        if expr is None:
-            expr = torch.zeros((betas.shape[0], expr_dim), device=device, dtype=betas.dtype)
+        expected_betas = int(getattr(use_layer, "num_betas", betas.shape[-1]))
+        betas_pid = _pad_or_truncate(betas[pid : pid + 1], expected_betas)
+
+        expr_dim = int(getattr(use_layer, "num_expression_coeffs", 0))
+        if expr_dim > 0:
+            expr = params.get("expression")
+            if expr is None:
+                expr_pid = torch.zeros((1, expr_dim), device=device, dtype=betas.dtype)
+            else:
+                expr_tensor = torch.tensor(expr, dtype=torch.float32, device=device)
+                if expr_tensor.ndim == 1:
+                    expr_tensor = expr_tensor[None, :]
+                expr_pid = _pad_or_truncate(expr_tensor[pid : pid + 1], expr_dim)
         else:
-            expr = torch.tensor(expr, dtype=torch.float32, device=device)
-            if expr.ndim == 1:
-                expr = expr[None, :]
-            expr = _pad_or_truncate(expr, expr_dim)
-    else:
-        expr = None
+            expr_pid = None
 
-    call_args = dict(
-        global_orient=root_pose,
-        body_pose=body_pose,
-        jaw_pose=jaw_pose,
-        leye_pose=leye_pose,
-        reye_pose=reye_pose,
-        left_hand_pose=lhand_pose,
-        right_hand_pose=rhand_pose,
-        betas=betas,
-        transl=trans,
-    )
-    if expr is not None:
-        call_args["expression"] = expr
+        call_args = dict(
+            global_orient=root_pose[pid : pid + 1],
+            body_pose=body_pose[pid : pid + 1],
+            jaw_pose=jaw_pose[pid : pid + 1],
+            leye_pose=leye_pose[pid : pid + 1],
+            reye_pose=reye_pose[pid : pid + 1],
+            left_hand_pose=lhand_pose[pid : pid + 1],
+            right_hand_pose=rhand_pose[pid : pid + 1],
+            betas=betas_pid,
+            transl=trans[pid : pid + 1],
+        )
+        if expr_pid is not None:
+            call_args["expression"] = expr_pid
 
-    with torch.no_grad():
-        output = layer(**call_args)
-    return output.vertices.detach().cpu().numpy()
+        with torch.no_grad():
+            output = use_layer(**call_args)
+        verts_out.append(output.vertices.detach().cpu().numpy())
+    if not verts_out:
+        return None
+    return np.concatenate(verts_out, axis=0)
 
 
 def main() -> None:
@@ -399,16 +459,51 @@ def main() -> None:
         cam_id: _find_image_hw(images_dir, cam_id, frames) for cam_id in camera_ids
     }
 
-    # Build body model layers (only if the modality exists).
-    smpl_layer = _build_layer(cfg.model_folder, "smpl", cfg.gender, cfg.smpl_model_ext, device) if smpl_frames else None
-    smplx_layer = _build_layer(cfg.model_folder, "smplx", cfg.gender, cfg.smplx_model_ext, device) if smplx_frames else None
+    # Load per-person genders if available (meta.npz -> genders).
+    scene_genders = _load_scene_genders(cfg.scene_dir)
+    if scene_genders is None:
+        print(f"[info] No meta.npz genders found in {cfg.scene_dir}; using default gender.")
+    else:
+        print(f"[info] Found meta.npz genders: {scene_genders}")
 
-    smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32) if smpl_layer is not None else None
+    # Build body model layers (only if the modality exists).
+    smpl_layer_by_gender = None
+    smpl_layer = None
+    smplx_layer = None
+    if smpl_frames:
+        if scene_genders is None:
+            smpl_layer = _build_layer(
+                cfg.model_folder, "smpl", cfg.gender, cfg.smpl_model_ext, device
+            )
+        else:
+            smpl_layer_by_gender = {
+                g: _build_layer(cfg.model_folder, "smpl", g, cfg.smpl_model_ext, device)
+                for g in sorted(set(scene_genders))
+            }
+    if smplx_frames:
+        smplx_layer = _build_layer(
+            cfg.model_folder, "smplx", cfg.gender, cfg.smplx_model_ext, device
+        )
+
+    if smpl_layer is not None:
+        smpl_faces = np.asarray(smpl_layer.faces, dtype=np.int32)
+    elif smpl_layer_by_gender:
+        smpl_faces = np.asarray(next(iter(smpl_layer_by_gender.values())).faces, dtype=np.int32)
+    else:
+        smpl_faces = None
     smplx_faces = np.asarray(smplx_layer.faces, dtype=np.int32) if smplx_layer is not None else None
 
     # Compute a shared scene offset for visual centering.
     center_offset = (
-        _compute_center_offset(frames, smpl_dir, smplx_dir, mesh_dir, smpl_layer, smplx_layer, device)
+        _compute_center_offset(
+            frames,
+            smpl_dir,
+            smplx_dir,
+            mesh_dir,
+            smpl_layer or (next(iter(smpl_layer_by_gender.values())) if smpl_layer_by_gender else None),
+            smplx_layer,
+            device,
+        )
         if cfg.center_scene
         else np.zeros(3, dtype=np.float32)
     )
@@ -441,7 +536,8 @@ def main() -> None:
             wxyz=tuple(R_fix.wxyz),
             position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) 
-        if smpl_layer is not None else None
+        if smpl_layer is not None or smpl_layer_by_gender is not None
+        else None
     )
     smplx_root = (
         server.scene.add_frame(
@@ -449,7 +545,9 @@ def main() -> None:
             show_axes=False, 
             wxyz=tuple(R_fix.wxyz),
             position=tuple((-R_fix.apply(center_offset)).tolist()),
-        ) if smplx_layer is not None else None
+        )
+        if smplx_layer is not None
+        else None
     )
     mesh_root = (
         server.scene.add_frame(
@@ -528,7 +626,13 @@ def main() -> None:
             smpl_nodes.append(node)
             smpl_data = _load_npz(smpl_dir / f"{frame_id}.npz")
             if smpl_data is not None:
-                verts = _smpl_vertices(smpl_layer, smpl_data, device)
+                verts = _smpl_vertices(
+                    smpl_layer,
+                    smpl_data,
+                    device,
+                    genders=scene_genders,
+                    layer_by_gender=smpl_layer_by_gender,
+                )
                 if verts is not None:
                     for pid in range(verts.shape[0]):
                         color = _color_for_person(smpl_base, pid)
@@ -546,7 +650,13 @@ def main() -> None:
             smplx_nodes.append(node)
             smplx_data = _load_npz(smplx_dir / f"{frame_id}.npz")
             if smplx_data is not None:
-                verts = _smplx_vertices(smplx_layer, smplx_data, device)
+                verts = _smplx_vertices(
+                    smplx_layer,
+                    smplx_data,
+                    device,
+                    genders=None,
+                    layer_by_gender=None,
+                )
                 if verts is not None:
                     for pid in range(verts.shape[0]):
                         color = _color_for_person(smplx_base, pid)
