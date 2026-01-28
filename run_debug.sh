@@ -49,14 +49,14 @@ cd /home/cizinsky/master-thesis
 
 # ------ Visualise the qualitattive output
 # - hi4d pair15 fight
-exp_name=v937_lrHigh
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$exp_name/epoch_0030
-python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
+# exp_name=v937_lrHigh
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$exp_name/epoch_0030
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
 
 # - hi4d pair16 jump
-# bash train.sh
-# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/v600_debugging_recon_v3/epoch_0000
-# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
+exp_name=v860_test_speed
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/$exp_name/epoch_0000
+python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
 
 # - taichi
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v605_first_tune_pose_then_3dgs/epoch_0000

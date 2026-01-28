@@ -2809,18 +2809,18 @@ class MultiHumanTrainer:
             )
             save_aligned_meshes(pred_meshes_aligned, save_dir_aligned_meshes, fnames)
 
-            # - Save aligned per-person meshes (per frame).
+            # - Save before alignment and aligned per-person meshes (per frame).
             for frame_idx, (meshes_for_frame, T_align) in enumerate(
                 zip(pred_meshes_by_person, pred_meshes_align_T)
             ):
+                # -- Parse frame name 
                 frame_name = str(fnames[frame_idx])
                 if frame_name.isdigit():
                     frame_name = f"{int(frame_name):06d}"
+                
                 for person_idx in range(n_persons):
-                    person_dir = save_dir_aligned_meshes / f"{person_idx:02d}"
-                    person_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = person_dir / f"{frame_name}.obj"
 
+                    # -- Get per-person mesh (before alignment)
                     mesh = meshes_for_frame.get(person_idx)
                     if mesh is None:
                         out_path.write_text("")
@@ -2829,8 +2829,19 @@ class MultiHumanTrainer:
                     if vertices.size == 0 or faces.size == 0:
                         out_path.write_text("")
                         continue
+                        
+                    # -- Saved posed per-person mesh
+                    person_dir = save_dir_posed_meshes / f"{person_idx:02d}"
+                    person_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = person_dir / f"{frame_name}.obj"
+                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
+
+                    # -- Saved aligned per-person mesh
+                    aligned_person_dir = save_dir_aligned_meshes / f"{person_idx:02d}"
+                    aligned_person_dir.mkdir(parents=True, exist_ok=True)
+                    aligned_out_path = aligned_person_dir / f"{frame_name}.obj"
                     aligned_vertices = apply_se3_to_points(T_align, vertices)
-                    trimesh.Trimesh(vertices=aligned_vertices, faces=faces, process=False).export(out_path)
+                    trimesh.Trimesh(vertices=aligned_vertices, faces=faces, process=False).export(aligned_out_path)
 
             # - Compute metrics
             v_iou = compute_volumetric_iou(
@@ -2947,7 +2958,12 @@ class MultiHumanTrainer:
         save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
         save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
         tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
-        tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()]
+        tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()] 
+        posed_meshes_exist = False # check if there are already saved meshes to speed up processing
+        if any(save_dir_posed_meshes.glob("*.obj")):
+            posed_meshes_exist = True
+            print(f"Posed meshes already exist in {save_dir_posed_meshes}, skipping mesh generation.")
+
         # - smplx
         save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
         save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
@@ -3047,12 +3063,13 @@ class MultiHumanTrainer:
                     torch.save(person_state, person_path)
 
                 # -- Posed 3dgs -> posed meshes and save to disk
-                render_func = self.renderer.forward_single_view_gsplat
-                gs_to_mesh_method = self.cfg.gs_to_mesh_method
-                meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
-                                                        tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
+                if not posed_meshes_exist:
+                    render_func = self.renderer.forward_single_view_gsplat
+                    gs_to_mesh_method = self.cfg.gs_to_mesh_method
+                    meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
+                                                            tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
 
-                pred_meshes_by_person.append(meshes_for_frame)
+                    pred_meshes_by_person.append(meshes_for_frame)
 
                 # -- SMPL-X parameters -> posed meshes
                 smplx_meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
@@ -3128,7 +3145,9 @@ class MultiHumanTrainer:
                 if merged_mesh[0].size and merged_mesh[1].size:
                     trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
 
-                # -- Save SMPL-X meshes
+
+            # - Save SMPL-X meshes
+            for frame_idx in range(num_views):
                 smplx_meshes_for_frame = pred_smplx_meshes_by_person[frame_idx]
                 for person_idx in range(n_persons):
                     person_dir = save_dir_posed_smplx_meshes / f"{person_idx:02d}"
