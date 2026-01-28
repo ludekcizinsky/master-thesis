@@ -1,0 +1,70 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+% -------- Instructions for writing the discussion section:
+% The discussion section gives an interpretation of what you have done \cite{day2006wap}:
+
+% \begin{itemize}
+ % \item \textit{What do your results mean?} Here you discuss, but you do not recapitulate results. Describe principles, relationships and generalizations shown. Also, mention inconsistencies or exceptions you found.
+ % \item \textit{How do your results relate to other's work?} Show how your work agrees or disagrees with other's work. You can rely on the information you presented in the ``related work'' section.
+ % \item \textit{What are the implications and applications of your work?} State how your methods may be applied and what implications might be. 
+% \end{itemize}
+
+% \noindent Make sure that the introduction/related work and the discussion section act as a pair, i.e. ``be sure the discussion section answers what the introduction section asked'' \cite{day2006wap}. 
+
+
+% todos:
+% - we also address the use of smplx instead of smpl limitation mentioned in multiply, however we have no metrics nor figures to back this up
+
+
+
+\newpage
+\chapter{Discussion}
+
+\paragraph{High-level takeaways.}
+Our method performs well at separating dynamic humans from the static background, and produces plausible renderings, as reflected by strong segmentation results (Table~\ref{tab:segmentation_results_hi4d}) and competitive novel view synthesis in terms of SSIM (Table~\ref{tab:nvs_results_hi4d}). At the same time, we observe clear limitations in pose accuracy (Table~\ref{tab:pose_results_hi4d}) and especially in mesh reconstruction quality (Table~\ref{tab:reconstruction_results}). We attribute the reconstruction gap in part to the fact that our 3DGS representation is optimized for rendering rather than watertight surface extraction, making the final mesh more sensitive to pose errors and to the chosen extraction procedure.
+
+\paragraph{Composability of explicit representations.}
+Beyond runtime, an advantage of our explicit 3DGS representation is composability. Since Gaussians can be rendered and optimized in a modular way, our dynamic human representation can be naturally combined with explicit methods that focus on static scene reconstruction, for example by jointly rendering a static background model together with the posed humans. In contrast, implicit scene representations such as signed distance fields often require specialized rendering and integration schemes, which can make composition with external components less straightforward.
+
+\paragraph{Efficiency and practicality.}
+A practical advantage of our pipeline is efficiency. In our implementation, preprocessing takes roughly 10 to 15 minutes per scene and training takes roughly 15 minutes per scene on a single NVIDIA V100 GPU, resulting in an end-to-end runtime of at most about half an hour per scene. In contrast, MultiPly reports optimization times on the order of days and notes that its runtime scales approximately linearly with the number of people because it optimizes an implicit signed distance field representation separately for each person \cite{multiply}. MultiPly reports runtimes on NVIDIA A100 GPUs, so the corresponding wall-clock times can be expected to increase on slower, more widely available hardware (for example, V100-class GPUs). Overall, this makes our approach an order of magnitude faster and more practical for iteration, even though it remains a multi-stage system with non-trivial dependencies and is less convenient than feed-forward methods that directly predict outputs from the input video.
+
+
+\paragraph{Role of pose.}
+We model motion through skinning weights and pose parameters obtained from a pretrained pose estimator. We chose this formulation over template-free approaches such as Shape-of-Motion (SOM) \cite{som} because it leverages strong human body priors from the parametric model, which is particularly important in monocular settings where long-term point tracking can be unreliable. However, this design also makes the overall system sensitive to pose quality: an incorrect pose places Gaussians at incorrect image locations and therefore provides an inconsistent optimization signal for the canonical 3DGS. This is consistent with the trade-off observed in Table~\ref{tab:pose_results_hi4d}, where we obtain lower vertex error and contact distance, but worse joint error and depth ordering than MultiPly. A practical next step is to add pose refinement guided by 2D keypoints (for example, ViTPose), to use a more robust pose estimator for challenging interactions and occlusions (for example, PromptHMR \cite{wang2025prompthmr}), and to jointly optimize pose during training.
+
+\paragraph{Novel view synthesis.}
+The novel view synthesis results (Table~\ref{tab:nvs_results_hi4d}) indicate that our method preserves global structure well (highest SSIM), while lagging behind MultiPly in pixel-level fidelity and perceptual similarity (PSNR and LPIPS). One likely explanation is that MultiPly's implicit representation encourages smoother view interpolation, while our explicit 3DGS can produce sharper local details that do not necessarily match the ground truth under pixel-wise metrics. In addition, silhouette accuracy plays an important role under foreground-masked evaluation, and MultiPly's stronger geometry (Table~\ref{tab:reconstruction_results}) likely leads to fewer silhouette errors in novel views. Overall, improving geometry and pose consistency is a promising direction for closing the gap in PSNR and LPIPS while retaining strong structural similarity.
+
+\paragraph{Segmentation as an enabler.}
+Accurate masks are essential in our pipeline because segmentation errors can leak background appearance into the dynamic human model and can introduce spurious geometry during mesh extraction. Given the strong segmentation scores on Hi4D (Table~\ref{tab:segmentation_results_hi4d}), segmentation is unlikely to be the main bottleneck compared to pose and reconstruction. That said, small boundary errors can still affect rendering quality and surface metrics, especially in challenging interaction regions such as hands.
+
+\paragraph{Role of DiFix.}
+Qualitatively, DiFix improves local appearance and reduces low-level rendering artifacts, but it does not reliably correct high-level geometric errors such as inaccurate silhouettes or missing limbs. This is aligned with its role as an image refinement model rather than a geometry estimator. One possible direction is to explore refinement strategies that are better aligned with human-centric failure modes, either by adapting the refinement model or by changing the supervision so that silhouette and depth consistency are emphasized. In addition, our current view synthesis procedure uses a fixed heuristic for selecting reference views at the same timestamp and typically chooses the temporally preceding camera, which can be suboptimal when key regions (for example, the face) are not visible. Improving reference selection based on visibility or confidence signals is a concrete avenue to make the pseudo ground truth supervision more reliable.
+
+\paragraph{LHM initialization.}
+The canonical initialization from LHM strongly influences downstream training because it provides the starting point for canonical Gaussians and also affects the quality of DiFix-refined supervision. A practical improvement is to use multiple candidate frames for initialization and select those with better visibility of informative regions (for example, the face or hands), and to explore ways to merge multiple LHM predictions into a more robust canonical representation. Better initialization would reduce the burden on refinement and could improve both reconstruction (Table~\ref{tab:reconstruction_results}) and view synthesis (Table~\ref{tab:nvs_results_hi4d}).
+
+\paragraph{Towards feed-forward models.}
+Feed-forward models that directly infer scene representations from video are the most attractive long-term direction, but training them typically requires large-scale, high-quality supervision. In practice, such supervision is difficult to obtain from real-world data for multi-person dynamic scenes, and simulation can be limited in visual diversity and realism. In this context, an efficient pipeline like ours can act as a supervision generator: it can produce reasonably consistent pose, masks, and renderable scene representations at a practical runtime, which could enable scaling to larger datasets and provide training targets for future feed-forward approaches.
+
+
+\section{Limitations}
+\paragraph{Multi-stage preprocessing and brittleness.}
+Our pipeline relies on several pretrained components (Human3R for cameras and SMPL-X, SAM3 for instance masks, and LHM for canonical initialization). Failures in any of these stages can propagate to training and are not always recoverable by subsequent optimization. Common failure modes include identity swaps in crowded interactions, missed or fragmented masks under occlusions, and incorrect poses under severe self-contact. As a result, the method currently benefits from manual inspection of preprocessing outputs before launching training.
+
+\paragraph{Sensitivity to pose and camera errors.}
+We keep cameras and body parameters fixed during training. This makes the optimization stable and efficient, but also means that residual errors in pose or camera estimation directly bias the learned canonical representation. In particular, inaccurate poses can lead to incorrect placement of Gaussians and therefore inconsistent supervision, which affects both reconstruction quality and novel view synthesis.
+
+\paragraph{Mesh extraction from 3DGS.}
+Our representation is an explicit 3DGS optimized for rendering rather than for producing watertight surfaces. Meshes obtained by extracting an isosurface from a Gaussian density field are only an approximation and can be sensitive to thresholding, noise, and view-dependent artifacts. This limits the reliability of geometry metrics and partially explains the gap to methods that directly optimize an implicit surface representation.
+
+\paragraph{Input assumptions and scene scope.}
+We assume RGB-only input without severe motion blur and without persistent occlusions by large objects. We focus on reconstructing dynamic humans and do not aim to reconstruct dynamic non-human objects, such as handheld props. In such cases, appearance and geometry can be absorbed incorrectly into the human model or omitted entirely. Our experiments cover short sequences (up to about 10 seconds), and we treat longer videos as outside the validated scope of this work.
+
+\paragraph{Runtime and usability.}
+Although the end-to-end runtime is on the order of minutes rather than days, the method is still non-trivial to run. It depends on multiple external models and environments, and the overall system is more suitable for advanced users than fully feed-forward alternatives. Improving robustness, packaging, and automation of preprocessing checks are necessary steps for broader usability.
