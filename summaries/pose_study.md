@@ -1,5 +1,8 @@
 ## Pose ablation plan (config-only, train.yaml)
 
+We first fix the novel-view synthesis pipeline to the best configuration found in the NVS ablations (DiFix refinement with the previous camera as source), and then vary pose-tuning components. This keeps the NVS method constant so any changes in NVS can be attributed to improved pose rather than pipeline changes.
+We also hypothesize that improved pose should translate into improved NVS quality, so we will report both pose metrics (MPJPE/MVE/PCDR) and NVS metrics (PSNR/SSIM/LPIPS) for each experiment.
+
 This plan is structured to mirror the thesis narrative:
 1) establish a naive baseline that **does not** use interpenetration, depth-order, or confidence-guided optimization,  
 2) add each component **one at a time**,  
@@ -10,17 +13,22 @@ This plan is structured to mirror the thesis narrative:
 ### A) Naive baseline (no interpenetration, no depth-order, no confidence guidance)
 **Hypothesis A:** Even without additional constraints, pose tuning should improve over initial estimates when trained on monocular RGB + masks + depth.  
 **Expected outcome + metric:** MPJPE ↓, MVE ↓ (primary); PCDR ↑ (secondary).  
-**Config:**  
+**Baseline Config:**  
 - `enable_alternate_opt=false`  
 - `loss_weights.interpenetration=0.0`  
 - `loss_weights.depth_order=0.0`  
-- Suggested stable core knobs: `pose_tuning.lr=2e-4`, `lr=2e-4`, `loss_weights.sil=2.0`, `loss_weights.depth=0.5`  
+- `pose_tuning.lr=2e-4`
+- `lr=2e-4`
+- `loss_weights.sil=2.0`
+- `loss_weights.depth=0.5`  
 
-**Optional stability knobs for A (only if needed):**  
-- `pose_tuning.reg_w`: `{1e-5, 1e-4, 3e-4}`  
-- `grad_clip`: `{0.05, 0.1, 0.2}`  
+**Parameters and ranges covered by the scheduled experiments (Phase A):**  
 - `loss_weights.rgb`: `{10.0, 20.0, 30.0}`  
-- `loss_weights.ssim`: `{0.2, 0.4, 0.8}`
+- `loss_weights.ssim`: `{0.2, 0.4, 0.8}`  
+- `regularization.acap_margin`: `{0.03, 0.05}` (expanded beyond the default 0.01)  
+- `lr` (3DGS): `{5e-5, 1e-4, 2e-4}`  
+- `pose_tuning.lr`: `{1e-4, 1.5e-4, 2e-4}`  
+
 
 ---
 
