@@ -111,43 +111,34 @@ Use `pose_tuning.params` variants (all config-only):
 | 11 | v972_A11_poseLR1e4 | 20.1000 | 0.9250 | 0.0862 | ok |
 | 12 | v973_A11_poseLR15e4 | 20.1000 | 0.9260 | 0.0857 | ok |
 | 13 | v974_A11_poseLR2e4 | 20.1000 | 0.9250 | 0.0858 | ok |
-| 14 | v967_A9_acapM03 | 20.0000 | 0.9250 | 0.0818 | ok |
-| 15 | v968_A9_acapM05 | 19.9000 | 0.9250 | 0.0800 | ok |
+| 14 | v975_A0b_baseline_combo | 20.1000 | 0.9260 | 0.0809 | ok |
+| 15 | v967_A9_acapM03 | 20.0000 | 0.9250 | 0.0818 | ok |
+| 16 | v968_A9_acapM05 | 19.9000 | 0.9250 | 0.0800 | ok |
 
 #### Pose (SMPL-X, Hi4D avg across scenes, sorted by MPJPE)
 | Rank | Exp | MPJPE_mm | MVE_mm | PCDR | Status |
 |---:|:---|---:|---:|---:|:---|
 | 1 | v963_A3_rgb30 | 77.3154 | 63.6937 | 0.6113 | ok |
-| 2 | v966_A4_ssim08 | 77.4432 | 63.7891 | 0.6153 | ok |
-| 3 | v962_A3_rgb20 | 77.4816 | 63.8327 | 0.6096 | ok |
-| 4 | v969_A10_lr5e5 | 77.4925 | 63.8471 | 0.6153 | ok |
-| 5 | v965_A4_ssim04 | 77.4990 | 63.8509 | 0.6096 | ok |
-| 6 | v967_A9_acapM03 | 77.5001 | 63.8537 | 0.6096 | ok |
-| 7 | v971_A10_lr2e4 | 77.5023 | 63.8526 | 0.6096 | ok |
-| 8 | v970_A10_lr1e4 | 77.5044 | 63.8567 | 0.6133 | ok |
-| 9 | v974_A11_poseLR2e4 | 77.5060 | 63.8556 | 0.6153 | ok |
-| 10 | v960_A0_baseline | 77.5081 | 63.8628 | 0.6116 | ok |
-| 11 | v968_A9_acapM05 | 77.5126 | 63.8689 | 0.6113 | ok |
-| 12 | v973_A11_poseLR15e4 | 77.5396 | 63.6046 | 0.6109 | ok |
-| 13 | v964_A4_ssim02 | 77.5404 | 63.8957 | 0.6116 | ok |
-| 14 | v972_A11_poseLR1e4 | 77.7286 | 63.5130 | 0.6103 | ok |
-| 15 | v961_A3_rgb10 | 77.9382 | 64.2321 | 0.6133 | ok |
+| 2 | v975_A0b_baseline_combo | 77.4410 | 63.7939 | 0.6133 | ok |
+| 3 | v966_A4_ssim08 | 77.4432 | 63.7891 | 0.6153 | ok |
+| 4 | v962_A3_rgb20 | 77.4816 | 63.8327 | 0.6096 | ok |
+| 5 | v969_A10_lr5e5 | 77.4925 | 63.8471 | 0.6153 | ok |
+| 6 | v965_A4_ssim04 | 77.4990 | 63.8509 | 0.6096 | ok |
+| 7 | v967_A9_acapM03 | 77.5001 | 63.8537 | 0.6096 | ok |
+| 8 | v971_A10_lr2e4 | 77.5023 | 63.8526 | 0.6096 | ok |
+| 9 | v970_A10_lr1e4 | 77.5044 | 63.8567 | 0.6133 | ok |
+| 10 | v974_A11_poseLR2e4 | 77.5060 | 63.8556 | 0.6153 | ok |
+| 11 | v960_A0_baseline | 77.5081 | 63.8628 | 0.6116 | ok |
+| 12 | v968_A9_acapM05 | 77.5126 | 63.8689 | 0.6113 | ok |
+| 13 | v973_A11_poseLR15e4 | 77.5396 | 63.6046 | 0.6109 | ok |
+| 14 | v964_A4_ssim02 | 77.5404 | 63.8957 | 0.6116 | ok |
+| 15 | v972_A11_poseLR1e4 | 77.7286 | 63.5130 | 0.6103 | ok |
+| 16 | v961_A3_rgb10 | 77.9382 | 64.2321 | 0.6133 | ok |
 
-**Baseline selection for downstream ablations (joint NVS + pose):**
-- We pick settings that are strong on **both** NVS (PSNR/LPIPS) and pose (MPJPE/MVE), not just one side.
-- `v969_A10_lr5e5` is the **top PSNR** and also ranks within the top pose performers → strong joint candidate.
-- `v966_A4_ssim08` is top‑2 for pose and has competitive NVS → supports higher SSIM weight without NVS penalty.
-- `v963_A3_rgb30` is best MPJPE but doesn’t improve NVS vs baseline → keep as a pose‑only reference, not the joint baseline.
-- `pose_tuning.lr` sweep shows no improvement over 2e-4 → keep `pose_tuning.lr=2e-4`.
-- `acap_margin=0.03` improves LPIPS and is neutral on pose → safe for joint baseline.
+**Section A recommendation update (baseline-combo verification):**
+- `v975_A0b_baseline_combo` is **jointly strong**: MPJPE **77.4410** (better than baseline 77.5081) and PSNR **20.1** (ties top cluster), with improved LPIPS **0.0809**.
+- This beats or matches the top single‑knob candidates on the joint objective without sacrificing pose, so we **accept the combo as the new baseline** for downstream ablations.
 
-**Recommended baseline knobs to carry forward (joint objective):**
-- `lr=5e-5` (3DGS LR)
-- `loss_weights.ssim=0.8`
-- `regularization.acap_margin=0.03`
-- keep: `pose_tuning.lr=2e-4`, `loss_weights.rgb=20.0` (default), `loss_weights.sil=2.0`, `loss_weights.depth=0.5`, `enable_alternate_opt=false`
-
-**Pose‑only reference (for comparison):**
-- `loss_weights.rgb=30.0` (v963_A3_rgb30)
-
-If you want the most conservative narrative, you can keep `v960_A0_baseline` as the primary reference and treat the joint baseline above as an informed upgrade.
+**Baseline to carry forward:**
+- `lr=5e-5`, `loss_weights.ssim=0.8`, `regularization.acap_margin=0.03`
+- keep: `pose_tuning.lr=2e-4`, `loss_weights.rgb=20.0`, `loss_weights.sil=2.0`, `loss_weights.depth=0.5`, `enable_alternate_opt=false`

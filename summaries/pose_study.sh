@@ -168,3 +168,13 @@ python /home/cizinsky/master-thesis/schedule.py \
     lr=2e-4 loss_weights.sil=2.0 loss_weights.depth=0.5 \
     pose_tuning.lr=2e-4
 
+# A0b: baseline-combo verification (joint NVS + pose knobs)
+exp_name="v975_A0b_baseline_combo"
+python /home/cizinsky/master-thesis/schedule.py \
+    --exp_name $exp_name \
+    --job_name_prefix $exp_name \
+    --scene_name_includes "hi4d" \
+    --overrides enable_alternate_opt=false difix.trn_enable=true \
+    loss_weights.interpenetration=0.0 loss_weights.depth_order=0.0 \
+    pose_tuning.lr=2e-4 lr=5e-5 loss_weights.sil=2.0 loss_weights.depth=0.5 \
+    loss_weights.ssim=0.8 regularization.acap_margin=0.03

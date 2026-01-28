@@ -7,7 +7,7 @@ output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
 input_data_dir: /scratch/izar/cizinsky/thesis/input_data
 epochs: 30
 batch_size: 5
-lr: 1e-4
+lr: 5e-5 # v975 baseline combo
 weight_decay: 5e-4
 grad_clip: 0.1
 sample_every: 5
@@ -75,7 +75,7 @@ wandb:
 loss_weights:
   rgb: 20.0
   sil: 4.0
-  ssim: 0.4
+  ssim: 0.8 # v975 baseline combo
   depth: 0.0 
   depth_order: 0.0
   interpenetration: 0.0
@@ -101,7 +101,7 @@ gs_tuning:
 regularization:
   asap_w: 200.0
   acap_w: 200.0
-  acap_margin: 0.01 # meters (1 cm)
+  acap_margin: 0.03 # meters (3 cm), v975 baseline combo
 
 eval_pretrain: true
 nvs_eval:
