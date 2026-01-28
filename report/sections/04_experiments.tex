@@ -47,9 +47,6 @@ For this evaluation, we extract meshes from the 3DGS representation using marchi
 
 For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size $0.02$ with padding $0.05$ around the joint bounds of predicted and ground truth meshes.
 
-\paragraph{Instance segmentation.}
-Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
-
 \subsection{Implementation Details}
 Unless stated otherwise, we optimize only the 3DGS parameters and keep SMPL-X parameters and camera parameters fixed. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views. Each person is represented by $N=40{,}000$ Gaussians.
 We optimize the 3DGS parameters using AdamW with learning rate $10^{-4}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
@@ -140,36 +137,7 @@ We compare our pose estimation results to MultiPly \cite{multiply} and include f
 Figure \ref{fig:qual_pose_comp} illustrates that, compared to MultiPly, our method can exhibit a small misalignment between the RGB frame and the rendered SMPL-X mesh. We attribute this misalignment primarily to the lack of an explicit 2D keypoint-based pose refinement stage (e.g., ViTPose) as used in MultiPly. Nevertheless, the bottom-row example also highlights a practical advantage of using SMPL-X rather than SMPL: the subject's right-hand articulation is better captured by our SMPL-X-based predictions, whereas MultiPly's SMPL-based fit results in a more neutral hand pose.
 
 \subsection{Instance Segmentation Comparisons}
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_segment_comp.drawio.png}
-    \caption{\textbf{Qualitative instance segmentation comparison}. We adapt the figure from MultiPly \cite{multiply} and added our segmentation results for comparison on chosen scenes from Hi4D. For each method, we show RGB frame overlaid with predicted instance masks.}
-    \label{fig:qual_instance_segm_comp}  
-\end{figure}
-
-\begin{table}[!ht]
-  \centering
-  \small
-  \setlength{\tabcolsep}{7pt}
-  \begin{tabular}{l
-      S[table-format=1.3]
-      S[table-format=1.3]
-      S[table-format=1.3]}
-    \toprule
-    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
-    \midrule
-    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
-    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
-    Ours (using SAM3) & \textbf{0.974} & 0.982 & 0.987 \\
-    \bottomrule
-  \end{tabular}
-  \caption{\textbf{Human instance segmentation results on Hi4D.} Best results are in bold.}
-  \label{tab:segmentation_results_hi4d}
-\end{table}
-
-We compare our mask segmentation quality to MultiPly, which reports results for both its initial masks from SAM1 \cite{sam1} and its progressively refined masks during training. In contrast, we do not refine masks during training and rely on the initial masks from SAM3 \cite{carion2025sam3segmentconcepts}. All methods achieve strong scores, with our method obtaining the best IoU, while MultiPly's progressive masking achieves slightly higher recall and F1. This suggests different error modes: SAM3 tends to produce cleaner average overlap, while progressive refinement reduces missed foreground pixels. Overall, segmentation quality is strong and is unlikely to be the main bottleneck, although small boundary errors can still affect downstream rendering and reconstruction.
-
-Figure \ref{fig:qual_instance_segm_comp} shows representative failure cases of our SAM3-based instance segmentation compared to MultiPly. In the top row, our method assigns part of the orange person's left arm to the blue person; in the bottom row, part of the orange person's right hand is similarly assigned to the blue person. These errors are primarily instance-level mix-ups at contact or occlusion boundaries. In practice, they are less critical for our main objective of separating dynamic humans from the static background, which both methods achieve reliably.
+Qualitative and quantitative instance segmentation comparisons are included in Appendix~\ref{sec:appendix_segmentation}.
 
 \subsection{Novel View Synthesis Comparisons}
 
@@ -292,5 +260,4 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
 One motivation for introducing DiFix-based novel training view synthesis is that optimizing a 3DGS model from monocular video requires multi-view supervision. Without additional views, we expect poor novel view synthesis performance, even when starting from an LHM initialization, because subsequent monocular fine-tuning can overfit to the single source view. To test this assumption, we ablate the number of novel training cameras used during training. We consider 0, 2, 4, and 7 novel training cameras, where 0 means training uses only the source camera. All experiments are initialized from LHM; when novel cameras are used, their training images are synthesized and refined with DiFix. Figure~\ref{fig:n_trn_cameras_ablation_setup} shows the camera distribution used in this ablation.
 
 Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
-
 
