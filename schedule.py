@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List
+import base64
 import os
 import subprocess
 import sys
@@ -67,6 +68,7 @@ class ScheduleConfig:
     scene_name_includes: str | None = None
     dry_run: bool = False
     submit_sleep_s: float = 2.0
+    overrides: List[str] = field(default_factory=list)
     scenes: List[Scene] = field(
         default_factory=lambda: [
             Scene(
@@ -187,6 +189,10 @@ def submit_scene(cfg: ScheduleConfig, scene: Scene) -> None:
         f"TEST_MESHES_SCENE_DIR={scene.test_meshes_scene_dir},"
         f"CAMERAS_SCENE_DIR={scene.cameras_scene_dir}"
     )
+    if cfg.overrides:
+        overrides_blob = "\n".join(cfg.overrides)
+        overrides_b64 = base64.b64encode(overrides_blob.encode("utf-8")).decode("ascii")
+        export_env = f"{export_env},HYDRA_OVERRIDES_B64={overrides_b64}"
     cmd = [
         "sbatch",
         "--job-name",

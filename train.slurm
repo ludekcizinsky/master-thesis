@@ -30,6 +30,7 @@ smpl_params_scene_dir="${SMPL_PARAMS_SCENE_DIR:-}"
 test_smplx_params_scene_dir="${TEST_SMPLX_PARAMS_SCENE_DIR:-}"
 test_meshes_scene_dir="${TEST_MESHES_SCENE_DIR:-}"
 cameras_scene_dir="${CAMERAS_SCENE_DIR:-}"
+hydra_overrides_b64="${HYDRA_OVERRIDES_B64:-}"
 
 if [[ -z "$seq_name" || -z "$source_cam_id" || -z "$root_gt_dir_path" ]]; then
   echo "Missing required vars. Provide SEQ_NAME, SOURCE_CAM_ID, ROOT_GT_DIR_PATH via sbatch --export."
@@ -73,6 +74,14 @@ if [[ -n "$test_meshes_scene_dir" ]]; then
 fi
 if [[ -n "$cameras_scene_dir" ]]; then
   extra_args+=("cameras_scene_dir=$cameras_scene_dir")
+fi
+if [[ -n "$hydra_overrides_b64" ]]; then
+  decoded_overrides="$(echo "$hydra_overrides_b64" | base64 --decode)"
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      extra_args+=("$line")
+    fi
+  done <<< "$decoded_overrides"
 fi
 
 python training/simple_multi_human_trainer.py \
