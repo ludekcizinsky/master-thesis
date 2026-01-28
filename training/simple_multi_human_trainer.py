@@ -1133,7 +1133,7 @@ class MultiHumanTrainer:
         agg_mode = None if self.conf_tr_aggregation is None else str(self.conf_tr_aggregation).lower()
         if agg_mode == "median":
             dynamic_threshold = float(np.median(np.asarray(avg_ious, dtype=np.float32)))
-        elif agg_mode in ("null", "none", ""):
+        elif agg_mode in (None, "null", "none", ""):
             dynamic_threshold = float(self.confidence_threshold)
         else:
             raise ValueError(f"Unsupported conf_tr_aggregation: {self.conf_tr_aggregation}")
