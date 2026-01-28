@@ -1,0 +1,18 @@
+%% ----------------------------------------------------------------------------
+% CVG SA/MA thesis template
+%
+% Created 03/08/2024 by Tobias Fischer
+%% ----------------------------------------------------------------------------
+
+\newpage
+\vspace{3cm}
+
+\chapter*{Abstract}
+
+We live and interact with a dynamic 3D world, yet we primarily capture it through 2D cameras that produce large collections of images and videos. This raises a central question: \emph{How can we leverage abundant 2D visual data to understand and reconstruct the 3D world in digital form?} Accurate reconstruction of dynamic 3D scenes has many applications, from embodied intelligence to new ways of creating and interacting with content. This thesis explores this question by building on recent advances in feed-forward models for 3D reconstruction from images and videos, together with progress in neural rendering.
+
+Specifically, we propose a novel hybrid framework for reconstructing human-centric dynamic 3D scenes from a single monocular video. Our key insight is that modern feed-forward methods are fast but can be inaccurate, while optimization-based neural rendering can achieve highly realistic and precise reconstructions under suitable capture conditions, albeit at higher computational cost. We therefore use a feed-forward model to obtain a coarse initial reconstruction, which we then refine with our neural rendering approach. To enable dense multi-view supervision from a single input video, we synthesize additional novel-view training videos using diffusion-model priors, extending a recent diffusion-based method designed for static scenes to the dynamic setting. As a result, our method produces high-quality dynamic 3D reconstructions in a fraction of the time required by prior state-of-the-art methods, while achieving comparable or better quality.
+
+We evaluate our approach on four challenging tasks. First, we assess novel view synthesis quality to demonstrate free-viewpoint rendering. Second, we evaluate segmentation performance to show effective disentanglement of dynamic and static scene components. Third, we evaluate pose estimation to demonstrate realistic reconstruction of human motion and geometry. Finally, leveraging our 3DGS-based representation, we show that our method can also extract human meshes, although with lower quality than prior mesh-focused approaches. Overall, our method achieves comparable reconstruction quality to previous state-of-the-art methods while being significantly faster: tens of minutes instead of hours or days.
+
+We believe our work is an important step towards democratizing dynamic 3D reconstruction from monocular videos, making it more accessible and practical for a wider range of applications. We hope this framework will inspire further research and enable new applications in computer vision and graphics.
