@@ -376,6 +376,7 @@ class MultiHumanTrainer:
         self.enable_alternate_opt = bool(cfg.get("enable_alternate_opt", False))
         self.confidence_threshold = float(cfg.get("confidence_threshold", 0.8))
         self.confidence_update_every = int(cfg.get("confidence_update_every", 5))
+        self.conf_tr_aggregation = cfg.get("conf_tr_aggregation", None)
         self.reliable_frame_names: Optional[set] = None
         self.unreliable_frame_names: Optional[set] = None
         self.frame_quality_avg_iou: Optional[float] = None
@@ -1125,13 +1126,24 @@ class MultiHumanTrainer:
 
                 avg_iou = float(sum(per_person_iou) / len(per_person_iou))
                 avg_ious.append(avg_iou)
-                if avg_iou >= self.confidence_threshold:
-                    reliable.add(frame_name)
-                else:
-                    unreliable.add(frame_name)
 
         if not avg_ious:
             raise RuntimeError("No frames available for reliability computation.")
+
+        agg_mode = None if self.conf_tr_aggregation is None else str(self.conf_tr_aggregation).lower()
+        if agg_mode == "median":
+            dynamic_threshold = float(np.median(np.asarray(avg_ious, dtype=np.float32)))
+        elif agg_mode in ("null", "none", ""):
+            dynamic_threshold = float(self.confidence_threshold)
+        else:
+            raise ValueError(f"Unsupported conf_tr_aggregation: {self.conf_tr_aggregation}")
+
+        for idx, avg_iou in enumerate(avg_ious):
+            frame_name = str(src_dataset[idx]["frame_name"])
+            if avg_iou >= dynamic_threshold:
+                reliable.add(frame_name)
+            else:
+                unreliable.add(frame_name)
 
         self.reliable_frame_names = reliable
         self.unreliable_frame_names = unreliable
@@ -1140,6 +1152,7 @@ class MultiHumanTrainer:
         print(
             f"[Frame Quality] Epoch {epoch + 1}: "
             f"avg_iou={self.frame_quality_avg_iou:.4f}, "
+            f"thr={dynamic_threshold:.4f}, "
             f"reliable={self.frame_quality_reliable_ratio:.2f}% "
             f"({len(reliable)}/{len(avg_ious)})"
         )
@@ -1149,6 +1162,7 @@ class MultiHumanTrainer:
                 {
                     "frame_quality/avg_iou": self.frame_quality_avg_iou,
                     "frame_quality/reliable_ratio": self.frame_quality_reliable_ratio,
+                    "frame_quality/threshold": dynamic_threshold,
                     "epoch": epoch + 1,
                 }
             )

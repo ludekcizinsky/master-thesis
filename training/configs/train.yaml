@@ -37,6 +37,7 @@ use_depth: true
 enable_alternate_opt: false
 confidence_threshold: 0.75 # confidence threshold for IoU to consider a frame reliable
 confidence_update_every: 5 # how often (in epochs) to update frame reliability
+conf_tr_aggregation: null # null = static threshold; "median" = dynamic threshold via median avg IoU
 
 # test
 test_cameras_scene_dir: ${root_gt_dir_path}
