@@ -75,9 +75,9 @@ wandb:
 
 loss_weights:
   rgb: 20.0
-  sil: 4.0
+  sil: 2.0
   ssim: 0.8 # v975 baseline combo
-  depth: 0.0 
+  depth: 0.5 
   depth_order: 0.0
   interpenetration: 0.0
 
@@ -89,7 +89,7 @@ interpenetration_max_points: 2000
 pose_tuning:
   enable: true
   params: ["root_pose", "body_pose", "trans", "betas"]
-  lr: 1e-4
+  lr: 2e-4
   reg_w: 1e-4
   start_epoch: 0
   end_epoch: 14

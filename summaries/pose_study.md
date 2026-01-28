@@ -142,3 +142,64 @@ Use `pose_tuning.params` variants (all config-only):
 **Baseline to carry forward:**
 - `lr=5e-5`, `loss_weights.ssim=0.8`, `regularization.acap_margin=0.03`
 - keep: `pose_tuning.lr=2e-4`, `loss_weights.rgb=20.0`, `loss_weights.sil=2.0`, `loss_weights.depth=0.5`, `enable_alternate_opt=false`
+
+### Sections B, C, D, E results
+
+**Baseline reference (v975_A0b_baseline_combo):**
+| Exp | PSNR | SSIM | LPIPS | MPJPE_mm | MVE_mm | PCDR |
+|:---|---:|---:|---:|---:|---:|---:|
+| v975_A0b_baseline_combo | 20.1000 | 0.9260 | 0.0809 | 77.4410 | 63.7939 | 0.6133 |
+
+#### B) Interpenetration loss
+| Exp | PSNR | SSIM | LPIPS | MPJPE_mm | MVE_mm | PCDR |
+|:---|---:|---:|---:|---:|---:|---:|
+| v976_B_inter01 | 20.1000 | 0.9260 | 0.0809 | 77.5931 | 63.4099 | 0.6123 |
+| v977_B_inter02 | 20.1000 | 0.9260 | 0.0810 | 77.6678 | 63.4741 | 0.6083 |
+| v978_B_inter04 | 20.1000 | 0.9260 | 0.0809 | 77.7702 | 63.5668 | 0.6083 |
+
+**Interpretation (B):**
+- Best pose (MPJPE): `v976_B_inter01` (77.5931 vs baseline 77.4410).
+- Best NVS PSNR: `v976_B_inter01` (20.1000 vs baseline 20.1000).
+- Best LPIPS: `v976_B_inter01` (0.0809 vs baseline 0.0809).
+- **Net effect:** no improvement over the v975 baseline; keep this component off for now.
+
+#### C) Depth-order loss
+| Exp | PSNR | SSIM | LPIPS | MPJPE_mm | MVE_mm | PCDR |
+|:---|---:|---:|---:|---:|---:|---:|
+| v979_C_dorder01 | 20.0000 | 0.9250 | 0.0818 | 77.9943 | 63.6916 | 0.6099 |
+| v980_C_dorder02 | 20.0000 | 0.9250 | 0.0818 | 78.3018 | 63.9591 | 0.6099 |
+| v981_C_dorder04 | 20.0000 | 0.9240 | 0.0819 | 78.5956 | 64.2230 | 0.6113 |
+
+**Interpretation (C):**
+- Best pose (MPJPE): `v979_C_dorder01` (77.9943 vs baseline 77.4410).
+- Best NVS PSNR: `v979_C_dorder01` (20.0000 vs baseline 20.1000).
+- Best LPIPS: `v979_C_dorder01` (0.0818 vs baseline 0.0809).
+- **Net effect:** no improvement over the v975 baseline; keep this component off for now.
+
+#### D) Confidence-guided optimization
+| Exp | PSNR | SSIM | LPIPS | MPJPE_mm | MVE_mm | PCDR |
+|:---|---:|---:|---:|---:|---:|---:|
+| v982_D_conf075_fix | 20.1000 | 0.9260 | 0.0808 | 77.6290 | 63.4303 | 0.6123 |
+| v983_D_conf085_fix | 20.1000 | 0.9260 | 0.0803 | 77.6801 | 63.4801 | 0.6123 |
+| v984_D_conf_median | 20.1000 | 0.9260 | 0.0810 | 77.6414 | 63.4455 | 0.6123 |
+
+**Interpretation (D):**
+- Best pose (MPJPE): `v982_D_conf075_fix` (77.6290 vs baseline 77.4410).
+- Best NVS PSNR: `v982_D_conf075_fix` (20.1000 vs baseline 20.1000).
+- Best LPIPS: `v983_D_conf085_fix` (0.0803 vs baseline 0.0809).
+- **Net effect:** slight LPIPS gain but worse pose; not a clear win over baseline.
+
+#### E) SMPL-X params ablation
+| Exp | PSNR | SSIM | LPIPS | MPJPE_mm | MVE_mm | PCDR |
+|:---|---:|---:|---:|---:|---:|---:|
+| v985_E_params_nobetas | 20.1000 | 0.9260 | 0.0811 | 77.6851 | 63.4863 | 0.6123 |
+| v986_E_params_addhands | 20.1000 | 0.9260 | 0.0809 | 77.5986 | 63.4009 | 0.6123 |
+| v987_E_params_fullpose_nobetas | 20.1000 | 0.9260 | 0.0810 | 77.6383 | 63.4802 | 0.6123 |
+
+**Interpretation (E):**
+- Best pose (MPJPE): `v986_E_params_addhands` (77.5986 vs baseline 77.4410).
+- Best NVS PSNR: `v985_E_params_nobetas` (20.1000 vs baseline 20.1000).
+- Best LPIPS: `v986_E_params_addhands` (0.0809 vs baseline 0.0809).
+- **Net effect:** no improvement over the v975 baseline; keep this component off for now.
+
+**Overall B–E takeaway:** none of the tested additions beat the v975 baseline on the joint objective (pose + NVS). Keep the v975 defaults and only revisit these components if we expand to different scenes or adjust loss scaling.
