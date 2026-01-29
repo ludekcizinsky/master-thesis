@@ -334,3 +334,66 @@ Across Sections B to E, we do not observe a consistent improvement over the base
 
 
 \paragraph{Interpretation of the Novel View Synthesis Results.} Overall, pose optimization does not lead to a consistent improvement in novel view synthesis quality compared to no pose tuning. The largest gain is in LPIPS, suggesting that improved alignment during training can translate into perceptually better renderings (e.g., sharper appearance). Following MultiPly's evaluation protocol, we use the ground truth pose to synthesize novel views for evaluation. Therefore, improved pose estimates can only benefit NVS indirectly through better supervision during training, not through the evaluation-time rendering itself. This is illustrated in Figure~\ref{fig:qual_tune_and_notune_pose}, where pose tuning improves the alignment between the rendered 3DGS and the GT image. Better alignment during training can help the model learn more accurate color and density values, which can improve NVS even when evaluated with GT poses.
+
+
+\subsection{Ablation Study: 3DGS to Mesh Conversion}
+
+Converting the optimized 3DGS representation to a mesh is a crucial step for geometry evaluation, yet it is not trivial. We use the training pipeline outlined in the Method section for the mesh extraction experiments, and explore two strategies for converting the 3DGS to a mesh in this ablation study: (i) Marching Cubes (MC) \cite{marching_cubes} and (ii) Truncated Sign Distance Field Fusion of the rendered depth maps as implemented in Open3D \cite{open3d}.  
+
+
+\paragraph{3D Voxel Grid Definition from 3DGS.} In order to use MC, we first need to convert the 3DGS to a 3D voxel grid with occupancy values for each point in the 3D grid. To define the occupancy value for each of these points, we need to first compute contribution of each Gaussian to the point as follows:
+
+\begin{equation}
+c_i(\mathbf{x}) =
+\begin{cases}
+w_i \exp\left(-\dfrac{\lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2^2}{2\sigma_i^2}\right), & \text{if } \lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2 \le \tau \sigma_i, \\
+0, & \text{otherwise},
+\end{cases}
+\end{equation}
+
+\noindent where $\mathbf{x}$ is a voxel-grid point, $\boldsymbol{\mu}_i$ is the Gaussian center, $w_i \in [0,1]$ is its opacity weight, $\sigma_i$ is its (isotropic) scale, and $\tau$ is a truncation factor (default $\tau=2.5$). The resulting occupancy (density) field is then computed by summing contributions of all Gaussians:
+
+\begin{equation}
+\rho(\mathbf{x}) = \sum_i c_i(\mathbf{x}).
+\end{equation}
+
+\noindent We repeat this for all voxel-grid points to obtain the full occupancy grid, and then apply MC with a fixed iso-surface value (default $0.07$) to extract the mesh.
+
+\begin{table}[!ht]
+  \centering
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \sisetup{detect-weight=true,detect-family=true}
+  \begin{tabular}{ll
+      S[table-format=1.4]
+      S[table-format=1.4]
+      S[table-format=1.4]
+      S[table-format=1.4]}
+    \toprule
+    \textbf{Dataset} & \textbf{Method} &
+    \multicolumn{1}{c}{\textbf{V-IoU} $\uparrow$} &
+    \multicolumn{1}{c}{\textbf{C-$\ell_2$} $\downarrow$} &
+    \multicolumn{1}{c}{\textbf{P2S} $\downarrow$} &
+    \multicolumn{1}{c}{\textbf{NC} $\uparrow$} \\
+    \midrule
+    Hi4D & TSDF & 0.5938 & {\bfseries 4.3276} & {\bfseries 2.2454} & {\bfseries 0.7831} \\
+     & MC & {\bfseries 0.6329} & 4.7074 & 2.9464 & 0.6886 \\
+    \midrule
+    MMM & TSDF & 0.3151 & {\bfseries 6.4201} & {\bfseries 3.7659} & {\bfseries 0.6717} \\
+     & MC & {\bfseries 0.4268} & 6.5439 & 3.9907 & 0.6163 \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Ablation study on 3DGS$\rightarrow$mesh conversion}. We compare TSDF fusion and Marching Cubes (MC) and report reconstruction metrics averaged across scenes. Best results per dataset and metric are highlighted in bold.}
+  \label{tab:ablation_3dgs_to_mesh}
+\end{table}
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figures/qual_3dgs_to_mesh.drawio.png}
+    \caption{\textbf{Qualitative comparison between MC and TSDF fusion based mesh extraction}. We show the extracted meshes for each method along with the ground truth mesh for reference. First row shows selected example from the Hi4D dataset, second row shows selected example from the MMM dataset. 
+    }
+    \label{fig:qual_abl_3dgs_to_mesh}  
+\end{figure}
+
+\paragraph{Interpenetration of the results.} Table \ref{tab:ablation_3dgs_to_mesh} shows a clear trend across both datasets where TSDF fusion achieves better results across all metrics except from Volumetric IoU (V-IoU), where MC performs better. Figure \ref{fig:qual_abl_3dgs_to_mesh} further supports these results quallitatively where TSDF fusion produces smooth non-blobby meshes compare to the MC results. In addition, MC also shows many holes in the extracted meshes. Last but not the least, we can also see results get consistently worse when moving from Hi4D to MMM which has more people. We hypothesise that this drop in performance is mainly due to worse pose estimation which directly affects the extracted mesh since they are based on the posed 3DGS (which depends on the SMPL-X pose). Overall, these results confirm that TSDF fusion is a better choice for converting 3DGS to mesh compared to MC which is the reason we used TSDF fusion for the reconstruction results in Table \ref{tab:reconstruction_results}.
