@@ -26,6 +26,7 @@ We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people 
 We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and \textit{dynamic} camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM: \textit{dance}, \textit{lift} and \textit{walkdance}. 
 
 \subsection{Evaluation Metrics}
+In addition to the accuracy metrics described below, we also report training speed in the Results section.
 
 \paragraph{Novel view synthesis.}
 We evaluate rendering quality using Peak-Signal-to-Noise Ratio (PSNR), Stuctural Similarity Index Measure (SSIM) (higher is better) and Learned Perceptual Image Patch Similarity (LPIPS) (lower is better) \cite{lpips}. PSNR measures the pixel-wise similarity of the reconstructed image by computing the logarithmic ratio between the maximum pixel value and the mean squared error, and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images \cite{wikipedia_ssim}. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network. And in contrast to the pixel level metrics should be aligned better with the human judgement \cite{lpips}.
@@ -210,6 +211,41 @@ Compared to MultiPly, the bottom-row example highlights a practical benefit of u
 In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a multi-view method that was adapted by MultiPly to work in a monocular setting. Under the masked, downscaled evaluation protocol described above, our method achieves the best SSIM, while MultiPly achieves the best PSNR and LPIPS. Overall, these results suggest that our novel view synthesis quality is broadly on par with MultiPly: structural similarity is slightly better for our method, LPIPS is only slightly worse, and the main difference is PSNR, which emphasizes pixel-wise differences. Taken together, the gap therefore largely boils down to pixel-level discrepancies rather than a clear difference in perceptual or structural quality.
 
 Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis comparisons. In the bottom-row example, our method preserves the head shape of the subject closer to the camera and produces sharper local details than MultiPly. This sharpening may partially explain why our PSNR is slightly lower, as PSNR is sensitive to pixel-wise differences even when images appear perceptually crisp. At the same time, MultiPly better preserves the tag on the back of the subject, which we attribute to our initialization: since LHM observes the person from essentially a single view, details that are never visible (such as a back-facing tag) may not be reconstructed reliably and therefore cannot be reinforced through backpropagation during training. Finally, in the top-row example, MultiPly exhibits greenish color artifacts that are likely caused by background pixels leaking into the foreground during progressive mask refinement. We do not observe these artifacts in our renderings, which we attribute to refining synthesized training views with DiFix, helping to suppress such mask-related color leakage.
+
+\subsection{Training Speed}
+
+\begin{table}[!ht]
+  \centering
+  \small
+  \setlength{\tabcolsep}{7pt}
+  \sisetup{detect-weight=true,detect-family=true}
+  \begin{tabular}{c
+      S[table-format=2.1]
+      S[table-format=2.1]
+      S[table-format=2.1]}
+    \toprule
+    \textbf{Input Frames} & \multicolumn{1}{c}{\textbf{DiFix [min]}} & \multicolumn{1}{c}{\textbf{Optimisation [min]}} & \multicolumn{1}{c}{\textbf{Total [min]}} \\
+    \midrule
+    50  & 5.8  & 8.5  & 14.3 \\
+    100 & 11.7 & 16.9 & 28.6 \\
+    200 & 23.3 & 33.8 & 57.1 \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Training speed breakdown} on a single NVIDIA V100 at $\approx 980\times1280$ resolution and batch size 5. \textbf{DiFix} is the time to synthesize $7$ novel cameras for $F/5$ timestamps at $5\,\text{s}$ per frame. \textbf{Optimisation} is an estimate based on $1.3\,\text{s}$ per update and our two-stage schedule (15 epochs on $F$ source frames, then 15 epochs on $8\cdot(F/5)$ training images).}
+  \label{tab:training_speed_breakdown}
+\end{table}
+
+An advantage of our 3DGS-based pipeline is training efficiency. On a single NVIDIA V100 and input resolution $\approx 980 \times 1280$ with batch size 5, a single optimization step takes $1.3\,\text{s}$. In addition, our pipeline synthesizes novel training views using DiFix. Synthesizing one novel frame takes $5\,\text{s}$. We synthesize $7$ novel cameras and use a temporally downsampled set of training timestamps (downsample factor $5$). For a monocular video with $F$ frames, this corresponds to approximately $F/5$ training timestamps per camera, i.e.
+
+\begin{equation}
+T_{\text{DiFix}} \approx 5\,\text{s} \cdot 7 \cdot \frac{F}{5}.
+\end{equation}
+
+\noindent Table~\ref{tab:training_speed_breakdown} summarizes the resulting overhead from DiFix and provides an approximate end-to-end runtime. We estimate optimization time under our two-stage training schedule: during the first 15 epochs (pose tuning), we optimize on the full monocular video (one source view, $F$ frames). During the remaining 15 epochs (3DGS optimization), we optimize on the subsampled training set with one source view and seven synthesized views at $F/5$ timestamps, i.e. $8\cdot(F/5)$ training images per epoch. We assume batch size 5 and $1.3\,\text{s}$ per optimization step.
+
+
+
+\noindent In contrast, MultiPly reports a runtime on the order of one day per person \cite{multiply}. While this comparison is not directly controlled for hardware and implementation details, it highlights that our approach can provide competitive quality at substantially lower training cost.
 
 
 \subsection{Ablation Study: Novel Training View Synthesis Components}
