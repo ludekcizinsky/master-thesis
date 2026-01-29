@@ -47,9 +47,6 @@ For this evaluation, we extract meshes from the 3DGS representation using marchi
 
 For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size $0.02$ with padding $0.05$ around the joint bounds of predicted and ground truth meshes.
 
-\paragraph{Instance segmentation.}
-Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
-
 \subsection{Implementation Details}
 Unless stated otherwise, we optimize only the 3DGS parameters and keep SMPL-X parameters and camera parameters fixed. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views. Each person is represented by $N=40{,}000$ Gaussians.
 We optimize the 3DGS parameters using AdamW with learning rate $10^{-4}$ and batch size $5$. We train for 15 epochs and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. To construct the training set, we generate 7 novel training view camera trajectories and subsample the original video frames by a factor of 5 (for example, 100 frames become 20 training timestamps).
@@ -140,36 +137,7 @@ We compare our pose estimation results to MultiPly \cite{multiply} and include f
 Figure \ref{fig:qual_pose_comp} illustrates that, compared to MultiPly, our method can exhibit a small misalignment between the RGB frame and the rendered SMPL-X mesh. We attribute this misalignment primarily to the lack of an explicit 2D keypoint-based pose refinement stage (e.g., ViTPose) as used in MultiPly. Nevertheless, the bottom-row example also highlights a practical advantage of using SMPL-X rather than SMPL: the subject's right-hand articulation is better captured by our SMPL-X-based predictions, whereas MultiPly's SMPL-based fit results in a more neutral hand pose.
 
 \subsection{Instance Segmentation Comparisons}
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_segment_comp.drawio.png}
-    \caption{\textbf{Qualitative instance segmentation comparison}. We adapt the figure from MultiPly \cite{multiply} and added our segmentation results for comparison on chosen scenes from Hi4D. For each method, we show RGB frame overlaid with predicted instance masks.}
-    \label{fig:qual_instance_segm_comp}  
-\end{figure}
-
-\begin{table}[!ht]
-  \centering
-  \small
-  \setlength{\tabcolsep}{7pt}
-  \begin{tabular}{l
-      S[table-format=1.3]
-      S[table-format=1.3]
-      S[table-format=1.3]}
-    \toprule
-    \textbf{Method} & \multicolumn{1}{c}{\textbf{IoU} $\uparrow$} & \multicolumn{1}{c}{\textbf{Recall} $\uparrow$} & \multicolumn{1}{c}{\textbf{F1} $\uparrow$} \\
-    \midrule
-    MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
-    MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
-    Ours (using SAM3) & \textbf{0.974} & 0.982 & 0.987 \\
-    \bottomrule
-  \end{tabular}
-  \caption{\textbf{Human instance segmentation results on Hi4D.} Best results are in bold.}
-  \label{tab:segmentation_results_hi4d}
-\end{table}
-
-We compare our mask segmentation quality to MultiPly, which reports results for both its initial masks from SAM1 \cite{sam1} and its progressively refined masks during training. In contrast, we do not refine masks during training and rely on the initial masks from SAM3 \cite{carion2025sam3segmentconcepts}. All methods achieve strong scores, with our method obtaining the best IoU, while MultiPly's progressive masking achieves slightly higher recall and F1. This suggests different error modes: SAM3 tends to produce cleaner average overlap, while progressive refinement reduces missed foreground pixels. Overall, segmentation quality is strong and is unlikely to be the main bottleneck, although small boundary errors can still affect downstream rendering and reconstruction.
-
-Figure \ref{fig:qual_instance_segm_comp} shows representative failure cases of our SAM3-based instance segmentation compared to MultiPly. In the top row, our method assigns part of the orange person's left arm to the blue person; in the bottom row, part of the orange person's right hand is similarly assigned to the blue person. These errors are primarily instance-level mix-ups at contact or occlusion boundaries. In practice, they are less critical for our main objective of separating dynamic humans from the static background, which both methods achieve reliably.
+Qualitative and quantitative instance segmentation comparisons are included in Appendix~\ref{sec:appendix_segmentation}.
 
 \subsection{Novel View Synthesis Comparisons}
 
@@ -208,9 +176,7 @@ In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a m
 Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis comparisons. In the bottom-row example, our method preserves the head shape of the subject closer to the camera and produces sharper local details than MultiPly. This sharpening may partially explain why our PSNR is slightly lower, as PSNR is sensitive to pixel-wise differences even when images appear perceptually crisp. At the same time, MultiPly better preserves the tag on the back of the subject, which we attribute to our initialization: since LHM observes the person from essentially a single view, details that are never visible (such as a back-facing tag) may not be reconstructed reliably and therefore cannot be reinforced through backpropagation during training. Finally, in the top-row example, MultiPly exhibits greenish color artifacts that are likely caused by background pixels leaking into the foreground during progressive mask refinement. We do not observe these artifacts in our renderings, which we attribute to refining synthesized training views with DiFix, helping to suppress such mask-related color leakage.
 
 
-\subsection{Ablation Studies}
-
-\paragraph{Novel Training View Synthesis.}
+\subsection{Ablation Study: Novel Training View Synthesis Components}
 
 \begin{table}[!ht]
   \centering
@@ -265,8 +231,7 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
     % \label{fig:qual_comp_trn_nvs_strategies}  
 % \end{figure}
 
-
-\paragraph{Number of training cameras.}
+\subsection{Ablation Study: Number of Novel Training Cameras}
 
 \begin{table}[!ht]
   \centering
@@ -293,4 +258,27 @@ One motivation for introducing DiFix-based novel training view synthesis is that
 
 Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
 
+\subsection{Ablation Study: Pose Optimization During 3DGS Training}
 
+\paragraph{Ablation setting.} Accurate pose estimation is crucial for realistic reconstruction of interacting humans. However, even current state-of-the-art methods struggle with recovering accurate pose when people interact closely. This motivated us to explore further pose tuning during 3DGS optimisation. Apart from improving the pose accuracy, our secondary motivation is to investigate whether improved pose also leads to better novel view synthesis. More precisely, if pose is incorrect, then the rendered 3DGS does not align well with the input image, making it difficult to learn accurate color and density values. Therefore, we hypothesize that improving pose accuracy should also improve novel view synthesis quality. To investigate this, we use our findings from the previous two ablations. Namely, we use LHM initialization and DiFix-based novel training view synthesis with 7 novel training cameras. We then adjust the training procedure such that we only optimise the first 15 epochs selected SMPL-X pose parameters based on the input monocular video, which we then freeze, generate novel training views using these updated poses, and then conduct another 15 epochs of 3DGS optimisation (as done before). The reason why we do pose and 3DGS optimisation separately is because as shown in the previous ablations, 3DGS needs multi-view supervision. To get this multi-view supervision, we need to use the estimated pose parameters to generate novel training views. Therefore, the moment we use these pose parameters for pseudo ground truth novel view generation, we need to freeze the pose parameters, otherwise we would be trying to update pose parameters however our ground truth signal would be signaling to change it back to the old values. To investigate the effect of pose optimisation, we start by setting a baseline which optimises root and body pose, translation and each person shape parameters. This method uses the same loss terms as the previous ablation studies.  We then propose three additional improvements of this baseline and investigate their effect which we describe next.
+
+\paragraph{Interpenetration Loss.} First, we adopt the interpenetration loss introduced in Remips \cite{remips} where they applied it to naked human body models. In contrast, we adapt this term to our 3DGS human representation setting as follows. Given a set of gaussias for each person, we start by subsampling these points to make the computation feasible, by default, we use 2000 points per person. Given these points, we define the distance between two points $pA_i$ and $pB_j$ from person A and B as $d_{ij} = pA_i - pB_j$. We then compare this distance to an allowed margin computed as $m_{ij} = rA_i + rB_j + \delta$, where $rA_i$ and $rB_j$ are the radii of the Gaussians that generated the points, and $\delta$ is a small constant margin (by default set to 0.03m). The interpenetration loss is then defined as:
+
+\begin{equation}
+\mathcal{L}_{\text{inter}}(A,B) =
+\frac{1}{N_A N_B}
+\sum_{i=1}^{N_A}\sum_{j=1}^{N_B}
+\max\left(0, m_{ij} - \lVert d_{ij} \rVert_2\right),
+\end{equation}
+
+where $N_A$ and $N_B$ denote the number of subsampled Gaussian centers for person A and B.
+
+\paragraph{Depth Order Loss.} Second, we adopt the depth order loss from MultiPly \cite{multiply}. In particular, we use the individual person masks from SAM3 as a guiding signal which of the persons in the scene is in front of the others and compare that to the rendered depths of each person from the 3DGS. If there is a disagreement between the rendered depth order and the SAM3 mask based depth order, we apply a penalty. More precisely, for every pixel $(u,v)$ where we have mask information based on the union of all person masks, we first obtain the \textit{rendered} depth of the person which is according to the mask in front, we denote this depth as $d_{\text{mask}}(u,v)$. We then compare the rendered depths of all persons for the given pixel and obtain the minimum depth among all persons, denoted as $d_{\text{min}}(u,v)$. In words, we pick the depth of the person which is in front according to the rendered depths. We then compute the depth order loss for given pixel as:
+
+\begin{equation}
+\mathcal{L}_{\text{depth}}(u,v) = \operatorname{softplus}\left(d_{\text{mask}}(u,v) - d_{\text{min}}(u,v)\right),
+\end{equation}
+
+where $\operatorname{softplus}(x) = \log(1+\exp(x))$. Finally, we average this loss over all pixels where we have mask information.
+
+\paragraph{Confidence Guided Optimisation.} In general, it is not desirable to optimise our 3DGS model on frames where the pose estimation is poor. This is because we want to avoid adjusting 3DGS parameters to fit incorrect poses. Similarly, we also want to avoid a adjusting the shape parameter when pose in inaccurate. We therefore try to adapt MultiPly's confidence guided optimisation strategy \cite{multiply} which first splits the frames into reliable and unreliable according to the following criterion. We render each person in each frame and use the accumulated opacity to define the person's silhouette in 2D. We then compute the IoU between this silhouette and the corresponding SAM3 mask. We repeat this process for every person in the frame and average the IoUs to get a frame-level IoU score. If this score is above a certain threshold (by default set to 0.75), we consider this frame as reliable, otherwise unreliable. We update this reliability status every 5 epochs. During the pose optimisation phase, we only optimise pose and shape parameters on reliable frames, while we only optimise pose on unreliable frames. After the pose optimisation phase is done, we only use the reliable frames to generate novel training views for the subsequent 3DGS optimisation phase. And therefore completely discard unreliable frames for 3DGS optimisation. 
