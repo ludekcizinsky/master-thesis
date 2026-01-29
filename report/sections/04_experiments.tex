@@ -338,7 +338,7 @@ Across Sections B to E, we do not observe a consistent improvement over the base
 
 \subsection{Ablation Study: 3DGS to Mesh Conversion}
 
-Converting the optimized 3DGS representation to a mesh is a crucial step for geometry evaluation, yet it is not trivial. We use the training pipeline outlined in the Method section for the mesh extraction experiments, and explore two strategies for converting the 3DGS to a mesh in this ablation study: (i) Marching Cubes (MC) \cite{marching_cubes} and (ii) Truncated Sign Distance Field Fusion of the rendered depth maps as implemented in Open3D \cite{open3d}.  
+Converting the optimized 3DGS representation to a mesh is a crucial step for geometry evaluation, yet it is not trivial. We use the training pipeline outlined in the Method section for the mesh extraction experiments, and explore two strategies for converting the 3DGS to a mesh in this ablation study: (i) Marching Cubes (MC) \cite{marching_cubes} and (ii) Truncated Signed Distance Function (TSDF) fusion of rendered depth maps as implemented in Open3D \cite{open3d}.  
 
 
 \paragraph{3D Voxel Grid Definition from 3DGS.} In order to use MC, we first need to convert the 3DGS to a 3D voxel grid with occupancy values for each point in the 3D grid. To define the occupancy value for each of these points, we need to first compute contribution of each Gaussian to the point as follows:
@@ -358,6 +358,8 @@ w_i \exp\left(-\dfrac{\lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2^2}{2\sigma
 \end{equation}
 
 \noindent We repeat this for all voxel-grid points to obtain the full occupancy grid, and then apply MC with a fixed iso-surface value (default $0.07$) to extract the mesh.
+
+\paragraph{TSDF Fusion from Rendered Depth Maps.} For TSDF fusion, we render a depth map of each person from multiple views, fuse these depth observations into a volumetric TSDF using Open3D, and extract the mesh as the zero-level set. In our implementation, we optionally apply alpha-thresholding to ignore unreliable depth values and postprocess the extracted mesh (hole filling and smoothing).
 
 \begin{table}[!ht]
   \centering
@@ -396,4 +398,6 @@ w_i \exp\left(-\dfrac{\lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2^2}{2\sigma
     \label{fig:qual_abl_3dgs_to_mesh}  
 \end{figure}
 
-\paragraph{Interpenetration of the results.} Table \ref{tab:ablation_3dgs_to_mesh} shows a clear trend across both datasets where TSDF fusion achieves better results across all metrics except from Volumetric IoU (V-IoU), where MC performs better. Figure \ref{fig:qual_abl_3dgs_to_mesh} further supports these results quallitatively where TSDF fusion produces smooth non-blobby meshes compare to the MC results. In addition, MC also shows many holes in the extracted meshes. Last but not the least, we can also see results get consistently worse when moving from Hi4D to MMM which has more people. We hypothesise that this drop in performance is mainly due to worse pose estimation which directly affects the extracted mesh since they are based on the posed 3DGS (which depends on the SMPL-X pose). Overall, these results confirm that TSDF fusion is a better choice for converting 3DGS to mesh compared to MC which is the reason we used TSDF fusion for the reconstruction results in Table \ref{tab:reconstruction_results}.
+\paragraph{Interpretation of the results.} Table~\ref{tab:ablation_3dgs_to_mesh} shows a clear trend across both datasets: TSDF fusion achieves better results across all metrics except for Volumetric IoU (V-IoU), where MC performs better. Figure~\ref{fig:qual_abl_3dgs_to_mesh} further supports these results qualitatively: TSDF fusion produces smoother, less blobby meshes compared to MC, and MC exhibits more holes.
+
+Finally, results consistently degrade when moving from Hi4D to MMM. Since we render per-person depth maps for meshing, inter-person occlusions do not affect TSDF fusion directly. We hypothesize that the drop is instead driven by factors such as reduced pose accuracy (which affects the posed 3DGS) and the overall increased difficulty of MMM (more complex interactions and motion), which can lead to noisier per-person depth and occupancy estimates. Overall, these results indicate that TSDF fusion is a better choice for converting 3DGS to mesh in our pipeline, which is why we use TSDF fusion for the reconstruction results in Table~\ref{tab:reconstruction_results}.
