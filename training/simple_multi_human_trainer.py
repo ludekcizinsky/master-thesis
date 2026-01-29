@@ -3162,6 +3162,12 @@ class MultiHumanTrainer:
 
             # - Save SMPL-X meshes
             for frame_idx in range(num_views):
+
+                # -- Parse frame name (we follow the 6digit convention adapted across code base)
+                frame_name = str(fnames[frame_idx])
+                if frame_name.isdigit():
+                    frame_name = f"{int(frame_name):06d}"
+
                 smplx_meshes_for_frame = pred_smplx_meshes_by_person[frame_idx]
                 for person_idx in range(n_persons):
                     person_dir = save_dir_posed_smplx_meshes / f"{person_idx:02d}"
