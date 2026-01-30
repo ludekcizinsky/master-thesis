@@ -118,16 +118,6 @@ def _normals_to_colors(normals: np.ndarray) -> np.ndarray:
     return colors
 
 
-def _clean_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    mesh = mesh.copy()
-    mesh.remove_infinite_values()
-    mesh.update_faces(mesh.unique_faces())
-    mesh.update_faces(mesh.nondegenerate_faces())
-    mesh.remove_unreferenced_vertices()
-    mesh.fix_normals()
-    return mesh
-
-
 def _render_normal_map(
     mesh: trimesh.Trimesh,
     renderer: pyrender.OffscreenRenderer,
@@ -207,9 +197,7 @@ def main() -> None:
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     cfg = tyro.cli(Config)
 
-    mesh_dir = cfg.exp_eval_dir / "aligned_posed_meshes_per_frame"
-    if not mesh_dir.exists():
-        mesh_dir = cfg.exp_eval_dir / "posed_meshes_per_frame"
+    mesh_dir = cfg.exp_eval_dir / "posed_meshes_per_frame"
     if not mesh_dir.exists():
         print(f"Mesh directory not found: {mesh_dir}")
         sys.exit(1)
@@ -230,11 +218,9 @@ def main() -> None:
     out_dir_smplx = cfg.exp_eval_dir / "quality_checks" / "smplx_meshes"
     out_dir_smplx.mkdir(parents=True, exist_ok=True)
 
-    aligned_root = cfg.exp_eval_dir / "aligned_posed_meshes_per_frame"
     posed_root = cfg.exp_eval_dir / "posed_meshes_per_frame"
-    aligned_dirs = _sorted_person_dirs(aligned_root)
     posed_dirs = _sorted_person_dirs(posed_root)
-    person_names = {p.name for p in aligned_dirs}.union({p.name for p in posed_dirs})
+    person_names = {p.name for p in posed_dirs}
     if person_names:
         def _name_key(name: str) -> Tuple[int, str]:
             return (0, f"{int(name):06d}") if name.isdigit() else (1, name)
@@ -284,8 +270,6 @@ def main() -> None:
         w2c_gl, c2w_gl = _w2c_to_c2w_gl(w2c_cv)
 
         mesh = trimesh.load(mesh_path, force="mesh")
-        if isinstance(mesh, trimesh.Trimesh):
-            mesh = _clean_mesh(mesh)
         render_out = _render_normal_map(mesh, renderer, intr, w2c_gl, c2w_gl)
         if render_out is None:
             continue
@@ -299,11 +283,8 @@ def main() -> None:
             Image.fromarray(out).save(out_path)
 
         for pid in person_ids:
-            aligned_mesh_path = aligned_root / pid / f"{stem}.obj"
             posed_mesh_path = posed_root / pid / f"{stem}.obj"
-            if aligned_mesh_path.exists():
-                person_mesh_path = aligned_mesh_path
-            elif posed_mesh_path.exists():
+            if posed_mesh_path.exists():
                 person_mesh_path = posed_mesh_path
             else:
                 print(f"[WARN] Missing individual mesh for pid={pid} frame={stem}")
@@ -312,8 +293,6 @@ def main() -> None:
                 print(f"[WARN] Empty individual mesh for pid={pid} frame={stem}: {person_mesh_path}")
                 continue
             person_mesh = trimesh.load(person_mesh_path, force="mesh")
-            if isinstance(person_mesh, trimesh.Trimesh):
-                person_mesh = _clean_mesh(person_mesh)
             person_render = _render_normal_map(person_mesh, renderer, intr, w2c_gl, c2w_gl)
             if person_render is None:
                 continue
