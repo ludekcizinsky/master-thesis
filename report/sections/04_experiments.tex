@@ -19,22 +19,22 @@
 \subsection{Datasets}
 
 \paragraph{Hi4D.}
-We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people performing complex motions. Hi4D provides multi-view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly for fair comparison and use the following scenes from Hi4D: \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28} and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters can live in a different world coordinate frame than the ground truth, we apply a camera-based world alignment using the provided camera parameters and use the same alignment consistently across all tasks, including pose and reconstruction metrics.
+We evaluate on Hi4D, an indoor multi-camera dataset with two interacting people performing complex motions. Hi4D provides multi-view videos as well as ground truth meshes and poses, which enables quantitative evaluation of novel view synthesis, pose estimation, and mesh reconstruction. We follow the evaluation protocol of MultiPly for fair comparison and use the following scenes from Hi4D. We use \textit{pair15-fight15-view4}, \textit{pair16-jump16-view4}, \textit{pair17-dance17-view28}, and \textit{pair19-piggyback19-view4}. Since our estimated cameras and SMPL-X parameters can live in a different world coordinate frame than the ground truth, we apply a camera-based world alignment using the provided camera parameters and use the same alignment consistently across all tasks, including pose and reconstruction metrics.
 
 
 \paragraph{MMM.}
-We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and \textit{dynamic} camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM: \textit{dance}, \textit{lift} and \textit{walkdance}. 
+We also evaluate on MMM \cite{multiply} to cover scenes with more than two people and \textit{dynamic} camera motion. MMM contains scenes with three to four interacting people captured with a single moving handheld camera and provides ground truth meshes and camera poses, but does not provide the full set of annotations required by all evaluation tasks. Therefore, for MMM we primarily report mesh reconstruction metrics. We follow the evaluation protocol of MultiPly and use the following scenes from MMM. We use \textit{dance}, \textit{lift}, and \textit{walkdance}.
 
 \subsection{Evaluation Metrics}
 In addition to the accuracy metrics described below, we also report training speed in the Results section.
 
 \paragraph{Novel view synthesis.}
-We evaluate rendering quality using Peak-Signal-to-Noise Ratio (PSNR), Stuctural Similarity Index Measure (SSIM) (higher is better) and Learned Perceptual Image Patch Similarity (LPIPS) (lower is better) \cite{lpips}. PSNR measures the pixel-wise similarity of the reconstructed image by computing the logarithmic ratio between the maximum pixel value and the mean squared error, and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images \cite{wikipedia_ssim}. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network. And in contrast to the pixel level metrics should be aligned better with the human judgement \cite{lpips}.
+We evaluate rendering quality using Peak-Signal-to-Noise Ratio (PSNR), Structural Similarity Index Measure (SSIM) (higher is better), and Learned Perceptual Image Patch Similarity (LPIPS) (lower is better) \cite{lpips}. PSNR measures pixel-wise similarity between the reconstructed and ground truth images and is reported in decibels. SSIM measures perceived structural similarity by comparing local luminance, contrast, and structure between images \cite{wikipedia_ssim}. LPIPS is a learned perceptual metric that compares deep features extracted by a pretrained network and, unlike pixel-level metrics, is typically better aligned with human judgment \cite{lpips}.
 
 For each Hi4D scene, we treat one camera as the source view and evaluate novel view synthesis on the remaining seven cameras. For each target camera and frame, we compute the metrics between the rendered image and the corresponding ground truth image. Following MultiPly, we downscale images by a factor of two for evaluation. We then aggregate the results by averaging over all evaluation frames and all target cameras to obtain a single score per scene. Finally, we report dataset-level results by averaging these per-scene scores.
 
 \paragraph{Pose estimation.}
-We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm), as well as interaction-focused metrics: contact distance (CD, mm) \cite{yin2023hi4d} and percentage of correct depth relations (PCDR) \cite{bev} with a threshold of $0.15$m. Hi4D provides ground truth SMPL parameters, and MultiPly reports pose metrics in the SMPL space. Therefore, for a fair comparison, we convert our predicted SMPL-X parameters to SMPL parameters using the official SMPL-X model transfer procedure \cite{smplx} and evaluate all pose metrics in the SMPL parameterization.
+We assess pose quality using MPJPE (mm) and mean vertex error (MVE, mm) and report interaction-focused metrics such as contact distance (CD, mm) \cite{yin2023hi4d} and percentage of correct depth relations (PCDR) \cite{bev} with a threshold of $0.15$m. Hi4D provides ground truth SMPL parameters, and MultiPly reports pose metrics in the SMPL space. Therefore, for a fair comparison, we convert our predicted SMPL-X parameters to SMPL parameters using the official SMPL-X model transfer procedure \cite{smplx} and evaluate all pose metrics in the SMPL parameterization.
 
 MPJPE measures the mean Euclidean distance between corresponding predicted and ground truth SMPL joints, averaged over all joints and people in the frame, where lower is better. MVE is defined analogously but computes the mean Euclidean distance between corresponding SMPL mesh vertices, and lower values indicate a more accurate reconstruction of the posed body surface. We report MPJPE and MVE in global coordinates and do not apply root alignment.
 
@@ -46,10 +46,11 @@ To evaluate geometry, we report volumetric IoU (V-IoU), Chamfer distance (C-$\el
 
 For this evaluation, we extract meshes from the 3DGS representation using TSDF fusion of rendered depth maps (Open3D). Before we compute the metrics, we align the reconstructed meshes to the ground truth meshes using rigid ICP (no scaling). We run ICP for 10 iterations with a convergence threshold of $10^{-4}$ and use 1000 surface samples to estimate the alignment.
 
-For Chamfer distance, P2S, and normal consistency we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size $0.02$ with padding $0.05$ around the joint bounds of predicted and ground truth meshes.
+For Chamfer distance, P2S, and normal consistency, we estimate the metrics by sampling 1000 points uniformly from each mesh surface. Unfortunately, MultiPly does not report these evaluation hyperparameters, so we choose them ourselves and use the same settings across all methods for fair comparison. For volumetric IoU, we voxelize meshes using voxel size $0.02$ with padding $0.05$ around the joint bounds of predicted and ground truth meshes.
 
 \subsection{Implementation Details}
-Unless stated otherwise, we optimize 3DGS parameters (offsets, rotation, scaling, opacity, and per-Gaussian color (RGB)) and keep camera parameters fixed. Each person is represented by $N=40{,}000$ Gaussians. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground truth novel training views.
+Unless stated otherwise, we optimize 3DGS parameters (offsets, rotation, scaling, opacity, and per-Gaussian color (RGB)) and keep camera parameters fixed. Each person is represented by $N=40{,}000$ Gaussians. We initialize the canonical 3DGS using LHM and apply DiFix to obtain pseudo ground-truth novel training views.
+
 
 We train for 30 epochs with batch size 5 using AdamW (learning rate $5\cdot10^{-5}$, weight decay $5\cdot10^{-4}$, gradient clipping 0.1) and use gsplat \cite{ye2025gsplat} for differentiable Gaussian rendering. Unless stated otherwise, we always perform pose tuning for the first 15 epochs and then perform 3DGS optimization for the remaining epochs.
 
@@ -93,7 +94,7 @@ For preprocessing, we use the original Hi4D image resolution ($940 \times 1280$)
      & Ours & 0.315 & 6.42 & 3.77 & 0.672 \\
     \bottomrule
   \end{tabular}
-  \caption{\textbf{Human mesh reconstruction results on Hi4D and MMM.} Best results per dataset and metric are in bold; second best are in italics.}
+  \caption{\textbf{Human mesh reconstruction results on Hi4D and MMM.} Best results per dataset and metric are in bold, second best are in italics.}
   \label{tab:reconstruction_results}
 \end{table}
 
@@ -164,7 +165,7 @@ Figure~\ref{fig:qual_recon_comp} is consistent with the quantitative reconstruct
       \bottomrule
     \end{tabular}
   \end{tabular}
-	  \caption{\textbf{Human pose estimation results on Hi4D.} Left: SMPL-space metrics. Right: SMPL-X-space metrics. Best results are in bold. $^{\dagger}$ For Human3R and our method, SMPL metrics are computed after converting predicted SMPL-X parameters to SMPL (SMPL-X$\rightarrow$SMPL transfer).}
+	  \caption{\textbf{Human pose estimation results on Hi4D.} The left table reports SMPL-space metrics and the right table reports SMPL-X-space metrics. Best results are in bold. $^{\dagger}$ For Human3R and our method, SMPL metrics are computed after converting predicted SMPL-X parameters to SMPL (SMPL-X$\rightarrow$SMPL transfer).}
   \label{tab:pose_results_hi4d}
 \end{table}
 
@@ -208,9 +209,9 @@ Compared to MultiPly, the bottom-row example highlights a practical benefit of u
 \end{table}
 
 
-In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a multi-view method that was adapted by MultiPly to work in a monocular setting. Under the masked, downscaled evaluation protocol described above, our method achieves the best SSIM, while MultiPly achieves the best PSNR and LPIPS. Overall, these results suggest that our novel view synthesis quality is broadly on par with MultiPly: structural similarity is slightly better for our method, LPIPS is only slightly worse, and the main difference is PSNR, which emphasizes pixel-wise differences. Taken together, the gap therefore largely boils down to pixel-level discrepancies rather than a clear difference in perceptual or structural quality.
+In addition to MultiPly, we also compare to Shuai et al. \cite{nv_interact}, a multi-view method that was adapted by MultiPly to work in a monocular setting. Under the masked, downscaled evaluation protocol described above, our method achieves the best SSIM, while MultiPly achieves the best PSNR and LPIPS. Overall, these results suggest that our novel view synthesis quality is broadly on par with MultiPly. Structural similarity is slightly better for our method, LPIPS is only slightly worse, and the main difference is PSNR, which emphasizes pixel-wise differences. Taken together, the gap largely boils down to pixel-level discrepancies rather than a clear difference in perceptual or structural quality.
 
-Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis comparisons. In the bottom-row example, our method preserves the head shape of the subject closer to the camera and produces sharper local details than MultiPly. This sharpening may partially explain why our PSNR is slightly lower, as PSNR is sensitive to pixel-wise differences even when images appear perceptually crisp. At the same time, MultiPly better preserves the tag on the back of the subject, which we attribute to our initialization: since LHM observes the person from essentially a single view, details that are never visible (such as a back-facing tag) may not be reconstructed reliably and therefore cannot be reinforced through backpropagation during training. Finally, in the top-row example, MultiPly exhibits greenish color artifacts that are likely caused by background pixels leaking into the foreground during progressive mask refinement. We do not observe these artifacts in our renderings, which we attribute to refining synthesized training views with DiFix, helping to suppress such mask-related color leakage.
+Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis comparisons. In the bottom-row example, our method preserves the head shape of the subject closer to the camera and produces sharper local details than MultiPly. This sharpening may partially explain why our PSNR is slightly lower, as PSNR is sensitive to pixel-wise differences even when images appear perceptually crisp. At the same time, MultiPly better preserves the tag on the back of the subject, which we attribute to our initialization. Since LHM observes the person from essentially a single view, details that are never visible (such as a back-facing tag) may not be reconstructed reliably and therefore cannot be reinforced through backpropagation during training. Finally, in the top-row example, MultiPly exhibits greenish color artifacts that are likely caused by background pixels leaking into the foreground during progressive mask refinement. We do not observe these artifacts in our renderings, which we attribute to refining synthesized training views with DiFix, helping to suppress such mask-related color leakage.
 
 \subsection{Training Speed}
 
@@ -224,14 +225,14 @@ Figure \ref{fig:qual_nvs_comp} provides qualitative novel view synthesis compari
       S[table-format=2.1]
       S[table-format=2.1]}
     \toprule
-    \textbf{Input Frames} & \multicolumn{1}{c}{\textbf{DiFix [min]}} & \multicolumn{1}{c}{\textbf{Optimisation [min]}} & \multicolumn{1}{c}{\textbf{Total [min]}} \\
+    \textbf{Input Frames} & \multicolumn{1}{c}{\textbf{DiFix [min]}} & \multicolumn{1}{c}{\textbf{Optimization [min]}} & \multicolumn{1}{c}{\textbf{Total [min]}} \\
     \midrule
     50  & 5.8  & 8.5  & 14.3 \\
     100 & 11.7 & 16.9 & 28.6 \\
     200 & 23.3 & 33.8 & 57.1 \\
     \bottomrule
   \end{tabular}
-  \caption{\textbf{Training speed breakdown} on a single NVIDIA V100 at $\approx 980\times1280$ resolution and batch size 5. \textbf{DiFix} is the time to synthesize $7$ novel cameras for $F/5$ timestamps at $5\,\text{s}$ per frame. \textbf{Optimisation} is an estimate based on $1.3\,\text{s}$ per update and our two-stage schedule (15 epochs on $F$ source frames, then 15 epochs on $8\cdot(F/5)$ training images).}
+  \caption{\textbf{Training speed breakdown} on a single NVIDIA V100 at $\approx 980\times1280$ resolution and batch size 5. \textbf{DiFix} is the time to synthesize $7$ novel cameras for $F/5$ timestamps at $5\,\text{s}$ per frame. \textbf{Optimization} is an estimate based on $1.3\,\text{s}$ per update and our two-stage schedule (15 epochs on $F$ source frames, then 15 epochs on $8\cdot(F/5)$ training images). Timings exclude preprocessing (Human3R/SAM3/LHM).}
   \label{tab:training_speed_breakdown}
 \end{table}
 
@@ -241,7 +242,7 @@ An advantage of our 3DGS-based pipeline is training efficiency. On a single NVID
 T_{\text{DiFix}} \approx 5\,\text{s} \cdot 7 \cdot \frac{F}{5}.
 \end{equation}
 
-\noindent Table~\ref{tab:training_speed_breakdown} summarizes the resulting overhead from DiFix and provides an approximate end-to-end runtime. We estimate optimization time under our two-stage training schedule: during the first 15 epochs (pose tuning), we optimize on the full monocular video (one source view, $F$ frames). During the remaining 15 epochs (3DGS optimization), we optimize on the subsampled training set with one source view and seven synthesized views at $F/5$ timestamps, i.e. $8\cdot(F/5)$ training images per epoch. We assume batch size 5 and $1.3\,\text{s}$ per optimization step.
+\noindent Table~\ref{tab:training_speed_breakdown} summarizes the resulting overhead from DiFix and provides an approximate end-to-end runtime. We estimate optimization time under our two-stage training schedule. During the first 15 epochs (pose tuning), we optimize on the full monocular video (one source view, $F$ frames). During the remaining 15 epochs (3DGS optimization), we optimize on the subsampled training set with one source view and seven synthesized views at $F/5$ timestamps, i.e. $8\cdot(F/5)$ training images per epoch. We assume batch size 5 and $1.3\,\text{s}$ per optimization step.
 
 
 
@@ -280,7 +281,7 @@ To isolate the impact of the novel training view synthesis components and avoid 
 
 \noindent Table~\ref{tab:ablation_nvs} isolates the impact of (i) LHM initialization, (ii) DiFix-based refinement of synthesized novel training views, and (iii) the choice of reference camera for DiFix (source view versus the previously synthesized view). Training without LHM initialization and without any view synthesis performs worst, highlighting that learning a renderable representation from strictly monocular supervision is challenging under our compute budget. Adding novel training views that are rendered from the partially trained model and refined with DiFix yields only a modest improvement in this setting.
 
-\noindent LHM initialization is the dominant factor: simply initializing from LHM (without DiFix) substantially improves all metrics and provides the best LPIPS in our ablation. Adding DiFix refinement on top of LHM leads to only marginal changes: SSIM and PSNR improve slightly, while LPIPS becomes worse. Figure~\ref{fig:qual_difix_comp} provides an explanation for this behavior. Without LHM initialization, the intermediate renders are substantially degraded, which gives DiFix too much freedom during refinement; in both reference strategies, this leads to implausible hallucinations, such as an incorrect rotation of the head. With LHM initialization, the renders are already significantly closer to the target view, and DiFix mainly acts as a detail enhancement module, sharpening local texture without correcting higher-level geometric errors. Finally, using the source camera versus the previous synthesized camera as the DiFix reference yields very similar results, with a slight advantage for the source-reference strategy, suggesting that potential error accumulation in the chained (previous-reference) strategy can offset the benefit of higher overlap. Despite the small advantage of the source-reference strategy in this ablation, we use the previous-reference strategy in our main pipeline, as we expect it to benefit more from the higher inter-view overlap when the refinement model is stronger and produces less drift.
+\noindent LHM initialization is the dominant factor: simply initializing from LHM (without DiFix) substantially improves all metrics and provides the best LPIPS in our ablation. Adding DiFix refinement on top of LHM leads to only marginal changes: SSIM and PSNR improve slightly, while LPIPS becomes worse. Figure~\ref{fig:qual_difix_comp} provides an explanation for this behavior. Without LHM initialization, the intermediate renders are substantially degraded, which gives DiFix too much freedom during refinement. In both reference strategies, this leads to implausible hallucinations, such as an incorrect rotation of the head. With LHM initialization, the renders are already significantly closer to the target view, and DiFix mainly acts as a detail enhancement module, sharpening local texture without correcting higher-level geometric errors. Finally, using the source camera versus the previous synthesized camera as the DiFix reference yields very similar results, with a slight advantage for the source-reference strategy, suggesting that potential error accumulation in the chained (previous-reference) strategy can offset the benefit of higher overlap. Despite the small advantage of the source-reference strategy in this ablation, we use the previous-reference strategy in our main pipeline, as we expect it to benefit more from the higher inter-view overlap when the refinement model is stronger and produces less drift.
 
 \begin{figure}[!ht]
     \centering
@@ -292,7 +293,7 @@ To isolate the impact of the novel training view synthesis components and avoid 
 \begin{figure}[!ht]
     \centering
     \includegraphics[width=0.8\textwidth]{figures/n_trn_cameras_ablation_setup.drawio.png}
-    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, the orange cameras are the novel training cameras. Specifially, we experiment with 0, 2, 4, and 7 novel training cameras.}
+    \caption{\textbf{Distribution of the cameras for the ablation}. We show the distribution of the cameras used in the ablation study on the number of novel training cameras. The blue camera is the source camera, and the orange cameras are the novel training cameras. Specifically, we experiment with 0, 2, 4, and 7 novel training cameras.}
     \label{fig:n_trn_cameras_ablation_setup}  
 \end{figure}
 
@@ -306,8 +307,6 @@ To isolate the impact of the novel training view synthesis components and avoid 
 % \end{figure}
 
 \subsection{Ablation Study: Number of Novel Training Cameras}
-
-Similar to the previous section, we again disable pose tuning for all experiments in this ablation.
 
 \begin{table}[!ht]
   \centering
@@ -330,9 +329,10 @@ Similar to the previous section, we again disable pose tuning for all experiment
   \label{tab:ablation_num_trn_cams}
 \end{table}
 
-One motivation for introducing DiFix-based novel training view synthesis is that optimizing a 3DGS model from monocular video requires multi-view supervision. Without additional views, we expect poor novel view synthesis performance, even when starting from an LHM initialization, because subsequent monocular fine-tuning can overfit to the single source view. To test this assumption, we ablate the number of novel training cameras used during training. We consider 0, 2, 4, and 7 novel training cameras, where 0 means training uses only the source camera. All experiments are initialized from LHM; when novel cameras are used, their training images are synthesized and refined with DiFix. Figure~\ref{fig:n_trn_cameras_ablation_setup} shows the camera distribution used in this ablation.
+One motivation for introducing DiFix-based novel training view synthesis is that optimizing a 3DGS model from monocular video requires multi-view supervision. Without additional views, we expect poor novel view synthesis performance, even when starting from an LHM initialization, because subsequent monocular fine-tuning can overfit to the single source view. To test this assumption, we ablate the number of novel training cameras used during training. We consider 0, 2, 4, and 7 novel training cameras, where 0 means training uses only the source camera. All experiments are initialized from LHM when novel cameras are used, their training images are synthesized and refined with DiFix.
+Similar to the previous section, we again disable pose tuning for all experiments. Finally, Figure~\ref{fig:n_trn_cameras_ablation_setup} shows the camera distribution used in this ablation.
 
-Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
+Table~\ref{tab:ablation_num_trn_cams} confirms our hypothesis. Using 0 novel training cameras performs substantially worse across all metrics, indicating that monocular fine-tuning alone is insufficient despite the strong LHM initialization. Adding just 2 novel training cameras yields a large improvement, while increasing from 2 to 4 and 7 yields diminishing returns. Overall, 7 cameras achieves the best SSIM and LPIPS, while PSNR peaks at 4 cameras with a small difference to 7. Despite these diminishing returns, we decided to use 7 novel training cameras in our main pipeline to maximize multi-view supervision during training.
 
 \subsection{Ablation Study: Pose Optimization During 3DGS Training}
 
@@ -367,13 +367,13 @@ Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel tr
     E (hands) & 77.5986 & {\bfseries 63.4009} & 0.6123 & {\bfseries 0.926} & 20.1 & 0.0809 \\
     \bottomrule
   \end{tabular}
-  \caption{\textbf{Pose optimization ablation study (Hi4D average across scenes)}. We report SMPL-X pose metrics (MPJPE/MVE/PCDR) and novel view synthesis (SSIM/PSNR/LPIPS). For each section (A--E), we list the best-performing experiment.} % todo: add reference here to the section in appendix where we add the full hyper parameter study
+  \caption{\textbf{Pose optimization ablation study (Hi4D average across scenes)}. We report SMPL-X pose metrics (MPJPE/MVE/PCDR) and novel view synthesis (SSIM/PSNR/LPIPS). For each section (A-E), we list the best-performing experiment.} % todo: add reference here to the section in appendix where we add the full hyper parameter study
   \label{tab:ablation_pose_opt}
 \end{table}
 
 \paragraph{Ablation setting.} Accurate pose estimation is crucial for realistic reconstruction of interacting humans, yet it remains challenging in close interactions. We therefore explore pose tuning during 3DGS training and evaluate its effect on both pose accuracy and novel view synthesis (NVS). Section A in Table~\ref{tab:ablation_pose_opt} tunes \texttt{root\_pose}, \texttt{body\_pose}, \texttt{trans} and \texttt{betas} which is also what we use in our main experiments. We further explore three additional loss/optimization components from prior work ( Sections B-D) and the effect of adding hand parameters to the optimized SMPL-X parameter set (Section E). For each section, we perform a small hyperparameter sweep and report the best-performing configuration.
 
-\paragraph{Interpenetration Loss.} First, we adopt the interpenetration loss introduced in Remips \cite{remips}, where it is applied to naked human body models. In contrast, we adapt this term to our 3DGS human representation as follows. Given a set of Gaussians for each person, we subsample their centers to make the computation feasible (by default, we use 2000 points per person). For two people A and B, and their subsampled Gaussian centers $\{pA_i\}_{i=1}^{N_A}$ and $\{pB_j\}_{j=1}^{N_B}$, we define the displacement vector between a pair of centers as $d_{ij} = pA_i - pB_j$ and the corresponding distance as $\lVert d_{ij} \rVert_2$. We compare this distance to an allowed margin $m_{ij} = rA_i + rB_j + \delta$, where $rA_i$ and $rB_j$ are the radii of the two Gaussians and $\delta$ is a small constant margin (by default set to 0.03\,m). The interpenetration loss is then defined as:
+\paragraph{Interpenetration Loss.} First, we adopt the interpenetration loss introduced in Remips \cite{remips}, where it is applied to naked human body models. In contrast, we adapt this term to our 3DGS human representation as follows. Given a set of Gaussians for each person, we subsample their centers to make the computation feasible (by default, we use 2000 points per person). For two people A and B, and their subsampled Gaussian centers $\{pA_i\}_{i=1}^{N_A}$ and $\{pB_j\}_{j=1}^{N_B}$, we define the displacement vector between a pair of centers as $d_{ij} = pA_i - pB_j$ and the corresponding distance as $\lVert d_{ij} \rVert_2$. We compare this distance to an allowed margin $m_{ij} = rA_i + rB_j + \delta$, where $rA_i$ and $rB_j$ are the radii of the two Gaussians and $\delta$ is a small constant margin (by default set to 0.03\,m). The interpenetration loss is defined as
 
 \begin{equation}
 \mathcal{L}_{\text{inter}}(A,B) =
@@ -386,7 +386,7 @@ Table~\ref{tab:ablation_num_trn_cams} confirms this hypothesis. Using 0 novel tr
 
 \paragraph{Depth Order Loss.} Second, we adopt the depth order loss from MultiPly \cite{multiply}. We use individual person masks from SAM3 as a per-pixel assignment signal and compare this assignment to the rendered depths of each person. If the person selected by the mask is not the front-most person according to the rendered depths, we apply a penalty. In practice, we exclude pixels with ambiguous assignments (e.g., overlapping masks) and compute the loss only on pixels that can be confidently attributed to a single person.
 
-More precisely, for every pixel $(u,v)$ with reliable mask information, we first obtain the rendered depth of the person selected by the SAM3 masks, denoted as $d_{\text{mask}}(u,v)$. We then obtain the minimum rendered depth across all people at that pixel, denoted as $d_{\text{min}}(u,v)$. Finally, we compute the depth order loss for a given pixel as:
+More precisely, for every pixel $(u,v)$ with reliable mask information, we first obtain the rendered depth of the person selected by the SAM3 masks, denoted as $d_{\text{mask}}(u,v)$. We then obtain the minimum rendered depth across all people at that pixel, denoted as $d_{\text{min}}(u,v)$. Finally, we compute the depth order loss for a given pixel as
 
 \begin{equation}
 \mathcal{L}_{\text{depth}}(u,v) = \operatorname{softplus}\left(d_{\text{mask}}(u,v) - d_{\text{min}}(u,v)\right),
@@ -395,7 +395,7 @@ More precisely, for every pixel $(u,v)$ with reliable mask information, we first
 
 \noindent where $\operatorname{softplus}(x) = \log(1+\exp(x))$. Finally, we average this loss over all pixels where we have mask information.
 
-\paragraph{Confidence Guided Optimisation.} In general, it is not desirable to optimize our 3DGS model on frames where the pose estimation is poor, as this would encourage the model to explain the input with incorrect poses. Similarly, we would like to avoid adjusting shape parameters when pose estimates are unreliable. Therefore, we adapt MultiPly's confidence-guided optimization strategy \cite{multiply} and split frames into reliable and unreliable according to the following criterion. We render each person in each frame and use the accumulated opacity to define the person's 2D silhouette. We then compute the IoU between this silhouette and the corresponding SAM3 mask. We repeat this for every person in the frame and average the IoUs to obtain a frame-level confidence score. If this score is above a threshold (by default set to 0.75), we consider the frame reliable; otherwise, unreliable. We update this reliability status every 5 epochs. During the pose optimization phase, we optimize pose and shape parameters on reliable frames, while we optimize only pose on unreliable frames. After pose optimization is finished, we use only reliable frames to generate novel training views for the subsequent 3DGS optimization phase, and discard unreliable frames for 3DGS training.
+\paragraph{Confidence Guided Optimization.} In general, it is not desirable to optimize our 3DGS model on frames where the pose estimation is poor, as this would encourage the model to explain the input with incorrect poses. Similarly, we would like to avoid adjusting shape parameters when pose estimates are unreliable. Therefore, we adapt MultiPly's confidence-guided optimization strategy \cite{multiply} and split frames into reliable and unreliable according to the following criterion. We render each person in each frame and use the accumulated opacity to define the person's 2D silhouette. We then compute the IoU between this silhouette and the corresponding SAM3 mask. We repeat this for every person in the frame and average the IoUs to obtain a frame-level confidence score. If this score is above a threshold (by default set to 0.75), we consider the frame reliable. We update this reliability status every 5 epochs. During the pose optimization phase, we optimize pose and shape parameters on reliable frames, while we optimize only pose on unreliable frames. After pose optimization is finished, we use only reliable frames to generate novel training views for the subsequent 3DGS optimization phase, and discard unreliable frames for 3DGS training.
 
 \begin{figure}[!ht]
     \centering
@@ -405,7 +405,7 @@ More precisely, for every pixel $(u,v)$ with reliable mask information, we first
 \end{figure}
 
 
-\paragraph{Interpretation of Pose Results.} Table~\ref{tab:ablation_pose_opt} summarises the results of our pose optimisation ablation study. Pose tuning improves MPJPE and MVE compared to no pose tuning, confirming that optimizing pose during 3DGS training can improve pose accuracy. At the same time, the best PCDR is achieved by the \textit{No Pose Tuning} setting. This suggests that our pose tuning improves joint/vertex accuracy on average, but does not necessarily improve (and can slightly hurt) PCDR, which may be sensitive to segmentation noise and small depth inconsistencies.
+\paragraph{Interpretation of Pose Results.} Table~\ref{tab:ablation_pose_opt} summarizes the results of our pose optimization ablation study. Pose tuning improves MPJPE and MVE compared to no pose tuning, confirming that optimizing pose during 3DGS training can improve pose accuracy. At the same time, the best PCDR is achieved by the \textit{No Pose Tuning} setting. This suggests that our pose tuning improves joint/vertex accuracy on average, but does not necessarily improve (and can slightly hurt) PCDR, which may be sensitive to segmentation noise and small depth inconsistencies.
 
 Across Sections B to E, we do not observe a consistent improvement over the baseline pose-tuning configuration (Section A). The only notable change is that optimizing additional SMPL-X parameters (hands) yields the best MVE. For the interpenetration and depth-order losses, one possible explanation is that despite exploring different weights, these terms may still be underweighted relative to the other objectives, limiting their impact. For the interpenetration loss, another potential bottleneck is Gaussian subsampling, which may miss rare but important interpenetration cases. For the depth-order loss, a potential limitation is noise in the SAM3 masks, which can lead to incorrect per-pixel supervision.
 
@@ -415,10 +415,10 @@ Across Sections B to E, we do not observe a consistent improvement over the base
 
 \subsection{Ablation Study: 3DGS to Mesh Conversion}
 
-Converting the optimized 3DGS representation to a mesh is a crucial step for geometry evaluation, yet it is not trivial. We use the training pipeline outlined in the Method section for the mesh extraction experiments, and explore two strategies for converting the 3DGS to a mesh in this ablation study: (i) Marching Cubes (MC) \cite{marching_cubes} and (ii) Truncated Signed Distance Function (TSDF) fusion of rendered depth maps as implemented in Open3D \cite{open3d}.  
+Converting the optimized 3DGS representation to a mesh is a crucial step for geometry evaluation, yet it is not trivial. We use the training pipeline outlined in the Method section for the mesh extraction experiments. In this ablation study, we explore two strategies for converting the 3DGS to a mesh. We use Marching Cubes (MC) \cite{marching_cubes} and Truncated Signed Distance Function (TSDF) fusion of rendered depth maps as implemented in Open3D \cite{open3d}.
 
 
-\paragraph{3D Voxel Grid Definition from 3DGS.} In order to use MC, we first need to convert the 3DGS to a 3D voxel grid with occupancy values for each point in the 3D grid. To define the occupancy value for each of these points, we need to first compute contribution of each Gaussian to the point as follows:
+\paragraph{3D Voxel Grid Definition from 3DGS.} In order to use MC, we first need to convert the 3DGS to a 3D voxel grid with occupancy values for each point in the 3D grid. To define the occupancy value for each of these points, we first compute the contribution of each Gaussian to the point as follows.
 
 \begin{equation}
 c_i(\mathbf{x}) =
@@ -428,7 +428,7 @@ w_i \exp\left(-\dfrac{\lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2^2}{2\sigma
 \end{cases}
 \end{equation}
 
-\noindent where $\mathbf{x}$ is a voxel-grid point, $\boldsymbol{\mu}_i$ is the Gaussian center, $w_i \in [0,1]$ is its opacity weight, $\sigma_i$ is its (isotropic) scale, and $\tau$ is a truncation factor (default $\tau=2.5$). The resulting occupancy (density) field is then computed by summing contributions of all Gaussians:
+\noindent where $\mathbf{x}$ is a voxel-grid point, $\boldsymbol{\mu}_i$ is the Gaussian center, $w_i \in [0,1]$ is its opacity weight, $\sigma_i$ is its (isotropic) scale, and $\tau$ is a truncation factor (default $\tau=2.5$). The resulting occupancy (density) field is then computed by summing contributions of all Gaussians.
 
 \begin{equation}
 \rho(\mathbf{x}) = \sum_i c_i(\mathbf{x}).
@@ -475,6 +475,6 @@ w_i \exp\left(-\dfrac{\lVert \mathbf{x} - \boldsymbol{\mu}_i \rVert_2^2}{2\sigma
     \label{fig:qual_abl_3dgs_to_mesh}  
 \end{figure}
 
-\paragraph{Interpretation of the results.} Table~\ref{tab:ablation_3dgs_to_mesh} shows a clear trend across both datasets: TSDF fusion achieves better results across all metrics except for Volumetric IoU (V-IoU), where MC performs better. Figure~\ref{fig:qual_abl_3dgs_to_mesh} further supports these results qualitatively: TSDF fusion produces smoother, less blobby meshes compared to MC, and MC exhibits more holes.
+\paragraph{Interpretation of the results.} Table~\ref{tab:ablation_3dgs_to_mesh} shows a clear trend across both datasets. TSDF fusion achieves better results across all metrics except for Volumetric IoU (V-IoU), where MC performs better. Figure~\ref{fig:qual_abl_3dgs_to_mesh} further supports these results qualitatively. TSDF fusion produces smoother, less blobby meshes compared to MC, and MC exhibits more holes.
 
 Finally, results consistently degrade when moving from Hi4D to MMM. Since we render per-person depth maps for meshing, inter-person occlusions do not affect TSDF fusion directly. We hypothesize that the drop is instead driven by factors such as reduced pose accuracy (which affects the posed 3DGS) and the overall increased difficulty of MMM (more complex interactions and motion), which can lead to noisier per-person depth and occupancy estimates. Overall, these results indicate that TSDF fusion is a better choice for converting 3DGS to mesh in our pipeline, which is why we use TSDF fusion for the reconstruction results in Table~\ref{tab:reconstruction_results}.
