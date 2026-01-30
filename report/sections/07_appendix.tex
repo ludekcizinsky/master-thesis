@@ -45,19 +45,14 @@ SVD4D 2.0 is a video-to-video model pretrained on a large corpus of multi-view v
 In contrast to video diffusion methods that aim to directly synthesize a novel-view video, Guess the Unseen (GTU) \cite{gtu} is an optimization-based pipeline that reconstructs a 3D scene representation and then renders novel views from it. Figure~\ref{fig:appendix_gtu_limits} shows qualitative results of GTU on human-centric scenes. The first row highlights a failure mode where imperfect segmentation causes background appearance to leak into the dynamic human model, which leads to artifacts in the synthesized training view. The second row shows distorted facial detail, which we attribute to diffusion-based pseudo supervision producing incorrect high-frequency hallucinations. The last row shows additional artifacts around the ball that are consistent with diffusion-driven hallucinations.
 
 
-\section{Instance Segmentation}
-\label{sec:appendix_segmentation}
+\section{Instance Segmentation}\label{sec:appendix_segmentation}
 
-\paragraph{Metrics.}
-Segmentation quality is important to accurately separate dynamic humans from the static background. We therefore measure segmentation quality using intersection-over-union (IoU), recall, and F1 score.
+Instance segmentation is an important preprocessing component in our pipeline because it provides the masks used to separate dynamic humans from the static background. Inaccurate masks can cause background appearance to leak into the supervision signal for the human models, which can introduce artifacts in both reconstruction and rendering.
+
+\paragraph{Experimental setup.} We conducted an initial study that adapts MultiPly's \cite{multiply} progressive mask refinement strategy. Rather than relying only on the initial masks predicted by SAM, MultiPly iteratively reruns SAM during training using improved prompts derived from the current reconstruction. MultiPly also leverages SMPL joints as additional cues. We implemented an analogous refinement loop within our pipeline and evaluated it on Hi4D. In addition, we report results with SAM3 \cite{carion2025sam3segmentconcepts}, which became available during this study and serves as our default mask predictor in the final pipeline.
+
 
 \subsection{Results}
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=1.0\textwidth]{figures/qual_segment_comp.drawio.png}
-    \caption{\textbf{Qualitative instance segmentation comparison}. We adapt the figure from MultiPly \cite{multiply} and added our segmentation results for comparison on chosen scenes from Hi4D. For each method, we show RGB frame overlaid with predicted instance masks.}
-    \label{fig:qual_instance_segm_comp}  
-\end{figure}
 
 \begin{table}[!ht]
   \centering
@@ -72,13 +67,21 @@ Segmentation quality is important to accurately separate dynamic humans from the
     \midrule
     MultiPly (Init.) & 0.943 & 0.975 & 0.984 \\
     MultiPly (Progressive) & 0.963 & \textbf{0.985} & \textbf{0.990} \\
-    Ours (using SAM3) & \textbf{0.974} & 0.982 & 0.987 \\
+    Ours (Progressive) & 0.959 & 0.978 &  0.971 \\
+    SAM3 & \textbf{0.974} & 0.982 & 0.987 \\
     \bottomrule
   \end{tabular}
   \caption{\textbf{Human instance segmentation results on Hi4D.} Best results are in bold.}
   \label{tab:segmentation_results_hi4d}
 \end{table}
 
-We compare our mask segmentation quality to MultiPly, which reports results for both its initial masks from SAM1 \cite{sam1} and its progressively refined masks during training. In contrast, we do not refine masks during training and rely on the initial masks from SAM3 \cite{carion2025sam3segmentconcepts}. All methods achieve strong scores, with our method obtaining the best IoU, while MultiPly's progressive masking achieves slightly higher recall and F1. This suggests different error modes: SAM3 tends to produce cleaner average overlap, while progressive refinement reduces missed foreground pixels. Overall, segmentation quality is strong and is unlikely to be the main bottleneck, although small boundary errors can still affect downstream rendering and reconstruction.
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=1.0\textwidth]{figures/appendix_prog_sam_limits.drawio.png}
+    \caption{\textbf{Prompting strategy for progressive SAM refinement}. The left column shows the prompts given to SAM2, including the mask to refine and a set of positive and negative points. The right column shows the corresponding SAM2 outputs.}
+    \label{fig:appendix_prog_sam_limits}  
+\end{figure}
 
-Figure \ref{fig:qual_instance_segm_comp} shows representative failure cases of our SAM3-based instance segmentation compared to MultiPly. In the top row, our method assigns part of the orange person's left arm to the blue person; in the bottom row, part of the orange person's right hand is similarly assigned to the blue person. These errors are primarily instance-level mix-ups at contact or occlusion boundaries. In practice, they are less critical for our main objective of separating dynamic humans from the static background, which both methods achieve reliably.
+Table~\ref{tab:segmentation_results_hi4d} compares our segmentation quality to MultiPly, which reports both its initial masks from SAM1 \cite{sam1} and masks obtained by progressive refinement during training. Our progressive refinement uses SAM2 rather than SAM1. The results show that SAM3 achieves the best IoU and performs competitively in recall and F1, while MultiPly's progressive refinement achieves the best recall and F1. Our adaptation of progressive refinement underperforms both MultiPly's progressive refinement and direct SAM3 segmentation. A likely explanation is that the quality of progressive prompts depends on the underlying reconstruction pipeline that provides the intermediate renderings and silhouette estimates, and our pipeline differs substantially from MultiPly. Overall, these results indicate that using SAM3 directly already provides high-quality masks, which makes additional refinement less critical for our final system.
+
+Figure~\ref{fig:appendix_prog_sam_limits} illustrates our prompting strategy for progressive refinement. In the first row, we prompt SAM2 only once per image and person, which can produce noisy masks. In the second row, we apply an autoregressive strategy that re-prompts the model multiple times, using the refined mask from the previous step as input for the next step. This improves stability in practice, but the resulting masks still fall short of MultiPly's progressive refinement and direct SAM3 segmentation.
