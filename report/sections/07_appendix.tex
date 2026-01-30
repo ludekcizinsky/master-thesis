@@ -14,6 +14,37 @@
  % \item Further material 
 % \end{itemize}
 
+\section{Qualitative Analysis of the Current State of the Art}
+
+As a preliminary study, we tested several state-of-the-art methods on selected human-centric scenes. This section summarizes qualitative results for representative approaches and groups them into video diffusion methods and optimization-based pipelines.
+
+\subsection{Video Diffusion}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/appendix_video_diff_limits.drawio.png}
+    \caption{\textbf{Limitations of video diffusion methods}. We show novel view synthesis results of Generative Camera Dolly \cite{vanhoorick2024gcd} (first row) and SVD4D 2.0 \cite{sv4d} (second row) on different videos.}
+    \label{fig:appendix_video_diff_limits}  
+\end{figure}
+
+Figure~\ref{fig:appendix_video_diff_limits} shows qualitative results of two video diffusion methods, Generative Camera Dolly (GCD) \cite{vanhoorick2024gcd} and SVD4D 2.0 \cite{sv4d}. GCD is a conditional model that synthesizes a novel video given target camera parameters and an input monocular video. While it can produce plausible results on in-domain data such as object-centric scenes, Figure~\ref{fig:appendix_video_diff_limits} illustrates that it does not generalize reliably to human-centric scenes, where articulated motion and identity consistency are critical.
+
+
+SVD4D 2.0 is a video-to-video model pretrained on a large corpus of multi-view video data. Similar to GCD, it performs well on in-domain examples, but it struggles to preserve realistic human pose and facial detail, as shown in the second row of Figure~\ref{fig:appendix_video_diff_limits}.
+
+
+\subsection{Optimization-Based Methods}
+
+\begin{figure}[!ht]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/appendix_gtu_limits.drawio.png}
+    \caption{\textbf{Limitations of the Guess the Unseen approach}. We show the input image, preprocessing outputs, and the synthesized training view produced by Guess the Unseen \cite{gtu} on different scenes.}
+    \label{fig:appendix_gtu_limits}  
+\end{figure}
+
+In contrast to video diffusion methods that aim to directly synthesize a novel-view video, Guess the Unseen (GTU) \cite{gtu} is an optimization-based pipeline that reconstructs a 3D scene representation and then renders novel views from it. Figure~\ref{fig:appendix_gtu_limits} shows qualitative results of GTU on human-centric scenes. The first row highlights a failure mode where imperfect segmentation causes background appearance to leak into the dynamic human model, which leads to artifacts in the synthesized training view. The second row shows distorted facial detail, which we attribute to diffusion-based pseudo supervision producing incorrect high-frequency hallucinations. The last row shows additional artifacts around the ball that are consistent with diffusion-driven hallucinations.
+
+
 \section{Instance Segmentation}
 \label{sec:appendix_segmentation}
 
