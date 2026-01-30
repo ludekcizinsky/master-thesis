@@ -246,7 +246,7 @@ To obtain a representation that can be rendered from arbitrary viewpoints, we de
 % 1. the 3DGS is free to learn the offset from the SMPLX surface, so in theory it can learn clothing dynamics and other non-rigid deformations that are not captured by the SMPLX model itself
 % 2. i should explain why do we actually have "special" neutral space - not just because that's what LHM does...
 
-We use a human-centric dynamic scene representation that combines a parametric body model (SMPL-X) with 3D Gaussian Splatting (3DGS). Throughout this section, we distinguish three poses: (i) the \emph{zero pose}, where all SMPL-X pose parameters are set to zero; (ii) a fixed \emph{neutral pose} (an A-pose-like configuration used to define our canonical space); and (iii) the \emph{target frame pose}, i.e., the estimated SMPL-X parameters for a particular video frame.
+We use a human-centric dynamic scene representation that combines a parametric body model (SMPL-X) with 3D Gaussian Splatting (3DGS). Throughout this section, we distinguish three poses: (i) the \emph{zero pose}, where all SMPL-X pose parameters are set to zero; (ii) a fixed \emph{neutral pose} (an A-pose-like configuration used to define our canonical space); and (iii) the \emph{target frame pose}, i.e., the estimated SMPL-X parameters for a particular video frame. In the following, we describe how we define our canonical 3DGS in the neutral pose and how we deform it to the target frame pose using SMPL-X.
 
 \paragraph{Neutrally posed query points and skinning weights.}
 We start by constructing a dense set of $N$ query points on the SMPL-X surface in the neutral pose (in our experiments, $N=40{,}000$). Concretely, we use a precomputed dense point set and assign a body/face split by a fixed ratio. We use ratio $3$ that yields approximately $30{,}000$ body points and $10{,}000$ face points. To deform these points with SMPL-X, we require linear blend skinning (LBS) weights. For each dense point, we find its nearest neighbor on the SMPL-X template mesh and copy the corresponding template vertex LBS weights, resulting in a per-point weight matrix of shape $N\times 55$ (55 SMPL-X joints in our setup). Finally, we compute and store a per-joint transformation that maps between the neutral-pose space and the SMPL-X zero-pose space, represented as a matrix of shape $(55,4,4)$; this transform is later converted into per-point transforms via the LBS weights.
@@ -259,59 +259,51 @@ Given SMPL-X parameters for a target frame, we deform the canonical Gaussians fr
 
 For the rotation, we extract the per-point rigid rotation component of the neutral-to-posed transform and convert it to unit quaternions. We then compose this rotation with each Gaussian's canonical quaternion to obtain the posed Gaussian orientations. In addition, for a subset of Gaussians associated with constrained body regions, we optionally suppress the additional rotation to avoid undesirable orientation artifacts.
 
-\paragraph{Rendering.}
-For each view, we deform each person independently, concatenate all posed Gaussians in the scene, and render RGB, mask, and depth using a differentiable 3DGS renderer (gsplat).
 
 \section{Training objectives}
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.8\textwidth]{figures/train_step_example.drawio.png}
-    \caption{Overview of a single training step including both the forward and backward pass.}
+    \includegraphics[width=0.9\textwidth]{figures/train_step_example.drawio.png}
+    \caption{\textbf{Overview of a single training step.} Overview of a single training step going from the canonical 3DGS and estimated SMPL-X and camera parameters to the rendered images and loss computation. We also show the gradient flow during pose and 3DGS optimisation phase.}
     \label{fig:trn_step_example}  
 \end{figure}
 
-% High level process:
-% 1. We sample a batch of frames from different views (source camera + generated novel views)
-% 2. Using the view camera parameters and the per-frame SMPLX parameters, we deform the canonical 3DGS to the posed space 
-%   for each frame in the batch and render the images using differentiable rendering via gsplat library.
-% 3. We then compute the losses between the rendered images and the ground truth images using the foreground masks to focus only on the humans in the scene.
-% We have the following losses:
-  % a. RGB reconstruction loss (masked MSE + SSIM)
-  % b. Silhouette loss (only on source camera view since this is where we have the most reliable masks)
-  % c. Canonical regularization losses (ASAP/ACAP) to encourage plausible geometry in the canonical space, formulas:
-  % 1. scales_pos = torch.exp(scales)
-  %    asap = ((scales_pos - scales_pos.mean(dim=-1, keepdim=True)) ** 2).sum(dim=-1).mean()
-  % 2. acap = torch.clamp(offsets.norm(dim=-1) - self.cfg.regularization['acap_margin'], min=0.0).mean() where we use by default acap_margin = 0.01 (1cm)
 
-
-% things to improve here:
-% 1. use paragraph stle to split the these explanation into: photometric loss, silhouette loss, canonical regularization losses
-% 2. At the end, we should mention the full objectie and mention that empirically we found the following weights to work the best for each loss term: 
-% loss_weights:
-  % rgb: 20.0
-  % sil: 4.0
-  % ssim: 0.4
-  % depth: 0.0 # for now disabled because I have unreliable depth maps for nvs
-
-% regularization:
-  % asap_w: 200.0
-  % acap_w: 200.0
-  % acap_margin: 0.01 # meters (1 cm)
-
-% 3. we need to acknowledge that the regularisaton terms are adopted from the lhm paper, therefore use
-% \cite{qiu2025lhm} to cite them. The ASAP stands for as spheric as possible, and ACAP stands for as close as possible (both of these terms were introduced in LHM paper. We should paraphrase the explanations from LHM paper about these terms and logic behind them:
-% a. ASAP term is to encourage isotropic scales for each gaussian - in the lhm paper, they found that this term removed weird blurry edges in the reconstruction
-% b. ACAP term is to encourage the gaussians to stay close to the smplx surface - in the lhm paper, they found that this term prevented gaussians from drifting too far away from the smplx surface which would lead to artifacts in the reconstruction 
-
-
-Figure \ref{fig:trn_step_example} shows an example training step. At each iteration, we sample a mini-batch of frames from a mixture of views (the source camera and the synthesized novel training views). Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image using differentiable Gaussian splatting. We then apply several loss terms to supervise the rendered images against the ground truth frames. We describe each loss term below.
+\paragraph{Training overview.} Figure \ref{fig:trn_step_example} shows an example training step. At each iteration, we sample a mini-batch of frames. Given the camera parameters and the per-frame SMPL-X parameters, we deform the canonical 3DGS to the posed space for each sampled frame and render the corresponding RGB image, alpha mask and depth using via differentiable renderer from the gsplat library \cite{ye2025gsplat}. We then apply several loss terms to supervise the rendered images against the ground truth frames (see below). Importantly, we divide our training into two stages: (i) a \emph{pose optimization} stage, where we optimize only the SMPL-X pose parameters while keeping the 3DGS fixed; and (ii) a \emph{3DGS optimization} stage, where we optimize only the 3DGS parameters while keeping the SMPL-X pose parameters fixed. We start with the pose optimisation stage after which we use the updated pose parameters and LHM initiliased 3DGS to synthesise novel training views using DiFix as described in the previous section. We then proceed to the 3DGS optimisation stage using the synthesized novel views as additional supervision. During this phase, each batch can therefore contain frames from either the source camera or one of the synthesized novel training cameras. 
 
 \paragraph{Photometric loss.}
-We supervise the rendered RGB with foreground masks to focus the objective on the humans and reduce the influence of the static background. Our photometric objective combines a masked RGB reconstruction loss (mean squared error) with a perceptual structural term based on SSIM computed on the masked images.
+We supervise the rendered RGB using foreground masks to focus the objective on the humans and reduce the influence of the static background. For a mini-batch $\mathcal{B}$, let $\hat{\mathbf{I}}_b\in[0,1]^{H\times W\times 3}$ denote the rendered RGB image, $\mathbf{I}_b$ the ground-truth RGB, and $\mathbf{M}_b\in[0,1]^{H\times W}$ the foreground mask (broadcast to three channels as $\mathbf{M}_b^3$). We form the masked target $\mathbf{I}^{m}_b=\mathbf{I}_b\odot\mathbf{M}_b^3$ and compute a masked RGB reconstruction loss term as follows:
+\begin{equation}
+  \mathcal{L}_{\mathrm{rgb}} = \frac{1}{|\mathcal{B}|}\sum_{b\in\mathcal{B}} \mathrm{MSE}\!\left(\hat{\mathbf{I}}_b, \mathbf{I}^{m}_b\right),
+\end{equation}
+and an SSIM-based structural term on the same masked images
+\begin{equation}
+  \mathcal{L}_{\mathrm{ssim}} = \frac{1}{|\mathcal{B}|}\sum_{b\in\mathcal{B}}\left(1 - \mathrm{SSIM}\!\left(\hat{\mathbf{I}}_b, \mathbf{I}^{m}_b\right)\right).
+\end{equation}
+Here, $\mathrm{MSE}(\mathbf{A},\mathbf{B})=\lVert \mathbf{A}-\mathbf{B}\rVert_2^2/|\mathbf{A}|$ denotes the mean squared error over all elements. In our implementation, SSIM is computed with \texttt{valid} padding, i.e., only over pixels where the full SSIM window fits inside the image.
 
 \paragraph{Silhouette loss.}
-We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation.
+We apply an additional silhouette loss on the predicted alpha mask, but only for samples coming from the source camera. This choice avoids strong gradients from potentially noisy masks in novel views and keeps the silhouette supervision anchored to the most reliable segmentation. For a mini-batch $\mathcal{B}$, let $\mathcal{S}\subseteq\mathcal{B}$ be the subset of indices corresponding to source-view samples, and let $\hat{\mathbf{A}}_b\in[0,1]^{H\times W}$ and $\mathbf{M}_b\in[0,1]^{H\times W}$ denote the rendered alpha mask and the ground-truth foreground mask. We compute
+\begin{equation}
+  \mathcal{L}_{\mathrm{sil}} =
+  \begin{cases}
+    \frac{1}{|\mathcal{S}|}\sum_{b\in\mathcal{S}} \mathrm{MSE}\!\left(\hat{\mathbf{A}}_b, \mathbf{M}_b\right), & |\mathcal{S}|>0,\\
+    0, & |\mathcal{S}|=0,
+  \end{cases}
+\end{equation}
+where $|\mathcal{S}|$ is the number of source-view samples in the mini-batch.
+
+\paragraph{Depth loss.}
+To also inject 3D prior knowledge, we apply an additional depth loss on the rendered depth map, but only for samples coming from the source camera. This is because we found that Depth Anything 3 fails when predicting depth for images with little to no background, which is the case for our synthesized novel training views. For a mini-batch $\mathcal{B}$ and its source-view subset $\mathcal{S}\subseteq\mathcal{B}$, let $\hat{\mathbf{D}}_b\in\mathbb{R}^{H\times W}$ denote the rendered depth and $\mathbf{D}_b$ the pseudo ground-truth depth. We mask depth using the foreground mask $\mathbf{M}_b$ as $\mathbf{D}^m_b=\mathbf{D}_b\odot \mathbf{M}_b$ and compute
+\begin{equation}
+  \mathcal{L}_{\mathrm{depth}} =
+  \begin{cases}
+    \frac{1}{|\mathcal{S}|}\sum_{b\in\mathcal{S}} \mathrm{MSE}\!\left(\hat{\mathbf{D}}_b, \mathbf{D}^{m}_b\right), & |\mathcal{S}|>0,\\
+    0, & |\mathcal{S}|=0,
+  \end{cases}
+\end{equation}
+where $|\mathcal{S}|$ is the number of source-view samples in the mini-batch.
 
 \paragraph{Canonical regularization.}
 We regularize the canonical 3DGS using two terms adopted from LHM \cite{qiu2025lhm}. The ASAP term (as spherical as possible) encourages isotropic Gaussian scales, which empirically reduces blurry edges. The ACAP term (as close as possible) encourages Gaussians to stay close to the SMPL-X surface and prevents drifting artifacts \cite{qiu2025lhm}.\newline
@@ -329,7 +321,8 @@ Putting everything together, our total objective is a weighted sum of the above 
   w_{\mathrm{rgb}}\mathcal{L}_{\mathrm{rgb}} +
   w_{\mathrm{ssim}}\mathcal{L}_{\mathrm{ssim}} +
   w_{\mathrm{sil}}\mathcal{L}_{\mathrm{sil}} +
+  w_{\mathrm{depth}}\mathcal{L}_{\mathrm{depth}} +
   w_{\mathrm{asap}}\mathcal{L}_{\mathrm{ASAP}} +
   w_{\mathrm{acap}}\mathcal{L}_{\mathrm{ACAP}}.
 \end{equation}
-Empirically, we found the following weights work best $w_{\mathrm{rgb}}=20.0$, $w_{\mathrm{ssim}}=0.4$, $w_{\mathrm{sil}}=4.0$, $w_{\mathrm{asap}}=200.0$, and $w_{\mathrm{acap}}=200.0$.
+Empirically, we found the following weights work best $w_{\mathrm{rgb}}=20.0$, $w_{\mathrm{ssim}}=0.8$, $w_{\mathrm{sil}}=2.0$, $w_{\mathrm{depth}}=0.5$, $w_{\mathrm{asap}}=200.0$, and $w_{\mathrm{acap}}=200.0$.
