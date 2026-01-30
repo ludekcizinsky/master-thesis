@@ -16,16 +16,17 @@ cd /home/cizinsky/master-thesis
 # gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair17_1/pair17/dance17
 # gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
 
-# python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $gt_scene_dir --src_cam_id 4 --frame-idx-range 30 40
+# estimated_scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair19_piggyback
+# python preprocess/vis/helpers/check_scene_in_3d.py --scenes-dir $estimated_scene_dir --src_cam_id 4 --frame-idx-range 30 40
 
 
 # ------ Visualise scene in 2D
 # --- hi4d pair 15
-exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
-python evaluation/visualise_scene_in_2d.py \
-  --exp-eval-dir $exp_eval_dir \
-  --cam-id 4 \
-  --max-frames 90
+# exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+# python evaluation/visualise_scene_in_2d.py \
+  # --exp-eval-dir $exp_eval_dir \
+  # --cam-id 4 \
+  # --max-frames 90
 
 # -- mmm piggybac
 # exp_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair19_piggyback/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
@@ -50,9 +51,8 @@ python evaluation/visualise_scene_in_2d.py \
 
 # ------ Visualise the qualitattive output
 # - hi4d pair15 fight
-# exp_name=v937_lrHigh
-# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/$exp_name/epoch_0030
-# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
+python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
 
 # - hi4d pair16 jump
 # exp_name=v860_test_speed
@@ -60,8 +60,8 @@ python evaluation/visualise_scene_in_2d.py \
 # python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
 
 # - taichi
-# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v605_first_tune_pose_then_3dgs/epoch_0000
-# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --frame-index 0
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --frame-index 20
 
 
 # ------ Visualise predicted and ground truth meshes for debug of 3d recon quality
