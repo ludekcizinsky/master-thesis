@@ -51,13 +51,21 @@ cd /home/cizinsky/master-thesis
 
 # ------ Visualise the qualitattive output
 # - hi4d pair15 fight
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
-python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4 --frame-index 0
 
 # - hi4d pair16 jump
 # exp_name=v860_test_speed
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair16_jump/evaluation/$exp_name/epoch_0000
 # python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 4
+
+# - hi4d pair17 dance
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair17_dance/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 28 --frame-index 80
+
+# - mmm dance
+scene_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --source-camera-id 0 --frame-index 90
 
 # - taichi
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
