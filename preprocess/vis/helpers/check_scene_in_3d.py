@@ -722,21 +722,21 @@ def main() -> None:
     )
 
 
-    R_fix = tf.SO3.from_x_radians(np.pi / 2)
-
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
+
+    # set up direction to be +y
+    server.scene.set_up_direction("+y")
 
     server.scene.add_frame(
         "/scene",
         show_axes=False,
+        position=-center_offset,
     )
     smpl_root = (
         server.scene.add_frame(
             "/scene/smpl", 
             show_axes=False, 
-            wxyz=tuple(R_fix.wxyz),
-            position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) 
         if smpl_layer is not None or smpl_layer_by_gender is not None
         else None
@@ -745,8 +745,6 @@ def main() -> None:
         server.scene.add_frame(
             "/scene/smplx", 
             show_axes=False, 
-            wxyz=tuple(R_fix.wxyz),
-            position=tuple((-R_fix.apply(center_offset)).tolist()),
         )
         if smplx_layer is not None
         else None
@@ -755,8 +753,6 @@ def main() -> None:
         server.scene.add_frame(
             "/scene/meshes", 
             show_axes=False,
-            wxyz=tuple(R_fix.wxyz),
-            position=tuple((-R_fix.apply(center_offset)).tolist()),
         ) 
         if mesh_frames else None
     )
@@ -764,8 +760,6 @@ def main() -> None:
         server.scene.add_frame(
             "/scene/cameras",
             show_axes=False,
-            wxyz=tuple(R_fix.wxyz),
-            position=tuple((-R_fix.apply(center_offset)).tolist()),
         )
         if camera_ids
         else None
@@ -774,8 +768,6 @@ def main() -> None:
         server.scene.add_frame(
             "/scene/3dgs",
             show_axes=False,
-            wxyz=tuple(R_fix.wxyz),
-            position=tuple((-R_fix.apply(center_offset)).tolist()),
         )
         if has_3dgs
         else None
