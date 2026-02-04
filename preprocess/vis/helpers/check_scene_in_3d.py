@@ -11,6 +11,7 @@ import torch
 import trimesh
 import viser
 import viser.transforms as tf
+import cv2
 from tqdm import tqdm
 import tyro
 from PIL import Image
@@ -146,6 +147,53 @@ def _find_image_hw(images_dir: Path, cam_id: str, frame_ids: List[str]) -> Optio
                     width, height = img.size
                 return height, width
     return None
+
+def _find_frame_image(images_dir: Path, cam_id: str, frame_id: str) -> Optional[Path]:
+    cam_dir = images_dir / cam_id
+    if not cam_dir.exists():
+        return None
+    for ext in (".jpg", ".png", ".jpeg"):
+        path = cam_dir / f"{frame_id}{ext}"
+        if path.exists():
+            return path
+    return None
+
+def _load_union_mask(scene_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+    mask_path = scene_dir / "seg" / "img_seg_mask" / cam_id / "all" / f"{frame_id}.png"
+    if not mask_path.exists():
+        return None
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return None
+    return mask
+
+def _masked_rgb_for_frame(scene_dir: Path, images_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+    img_path = _find_frame_image(images_dir, cam_id, frame_id)
+    if img_path is None:
+        return None
+    img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    img = img[..., ::-1]
+
+    mask = _load_union_mask(scene_dir, cam_id, frame_id)
+    if mask is None:
+        return img
+
+    if mask.shape[:2] != img.shape[:2]:
+        raise ValueError(f"Mask shape {mask.shape} does not match image shape {img.shape} for frame {frame_id} cam {cam_id}.")
+    keep = mask > 0
+    masked = img.copy()
+    masked[~keep] = 0
+    return masked
+
+def _set_gui_image(handle, image: np.ndarray) -> None:
+    if handle is None or image is None:
+        return
+    if hasattr(handle, "image"):
+        handle.image = image
+    elif hasattr(handle, "value"):
+        handle.value = image
 
 def _fov_aspect_from_intrinsics(
     intr: np.ndarray, image_hw: Optional[Tuple[int, int]]
@@ -455,9 +503,15 @@ def main() -> None:
     has_3dgs = len(all_posed_3dgs) > 0
 
     camera_ids = _collect_camera_ids(camera_dir)
+    image_camera_ids = _collect_camera_ids(images_dir)
     camera_image_hw = {
         cam_id: _find_image_hw(images_dir, cam_id, frames) for cam_id in camera_ids
     }
+
+    mask_cam_id: Optional[str] = None
+    if image_camera_ids:
+        src_id = str(cfg.src_cam_id)
+        mask_cam_id = src_id if src_id in image_camera_ids else image_camera_ids[0]
 
     # Load per-person genders if available (meta.npz -> genders).
     scene_genders = _load_scene_genders(cfg.scene_dir)
@@ -508,26 +562,15 @@ def main() -> None:
         else np.zeros(3, dtype=np.float32)
     )
 
-    # Compute a fixed rotation to align the scene upright.
-    # hi4d uses +y is up while the rest is -y up
-    # we need to convert to +z is up (viser's default).
-    sign = 1.0 if "hi4d" in str(cfg.scene_dir).lower() else -1.0
 
-    # If meshes are available and +y is up, align ground to y=0 based on the first frame.
-    if sign > 0 and frames:
-        ground_y = _ground_y_from_mesh(mesh_dir, frames[0])
-        if ground_y is not None:
-            center_offset = center_offset.copy()
-            center_offset[1] = ground_y
-
-    R_fix = tf.SO3.from_x_radians(sign * np.pi / 2)
+    R_fix = tf.SO3.from_x_radians(np.pi / 2)
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
 
     server.scene.add_frame(
         "/scene",
-        show_axes=True,
+        show_axes=False,
     )
     smpl_root = (
         server.scene.add_frame(
@@ -607,6 +650,17 @@ def main() -> None:
             initial_value=0,
         )
         frame_label = server.gui.add_text("File", frames[0])
+
+    # 2D masks view.
+    mask_image_handle = None
+    with server.gui.add_folder("2D masks"):
+        if mask_cam_id is None:
+            server.gui.add_text("Masked RGB", "No images/seg found for masks.")
+        else:
+            masked_rgb = _masked_rgb_for_frame(cfg.scene_dir, images_dir, mask_cam_id, frames[0])
+            if masked_rgb is None:
+                masked_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
+            mask_image_handle = server.gui.add_image(masked_rgb, label="Masked RGB")
 
     # Colors for different modalities.
     smpl_base = np.array([255, 140, 70], dtype=np.float32)
@@ -768,6 +822,12 @@ def main() -> None:
             camera_nodes[frame_idx].visible = show_cameras.value
         if gs_nodes and show_3dgs is not None:
             gs_nodes[frame_idx].visible = show_3dgs.value
+
+        if mask_cam_id is not None and mask_image_handle is not None:
+            masked_rgb = _masked_rgb_for_frame(cfg.scene_dir, images_dir, mask_cam_id, frames[frame_idx])
+            if masked_rgb is None:
+                masked_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
+            _set_gui_image(mask_image_handle, masked_rgb)
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:
