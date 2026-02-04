@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import trimesh
@@ -205,6 +208,33 @@ def _masked_rgb_for_frame(scene_dir: Path, images_dir: Path, cam_id: str, frame_
     masked = img.copy()
     masked[~keep] = 0
     return masked
+
+def _load_depth_map(depths_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+    depth_path = depths_dir / cam_id / f"{frame_id}.npy"
+    if not depth_path.exists():
+        return None
+    depth = np.load(depth_path)
+    return depth
+
+def _depth_plot_to_image(depth: np.ndarray, vmin: float = 2.0, vmax: float = 5.0) -> np.ndarray:
+    depth = np.nan_to_num(depth, nan=vmax, posinf=vmax, neginf=vmin)
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=100)
+    im = ax.imshow(depth, vmin=vmin, vmax=vmax, cmap="viridis")
+    ax.axis("off")
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Depth (m)")
+    fig.tight_layout(pad=0)
+    fig.canvas.draw()
+    buffer = np.asarray(fig.canvas.buffer_rgba())
+    image = buffer[:, :, :3].copy()
+    plt.close(fig)
+    return image
+
+def _depth_plot_for_frame(depths_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+    depth = _load_depth_map(depths_dir, cam_id, frame_id)
+    if depth is None:
+        return None
+    return _depth_plot_to_image(depth)
 
 def _set_gui_image(handle, image: np.ndarray) -> None:
     if handle is None or image is None:
@@ -602,6 +632,7 @@ def main() -> None:
     mesh_dir = cfg.scene_dir / "meshes"
     camera_dir = cfg.scene_dir / "all_cameras"
     images_dir = cfg.scene_dir / "images"
+    depths_dir = cfg.scene_dir / "depths"
 
     # Collect frames for each modality (if present).
     smpl_frames = _collect_frame_stems(smpl_dir, ".npz") if smpl_dir.exists() else []
@@ -654,6 +685,7 @@ def main() -> None:
 
     camera_ids = _collect_camera_ids(camera_dir)
     image_camera_ids = _collect_camera_ids(images_dir)
+    depth_camera_ids = _collect_camera_ids(depths_dir)
     camera_image_hw = {
         cam_id: _find_image_hw(images_dir, cam_id, frames) for cam_id in camera_ids
     }
@@ -671,6 +703,13 @@ def main() -> None:
             if cid in image_camera_ids:
                 overlay_cam_id = cid
                 break
+
+    depth_cam_id: Optional[str] = None
+    if depth_camera_ids:
+        if mask_cam_id is not None and mask_cam_id in depth_camera_ids:
+            depth_cam_id = mask_cam_id
+        else:
+            depth_cam_id = depth_camera_ids[0]
 
     # Load per-person genders if available (meta.npz -> genders).
     scene_genders = _load_scene_genders(cfg.scene_dir)
@@ -848,6 +887,19 @@ def main() -> None:
             overlay_rgb = overlay_images.get(frames[0], np.zeros((1, 1, 3), dtype=np.uint8))
             overlay_image_handle = server.gui.add_image(overlay_rgb, label="SMPL-X Overlay")
 
+    # Depth map view.
+    depth_image_handle = None
+    depth_images: Dict[str, np.ndarray] = {}
+    with server.gui.add_folder("Depth map"):
+        if depth_cam_id is None:
+            server.gui.add_text("Depth map", "No depth maps found.")
+        else:
+            depth_plot = _depth_plot_for_frame(depths_dir, depth_cam_id, frames[0])
+            if depth_plot is None:
+                depth_plot = np.zeros((1, 1, 3), dtype=np.uint8)
+            depth_images[frames[0]] = depth_plot
+            depth_image_handle = server.gui.add_image(depth_plot, label="Depth map")
+
     # Colors for different modalities.
     smpl_base = np.array([255, 140, 70], dtype=np.float32)
     smplx_base = np.array([70, 130, 255], dtype=np.float32)
@@ -1020,6 +1072,15 @@ def main() -> None:
             if overlay_rgb is None:
                 overlay_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
             _set_gui_image(overlay_image_handle, overlay_rgb)
+
+        if depth_cam_id is not None and depth_image_handle is not None:
+            depth_plot = depth_images.get(frames[frame_idx])
+            if depth_plot is None:
+                depth_plot = _depth_plot_for_frame(depths_dir, depth_cam_id, frames[frame_idx])
+                if depth_plot is None:
+                    depth_plot = np.zeros((1, 1, 3), dtype=np.uint8)
+                depth_images[frames[frame_idx]] = depth_plot
+            _set_gui_image(depth_image_handle, depth_plot)
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:

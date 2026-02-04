@@ -41,6 +41,20 @@ def main() -> None:
     ]
     subprocess.run(cmd, check=True)
 
+    cmd = [
+        "conda",
+        "run",
+        "-n",
+        "thesis",
+        "python",
+        "preprocess/train/gen_virtual_cameras.py",
+        "--scene-dir",
+        str(scene_dir),
+        "--num-of-cameras",
+        "7",
+    ]
+    subprocess.run(cmd, check=True)
+
 
 if __name__ == "__main__":
     main()
