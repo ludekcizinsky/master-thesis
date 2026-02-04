@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Dict, List, Optional, Tuple
@@ -15,6 +16,7 @@ import cv2
 from tqdm import tqdm
 import tyro
 from PIL import Image
+import pyrender
 from pytorch3d.transforms import quaternion_to_matrix
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -167,6 +169,23 @@ def _load_union_mask(scene_dir: Path, cam_id: str, frame_id: str) -> Optional[np
         return None
     return mask
 
+def _load_camera_params(camera_dir: Path, cam_id: str, frame_id: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    cam_path = camera_dir / cam_id / f"{frame_id}.npz"
+    cam_data = _load_npz(cam_path)
+    if cam_data is None:
+        return None
+    intr = cam_data.get("intrinsics")
+    extr = cam_data.get("extrinsics")
+    if intr is None or extr is None:
+        return None
+    if intr.ndim == 3:
+        intr = intr[0]
+    if extr.ndim == 3:
+        extr = extr[0]
+    if intr.shape != (3, 3) or extr.shape != (3, 4):
+        return None
+    return intr.astype(np.float32), extr.astype(np.float32)
+
 def _masked_rgb_for_frame(scene_dir: Path, images_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
     img_path = _find_frame_image(images_dir, cam_id, frame_id)
     if img_path is None:
@@ -194,6 +213,136 @@ def _set_gui_image(handle, image: np.ndarray) -> None:
         handle.image = image
     elif hasattr(handle, "value"):
         handle.value = image
+
+
+def _w2c_to_c2w_gl(w2c_cv: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    cv_to_gl = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    w2c_gl = cv_to_gl @ w2c_cv
+    c2w_gl = np.linalg.inv(w2c_gl)
+    c2w_gl[3, :] = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    return w2c_gl, c2w_gl
+
+
+def _render_colored_meshes(
+    meshes: List[trimesh.Trimesh],
+    colors: List[Tuple[int, int, int]],
+    renderer: pyrender.OffscreenRenderer,
+    intr: np.ndarray,
+    c2w_gl: np.ndarray,
+    mesh_alpha: float,
+) -> Tuple[np.ndarray, np.ndarray] | None:
+    if not meshes:
+        return None
+    fx, fy, cx, cy = (
+        float(intr[0, 0]),
+        float(intr[1, 1]),
+        float(intr[0, 2]),
+        float(intr[1, 2]),
+    )
+    scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=(1.0, 1.0, 1.0))
+    added = False
+    for mesh, color in zip(meshes, colors):
+        if mesh.vertices.size == 0 or mesh.faces.size == 0:
+            continue
+        base_color = (color[0] / 255.0, color[1] / 255.0, color[2] / 255.0, float(mesh_alpha))
+        material = pyrender.MetallicRoughnessMaterial(
+            metallicFactor=0.2,
+            roughnessFactor=0.8,
+            alphaMode="OPAQUE",
+            baseColorFactor=base_color,
+        )
+        pr_mesh = pyrender.Mesh.from_trimesh(mesh, material=material, smooth=False)
+        scene.add(pr_mesh)
+        added = True
+    if not added:
+        return None
+    camera = pyrender.IntrinsicsCamera(fx=fx, fy=fy, cx=cx, cy=cy, zfar=1e4)
+    scene.add(camera, pose=c2w_gl)
+    scene.add(
+        pyrender.DirectionalLight(color=np.ones(3), intensity=2.0),
+        pose=c2w_gl,
+    )
+    color_rgba, depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+    return color_rgba, depth
+
+
+def _render_smplx_overlay(
+    scene_dir: Path,
+    images_dir: Path,
+    camera_dir: Path,
+    cam_id: str,
+    frame_id: str,
+    smplx_layer,
+    smplx_faces: Optional[np.ndarray],
+    device: torch.device,
+    renderer_state: Dict[str, object],
+) -> Optional[np.ndarray]:
+    img_path = _find_frame_image(images_dir, cam_id, frame_id)
+    if img_path is None:
+        return None
+    rgb = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if rgb is None:
+        return None
+    rgb = rgb[..., ::-1]
+
+    if smplx_layer is None or smplx_faces is None:
+        return rgb
+
+    smplx_data = _load_npz(scene_dir / "smplx" / f"{frame_id}.npz")
+    if smplx_data is None:
+        return rgb
+
+    verts = _smplx_vertices(smplx_layer, smplx_data, device, genders=None, layer_by_gender=None)
+    if verts is None or verts.size == 0:
+        return rgb
+
+    cam_params = _load_camera_params(camera_dir, cam_id, frame_id)
+    if cam_params is None:
+        return rgb
+    intr, extr = cam_params
+
+    height, width = rgb.shape[:2]
+    if renderer_state.get("hw") != (height, width):
+        if renderer_state.get("renderer") is not None:
+            renderer_state["renderer"].delete()
+        renderer_state["renderer"] = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
+        renderer_state["hw"] = (height, width)
+
+    meshes: List[trimesh.Trimesh] = []
+    colors: List[Tuple[int, int, int]] = []
+    for pid in range(verts.shape[0]):
+        mesh = trimesh.Trimesh(vertices=verts[pid], faces=smplx_faces, process=False)
+        meshes.append(mesh)
+        colors.append(_color_for_person(np.array([70, 130, 255], dtype=np.float32), pid))
+
+    w2c_cv = np.eye(4, dtype=np.float32)
+    w2c_cv[:3, :4] = extr
+    _, c2w_gl = _w2c_to_c2w_gl(w2c_cv)
+
+    render_out = _render_colored_meshes(
+        meshes,
+        colors,
+        renderer_state["renderer"],
+        intr,
+        c2w_gl,
+        mesh_alpha=0.8,
+    )
+    if render_out is None:
+        return rgb
+    smplx_rgba, _ = render_out
+    smplx_rgb = smplx_rgba[..., :3].astype(np.float32)
+    smplx_alpha = smplx_rgba[..., 3:4].astype(np.float32) / 255.0
+    base = rgb.astype(np.float32)
+    overlay = np.clip(smplx_rgb * smplx_alpha + base * (1.0 - smplx_alpha), 0, 255).astype(np.uint8)
+    return overlay
 
 def _fov_aspect_from_intrinsics(
     intr: np.ndarray, image_hw: Optional[Tuple[int, int]]
@@ -442,6 +591,7 @@ def _smplx_vertices(
 
 
 def main() -> None:
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
     cfg = tyro.cli(Config)
     device = torch.device(cfg.device if cfg.device == "cpu" or torch.cuda.is_available() else "cpu")
     seq_name = cfg.scene_dir.name
@@ -512,6 +662,15 @@ def main() -> None:
     if image_camera_ids:
         src_id = str(cfg.src_cam_id)
         mask_cam_id = src_id if src_id in image_camera_ids else image_camera_ids[0]
+
+    overlay_cam_id: Optional[str] = None
+    if mask_cam_id is not None and mask_cam_id in camera_ids:
+        overlay_cam_id = mask_cam_id
+    else:
+        for cid in camera_ids:
+            if cid in image_camera_ids:
+                overlay_cam_id = cid
+                break
 
     # Load per-person genders if available (meta.npz -> genders).
     scene_genders = _load_scene_genders(cfg.scene_dir)
@@ -661,6 +820,41 @@ def main() -> None:
             if masked_rgb is None:
                 masked_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
             mask_image_handle = server.gui.add_image(masked_rgb, label="Masked RGB")
+
+    # Precompute SMPL-X overlays to avoid GL usage inside GUI callbacks.
+    overlay_images: Dict[str, np.ndarray] = {}
+    if overlay_cam_id is not None and smplx_layer is not None and smplx_faces is not None:
+        overlay_renderer_state: Dict[str, object] = {"renderer": None, "hw": None}
+        for frame_id in tqdm(frames, desc="Rendering SMPL-X overlays", total=len(frames)):
+            try:
+                overlay_rgb = _render_smplx_overlay(
+                    cfg.scene_dir,
+                    images_dir,
+                    camera_dir,
+                    overlay_cam_id,
+                    frame_id,
+                    smplx_layer,
+                    smplx_faces,
+                    device,
+                    overlay_renderer_state,
+                )
+            except Exception as exc:
+                print(f"[WARN] Failed to render overlay for frame {frame_id}: {exc}")
+                overlay_rgb = None
+            if overlay_rgb is None:
+                overlay_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
+            overlay_images[frame_id] = overlay_rgb
+        if overlay_renderer_state.get("renderer") is not None:
+            overlay_renderer_state["renderer"].delete()
+
+    # 3D -> 2D view.
+    overlay_image_handle = None
+    with server.gui.add_folder("3D -> 2D"):
+        if not overlay_images:
+            server.gui.add_text("SMPL-X Overlay", "Missing camera/images/SMPL-X for overlay.")
+        else:
+            overlay_rgb = overlay_images.get(frames[0], np.zeros((1, 1, 3), dtype=np.uint8))
+            overlay_image_handle = server.gui.add_image(overlay_rgb, label="SMPL-X Overlay")
 
     # Colors for different modalities.
     smpl_base = np.array([255, 140, 70], dtype=np.float32)
@@ -828,6 +1022,12 @@ def main() -> None:
             if masked_rgb is None:
                 masked_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
             _set_gui_image(mask_image_handle, masked_rgb)
+
+        if overlay_image_handle is not None and overlay_images:
+            overlay_rgb = overlay_images.get(frames[frame_idx])
+            if overlay_rgb is None:
+                overlay_rgb = np.zeros((1, 1, 3), dtype=np.uint8)
+            _set_gui_image(overlay_image_handle, overlay_rgb)
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:
