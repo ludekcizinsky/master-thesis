@@ -64,8 +64,8 @@ cd /home/cizinsky/master-thesis
 # python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --no-is-minus-y-up --source-camera-id 28 --frame-index 80
 
 # - mmm dance
-scene_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
-python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --source-camera-id 0 --frame-index 90
+# scene_eval_dir=/scratch/izar/cizinsky/thesis/results/mmm_dance/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+# python evaluation/visualise_scene_in_3d.py --eval-scene-dir $scene_eval_dir --source-camera-id 0 --frame-index 90
 
 # - taichi
 # scene_eval_dir=/scratch/izar/cizinsky/thesis/results/taichi/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
