@@ -23,12 +23,20 @@ def _load_smplx(path: Path, device: torch.device):
 
     npz = np.load(path)
 
-    def add_key(key):
-        arrs = torch.from_numpy(npz[key]).float()
+    def add_key(key, default=None):
+        if key in npz:
+            arrs = torch.from_numpy(npz[key]).float()
+        elif default is not None:
+            arrs = torch.from_numpy(default).float()
+        else:
+            raise KeyError(f"{key} is not a file in the archive")
         return arrs.to(device)  # [P, ...]
 
+    betas = add_key("betas")
+    n_persons = betas.shape[0]
+
     smplx = {
-        "betas": add_key("betas"),
+        "betas": betas,
         "root_pose": add_key("root_pose"),   # [P,3] world axis-angle
         "body_pose": add_key("body_pose"),
         "jaw_pose": add_key("jaw_pose"),
@@ -37,10 +45,8 @@ def _load_smplx(path: Path, device: torch.device):
         "lhand_pose": add_key("lhand_pose"),
         "rhand_pose": add_key("rhand_pose"),
         "trans": add_key("trans"),           # [P,3] world translation
-        "expr": add_key("expression"),
+        "expr": add_key("expression", default=np.zeros((n_persons, 100), dtype=np.float32)),
     }
-
-    smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=device)
 
     return smplx
 
@@ -87,7 +93,7 @@ def get_posed_3dgs(scene_dir: Path, frames: list[str]):
 
     # Load Canonical 3DGS
     root_gs_model_dir = scene_dir / "canon_3dgs_lhm"
-    gs_model_list = torch.load(root_gs_model_dir / "union" / "human3r_gs.pt", map_location=device, weights_only=False)
+    gs_model_list = torch.load(root_gs_model_dir / "union" / "gs.pt", map_location=device, weights_only=False)
 
     # Get single view SMPLX data
     total_n_frames = len(ds)

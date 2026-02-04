@@ -20,3 +20,4 @@ conda activate da3
 # - basics
 pip install xformers torch\>=2 torchvision
 pip install . # Basic
+pip install tyro

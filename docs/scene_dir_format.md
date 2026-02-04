@@ -46,7 +46,7 @@ scene_dir/
 ### images
 ---
 
-This folder contains the RGB images of the sequence.
+This folder contains the RGB images of the sequence. We use 6 digit zero-padded frame indices.
 
 ```
 scene_dir/

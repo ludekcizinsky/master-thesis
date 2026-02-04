@@ -19,7 +19,7 @@ from PIL import Image
 import pyrender
 from pytorch3d.transforms import quaternion_to_matrix
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from submodules.smplx import smplx
