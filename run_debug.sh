@@ -17,8 +17,8 @@ cd /home/cizinsky/master-thesis
 # gt_scene_dir=/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair19_2/piggyback19
 
 # bash preprocess/train/prepare_all_scenes.sh 
-estimated_scene_dir=/scratch/izar/cizinsky/thesis/v2_preprocessing/hi4d_pair15_fight
-python preprocess/vis/check_scene_in_3d.py --scenes-dir $estimated_scene_dir --src_cam_id 4 --frame-idx-range 10 100
+estimated_scene_dir=/scratch/izar/cizinsky/thesis/v2_preprocessing/luka_vs_frank
+python preprocess/vis/check_scene_in_3d.py --scenes-dir $estimated_scene_dir --src_cam_id 0 --frame-idx-range 30 31 --vis-3dgs
 
 
 # ------ Visualise scene in 2D
