@@ -8,10 +8,12 @@ conda activate thesis
 
 cd /home/cizinsky/master-thesis
 
+reformat_script_path=preprocess/eval/mmm/helpers/reformat.py
+
 preprocessing_root=/scratch/izar/cizinsky/ait_datasets/full/mmm
 echo "Reformatting mmm_dance"
-python preprocess/mmm/helpers/reformat.py --scene-root-dir $preprocessing_root/dance 
+python $reformat_script_path --scene-root-dir $preprocessing_root/dance 
 echo "Reformatting mmm_lift"
-python preprocess/mmm/helpers/reformat.py --scene-root-dir $preprocessing_root/lift
+python $reformat_script_path --scene-root-dir $preprocessing_root/lift
 echo "Reformatting mmm_walkdance"
-python preprocess/mmm/helpers/reformat.py --scene-root-dir $preprocessing_root/walkdance 
+python $reformat_script_path --scene-root-dir $preprocessing_root/walkdance 

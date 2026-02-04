@@ -1,27 +1,27 @@
 ## How this works
 
-During preprocessing, we not only need to extract new features from the monocular video frames, but also need to ensure that the data is in the common format expected by the trainer. Further, we also need to ensure that the preprocessed dataset can be compared with the corresponding ground truth dataset.
+In this section, we describe how to prepare the data for training and evaluation. 
 
-*Note: as of this moment, the preprocessing pipeline is semi-automatic and requires some manual intervention to ensure that the results are correct. This will be hopefully improved in the future.*
 
-### Preparing inputs
+### Preparing GT evaluation data
 
-As already mentioned, the preprocessing pipeline expects monocular video frames as input. Indeed, we might also have access to some other ground truth data against which we would like to compare our results. For this reason, I have developed three types of input scene preparation scripts that will prepare the input data into the expected format.
+In this section, we describe how to prepare the ground truth evaluation data for each dataset. This step is important to ensure that during evaluation, we can compare our reconstructed results with the ground truth data in a consistent manner.
 
 #### Hi4D dataset
 
 ```bash
-bash preprocess/hi4d/reformat.sh
+bash preprocess/eval/hi4d/reformat.sh
 ``` 
 
 This script will:
 1. reformat static cameras into the common format
 2. reformat meshes into the common format
+3. convert smpl to smplx format
 
 #### MMM
 
 ```bash
-bash preprocess/mmm/reformat.sh
+bash preprocess/eval/mmm/reformat.sh
 ``` 
 
 This script will:
@@ -29,7 +29,7 @@ This script will:
 2. reformat the dynamic camera into the common format and adjust intrinsics accordingly to the new image resolution
 3. reformat meshes into the common format
 
-#### In-the-wild videos
+### Preparing training data from monocular videos
 
 ```bash
 bash preprocess/custom/mp4_to_frames.sh

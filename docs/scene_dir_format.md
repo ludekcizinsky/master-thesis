@@ -171,17 +171,17 @@ This folder contains canonical 3D Gaussian splat models for each person, as prod
 scene_dir/
 ├── canon_3dgs_lhm/
 │   ├── 00/                       # person 0
-│   │   ├── human3r_gs.pt
-│   │   ├── human3r_input_image.png
-│   │   ├── human3r_input_head.png
+│   │   ├── gs.pt
+│   │   ├── input_image.png
+│   │   ├── input_head.png
 │   ├── 01/                       # person 1
 │   │   └── ...
 │   ├── union/                    # combined models across persons
-│   │   ├── human3r_gs.pt
+│   │   ├── gs.pt
 ```
 
 Notes:
 - `00`, `01`, ... are per-person canonical models (one directory per tracked person).
-- `*_gs.pt` are torch checkpoints containing the 3DGS parameters (xyz, scaling, rotation, opacity, SH features) in the canonical pose.
-- `*_input_image.png` / `*_input_head.png` are reference images used to build the canonical model.
+- `gs.pt` are torch checkpoints containing the 3DGS parameters (xyz, scaling, rotation, opacity, SH features) in the canonical pose.
+- `input_image.png` / `input_head.png` are reference images used to build the canonical model.
 - `union/` stores a combined set of models across all persons 
