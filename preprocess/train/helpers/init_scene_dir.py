@@ -40,10 +40,8 @@ def _ensure_scene_dirs(scene_dir: Path) -> None:
         "all_cameras",
         "images",
         "seg",
-        "smpl",
         "smplx",
         "depths",
-        "meshes",
         "canon_3dgs_lhm",
     ):
         (scene_dir / name).mkdir(parents=True, exist_ok=True)

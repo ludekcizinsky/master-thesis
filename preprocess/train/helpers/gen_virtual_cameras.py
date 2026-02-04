@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import tyro
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from preprocess.custom.helpers.cameras_and_smplx_reformat import (

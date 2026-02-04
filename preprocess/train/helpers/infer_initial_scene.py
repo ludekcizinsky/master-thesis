@@ -9,15 +9,37 @@ import tyro
 
 @dataclass
 class Args:
-    scene_dir: str
+    video_path: str
+    seq_name: str
+    cam_id: int
+    output_dir: str
     ref_frame_idx: int = 0
 
 
 def main() -> None:
     args = tyro.cli(Args)
-    scene_dir = Path(args.scene_dir)
+    scene_dir = Path(args.output_dir) / args.seq_name
+
+    cmd = [
+        "conda",
+        "run",
+        "-n",
+        "thesis",
+        "python",
+        "preprocess/train/helpers/init_scene_dir.py",
+        "--video-path",
+        str(args.video_path),
+        "--seq-name",
+        str(args.seq_name),
+        "--cam-id",
+        str(args.cam_id),
+        "--output-dir",
+        str(args.output_dir),
+    ]
+    subprocess.run(cmd, check=True)
+
     if not scene_dir.exists():
-        raise RuntimeError(f"Scene dir does not exist: {scene_dir}")
+        raise RuntimeError(f"Scene dir does not exist after init: {scene_dir}")
 
     cmd = [
         "bash",
@@ -47,7 +69,7 @@ def main() -> None:
         "-n",
         "thesis",
         "python",
-        "preprocess/train/gen_virtual_cameras.py",
+        "preprocess/train/helpers/gen_virtual_cameras.py",
         "--scene-dir",
         str(scene_dir),
         "--num-of-cameras",

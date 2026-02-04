@@ -56,14 +56,7 @@ This script will:
 1. run PromptHMR with SAM3 to infer the invidual human masks, SMPLX and camera parameters in the world coordinate system 
 2. run Depth Anything to infer the depth maps for each frame 
 3. run Large Human Model (LHM) to obtain initial canonical 3dgs representation of the humans in the scene, it will use the `ref-frame-idx` to select the reference frame to infer the canonical 3dgs representation 
-
-Finally, since we only have a single input camera, we need to generate additional virtual cameras to facilitate the training. We can do this by running the following script:
-
-```bash
-python /home/cizinsky/master-thesis/preprocess/train/gen_virtual_cameras.py \
-  --scene-dir /path/to/scene_dir \
-  --num-of-cameras 7
-```
+4. run virtual camera generation to create additional static cameras around the input camera to improve the coverage of the scene during training, these will be later used to render additional training views and improve these using DiFix
 
 ### Visualising the preprocessed data
 
