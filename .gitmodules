@@ -16,3 +16,6 @@
 [submodule "submodules/sam3"]
 	path = submodules/sam3
 	url = git@github.com:ludekcizinsky/sam3.git
+[submodule "submodules/prompthmr"]
+	path = submodules/prompthmr
+	url = git@github.com:ludekcizinsky/prompt-hmr.git
