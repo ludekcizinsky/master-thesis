@@ -7,7 +7,6 @@ b. try to add some tunable 2dgs like params that would turn our underlying repre
 3. Make the preprocessing pipeline fully automated - ideally use SAM3D to get masks and tracks automatically from video -> also probabky would need to add some heuristic to remove tracks that are too short or not humans. Then feed that to PromptHMR to obtain get initial smplx params and camera poses
 4. would be nice to use +y is up as the convention for the smplx params
 5. Use SAM3D to add reconstruction of objects in the scene
-6. Tuning pose during the 3dgs optimization stage as well - eg integrate the progressive sam refinement that I already have implemented in the playground - i spent quite signifficant porition of time on this topic
 7. Using 2D pose estimator as an extra step in the pipeline to improve initial pose estimates
 8. Better Difix model via:
     a.  training on in-domain data (human data)

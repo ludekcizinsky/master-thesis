@@ -216,7 +216,7 @@ def _load_depth_map(depths_dir: Path, cam_id: str, frame_id: str) -> Optional[np
     depth = np.load(depth_path)
     return depth
 
-def _depth_plot_to_image(depth: np.ndarray, vmin: float = 2.0, vmax: float = 5.0) -> np.ndarray:
+def _depth_plot_to_image(depth: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     depth = np.nan_to_num(depth, nan=vmax, posinf=vmax, neginf=vmin)
     fig, ax = plt.subplots(figsize=(6, 4), dpi=100)
     im = ax.imshow(depth, vmin=vmin, vmax=vmax, cmap="viridis")
@@ -230,11 +230,60 @@ def _depth_plot_to_image(depth: np.ndarray, vmin: float = 2.0, vmax: float = 5.0
     plt.close(fig)
     return image
 
-def _depth_plot_for_frame(depths_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+def _depth_plot_for_frame(
+    depths_dir: Path, cam_id: str, frame_id: str, depth_range: Optional[Tuple[float, float]]
+) -> Optional[np.ndarray]:
     depth = _load_depth_map(depths_dir, cam_id, frame_id)
     if depth is None:
         return None
-    return _depth_plot_to_image(depth)
+    if depth_range is None:
+        vmin, vmax = 2.0, 5.0
+    else:
+        vmin, vmax = depth_range
+    return _depth_plot_to_image(depth, vmin=vmin, vmax=vmax)
+
+
+def _compute_depth_range(
+    depths_dir: Path,
+    cam_id: str,
+    frame_ids: List[str],
+    sample_limit: int = 50,
+    percentiles: Tuple[float, float] = (10.0, 90.0),
+    min_span: float = 0.5,
+) -> Optional[Tuple[float, float]]:
+    if not depths_dir.exists():
+        return None
+    cam_dir = depths_dir / cam_id
+    if not cam_dir.exists():
+        return None
+    samples = frame_ids[:sample_limit]
+    values: List[np.ndarray] = []
+    for frame_id in samples:
+        depth_path = cam_dir / f"{frame_id}.npy"
+        if not depth_path.exists():
+            continue
+        depth = np.load(depth_path)
+        if depth is None:
+            continue
+        depth = np.asarray(depth)
+        valid = np.isfinite(depth) & (depth > 0)
+        if not np.any(valid):
+            continue
+        vals = depth[valid].astype(np.float32)
+        values.append(vals)
+    if not values:
+        return None
+    all_vals = np.concatenate(values, axis=0)
+    if all_vals.size == 0:
+        return None
+    vmin, vmax = np.percentile(all_vals, percentiles)
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return None
+    if vmax - vmin < min_span:
+        center = 0.5 * (vmin + vmax)
+        vmin = max(0.0, center - min_span * 0.5)
+        vmax = center + min_span * 0.5
+    return float(vmin), float(vmax)
 
 def _set_gui_image(handle, image: np.ndarray) -> None:
     if handle is None or image is None:
@@ -890,11 +939,15 @@ def main() -> None:
     # Depth map view.
     depth_image_handle = None
     depth_images: Dict[str, np.ndarray] = {}
+    depth_range: Optional[Tuple[float, float]] = None
     with server.gui.add_folder("Depth map"):
         if depth_cam_id is None:
             server.gui.add_text("Depth map", "No depth maps found.")
         else:
-            depth_plot = _depth_plot_for_frame(depths_dir, depth_cam_id, frames[0])
+            depth_range = _compute_depth_range(depths_dir, depth_cam_id, frames)
+            depth_plot = _depth_plot_for_frame(
+                depths_dir, depth_cam_id, frames[0], depth_range
+            )
             if depth_plot is None:
                 depth_plot = np.zeros((1, 1, 3), dtype=np.uint8)
             depth_images[frames[0]] = depth_plot
@@ -1076,7 +1129,9 @@ def main() -> None:
         if depth_cam_id is not None and depth_image_handle is not None:
             depth_plot = depth_images.get(frames[frame_idx])
             if depth_plot is None:
-                depth_plot = _depth_plot_for_frame(depths_dir, depth_cam_id, frames[frame_idx])
+                depth_plot = _depth_plot_for_frame(
+                    depths_dir, depth_cam_id, frames[frame_idx], depth_range
+                )
                 if depth_plot is None:
                     depth_plot = np.zeros((1, 1, 3), dtype=np.uint8)
                 depth_images[frames[frame_idx]] = depth_plot
