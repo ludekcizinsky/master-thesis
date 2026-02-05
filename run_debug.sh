@@ -10,5 +10,8 @@ conda activate thesis
 # navigate to project directory
 cd /home/cizinsky/master-thesis
 
+# debug
+# estimated_scene_dir=/scratch/izar/cizinsky/thesis/debug/sample_hi4d_pair19_piggyback
 estimated_scene_dir=/scratch/izar/cizinsky/thesis/v2_preprocessing/hi4d_pair19_piggyback
-python preprocess/vis/check_scene_in_3d.py --scene-dir $estimated_scene_dir --src-cam-id 4 --frame-idx-range 100 150
+# bash submodules/prompthmr/run_inference.sh $estimated_scene_dir --static-camera
+python preprocess/vis/check_scene_in_3d.py --scene-dir $estimated_scene_dir --src-cam-id 4 --frame-idx-range 0 50
