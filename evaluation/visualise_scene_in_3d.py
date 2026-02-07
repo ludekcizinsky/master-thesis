@@ -168,6 +168,9 @@ def _depth_to_point_cloud(
     stride: int,
     max_depth: float,
     rgb: Optional[np.ndarray],
+    filter_sparse_points: bool = False,
+    sparse_voxel_size: float = 0.05,
+    sparse_min_neighbors: int = 12,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     if depth.ndim != 2:
         raise ValueError(f"Expected depth map with shape (H, W), got {depth.shape}")
@@ -191,7 +194,53 @@ def _depth_to_point_cloud(
     colors = None
     if rgb is not None:
         colors = rgb[::stride, ::stride][valid]
-    return points_world.astype(np.float32), colors
+    points_world = points_world.astype(np.float32)
+    if filter_sparse_points:
+        points_world, colors = _remove_sparse_points(
+            points_world,
+            colors,
+            voxel_size=float(sparse_voxel_size),
+            min_neighbors=int(sparse_min_neighbors),
+        )
+    return points_world, colors
+
+
+def _remove_sparse_points(
+    points: np.ndarray,
+    colors: Optional[np.ndarray],
+    *,
+    voxel_size: float,
+    min_neighbors: int,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    if points.size == 0:
+        return points, colors
+    if voxel_size <= 0.0 or min_neighbors <= 1:
+        return points, colors
+
+    voxel_coords = np.floor(points / float(voxel_size)).astype(np.int32)
+    unique_voxels, inverse, counts = np.unique(
+        voxel_coords, axis=0, return_inverse=True, return_counts=True
+    )
+
+    count_by_voxel: Dict[Tuple[int, int, int], int] = {}
+    for voxel, count in zip(unique_voxels, counts):
+        key = (int(voxel[0]), int(voxel[1]), int(voxel[2]))
+        count_by_voxel[key] = int(count)
+
+    neighbor_counts = np.zeros(unique_voxels.shape[0], dtype=np.int32)
+    for idx, voxel in enumerate(unique_voxels):
+        vx, vy, vz = int(voxel[0]), int(voxel[1]), int(voxel[2])
+        total = 0
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    total += count_by_voxel.get((vx + dx, vy + dy, vz + dz), 0)
+        neighbor_counts[idx] = total
+
+    keep_mask = neighbor_counts[inverse] >= int(min_neighbors)
+    filtered_points = points[keep_mask]
+    filtered_colors = colors[keep_mask] if colors is not None else None
+    return filtered_points, filtered_colors
 
 
 def _color_for_track(track_id: str) -> Tuple[int, int, int]:
@@ -224,6 +273,9 @@ class Args:
     background_max_depth: float = 5.0
     depth_stride: int = 4
     background_point_size: float = 0.02
+    background_filter_sparse_points: bool = True
+    background_filter_voxel_size: float = 0.05
+    background_filter_min_neighbors: int = 12
     max_scale: Optional[float] = 0.5
     max_gaussians: Optional[int] = 200000
     seed: int = 0
@@ -488,6 +540,9 @@ def main(args: Args) -> None:
             stride=args.depth_stride,
             max_depth=args.background_max_depth,
             rgb=background_rgb,
+            filter_sparse_points=args.background_filter_sparse_points,
+            sparse_voxel_size=args.background_filter_voxel_size,
+            sparse_min_neighbors=args.background_filter_min_neighbors,
         )
         if background_colors is None:
             background_colors = np.full((background_points.shape[0], 3), 180, dtype=np.uint8)
@@ -514,6 +569,9 @@ def main(args: Args) -> None:
     if background_handle is not None:
         with server.gui.add_folder("Background"):
             bg_checkbox = server.gui.add_checkbox("Show Background", False)
+            bg_sparse_checkbox = server.gui.add_checkbox(
+                "Filter Sparse Points", bool(args.background_filter_sparse_points)
+            )
             bg_depth_slider = server.gui.add_slider(
                 "Max Depth (m)",
                 min=0.5,
@@ -521,13 +579,22 @@ def main(args: Args) -> None:
                 step=0.1,
                 initial_value=float(args.background_max_depth),
             )
+            bg_voxel_slider = server.gui.add_slider(
+                "Filter Radius (m)",
+                min=0.01,
+                max=0.5,
+                step=0.01,
+                initial_value=float(args.background_filter_voxel_size),
+            )
+            bg_neighbor_slider = server.gui.add_slider(
+                "Min Neighbor Count",
+                min=1,
+                max=100,
+                step=1,
+                initial_value=int(args.background_filter_min_neighbors),
+            )
 
-            @bg_checkbox.on_update
-            def _(_event=None, handle=background_handle, bg_checkbox=bg_checkbox) -> None:
-                handle.visible = bool(bg_checkbox.value)
-
-            @bg_depth_slider.on_update
-            def _(_event=None, bg_checkbox=bg_checkbox) -> None:
+            def _refresh_background_point_cloud() -> None:
                 nonlocal background_handle
                 points, colors = _depth_to_point_cloud(
                     background_depth,
@@ -536,6 +603,9 @@ def main(args: Args) -> None:
                     stride=args.depth_stride,
                     max_depth=float(bg_depth_slider.value),
                     rgb=background_rgb,
+                    filter_sparse_points=bool(bg_sparse_checkbox.value),
+                    sparse_voxel_size=float(bg_voxel_slider.value),
+                    sparse_min_neighbors=int(bg_neighbor_slider.value),
                 )
                 if colors is None:
                     colors = np.full((points.shape[0], 3), 180, dtype=np.uint8)
@@ -552,6 +622,26 @@ def main(args: Args) -> None:
                         point_shape="rounded",
                     )
                 background_handle.visible = bool(bg_checkbox.value)
+
+            @bg_checkbox.on_update
+            def _(_event=None, handle=background_handle, bg_checkbox=bg_checkbox) -> None:
+                handle.visible = bool(bg_checkbox.value)
+
+            @bg_depth_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_sparse_checkbox.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_voxel_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_neighbor_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
 
     if gs_person_handles:
         with server.gui.add_folder("3DGS"):
