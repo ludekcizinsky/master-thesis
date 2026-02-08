@@ -24,3 +24,4 @@ b. try to add some tunable 2dgs like params that would turn our underlying repre
 16. figure out how to exclude properly the misc folder when uploading the preprocessed data
 17. adding LR scheduler to the training pipeline
 18. sam3 works in general well, but it still fails in cases where people interact closely, e.g. it assigns part of the person A's hand to person B - e.g. mmm walkdance segmentation results.
+19. More practical setting: assume we have access to high quality canonical humans, and therefore, we just need to estimated the motion from the given scene and (optionally) tune the estimated motion. This way, you can offload the detail apperance task to relying on the high quality canonical human, and just focus on getting the motion right. This is much more feasible in Veo's setting where you have very little about the appearance, but pose is much more tractable

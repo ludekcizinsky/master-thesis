@@ -19,7 +19,7 @@ conda activate sam3
 # Install dependencies
 # - basics
 module load gcc cuda/12.1
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install .
 pip install opencv-python
 pip install einops
