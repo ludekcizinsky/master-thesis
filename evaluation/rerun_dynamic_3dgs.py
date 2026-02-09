@@ -12,7 +12,7 @@ import urllib.parse
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -131,6 +131,7 @@ def _state_to_point_arrays(
     max_point_radius: Optional[float],
     max_gaussians: Optional[int],
     seed: int,
+    color_by_opacity: bool,
 ) -> Dict[str, np.ndarray]:
     xyz = state["xyz"].float()
     opacity = state["opacity"].float().squeeze(-1).clamp(0.0, 1.0)
@@ -158,12 +159,83 @@ def _state_to_point_arrays(
     if max_point_radius is not None:
         radii = radii.clamp(max=float(max_point_radius))
 
-    rgb = rgb * opacity.unsqueeze(-1)
+    if color_by_opacity:
+        rgb = rgb * opacity.unsqueeze(-1)
 
     return {
         "positions": xyz.detach().cpu().numpy().astype(np.float32),
         "colors": (rgb.detach().cpu().numpy().clip(0.0, 1.0) * 255.0).astype(np.uint8),
         "radii": radii.detach().cpu().numpy().astype(np.float32),
+    }
+
+
+def _state_to_ellipsoid_arrays(
+    state: Dict[str, Any],
+    *,
+    min_opacity: float,
+    ellipsoid_half_size_scale: float,
+    max_ellipsoid_half_size: Optional[float],
+    max_gaussians: Optional[int],
+    seed: int,
+    rotation_format: Literal["wxyz", "xyzw"],
+    min_alpha: int,
+    alpha_scale: float,
+    color_by_opacity: bool,
+) -> Dict[str, np.ndarray]:
+    xyz = state["xyz"].float()
+    opacity = state["opacity"].float().squeeze(-1).clamp(0.0, 1.0)
+    scaling = state["scaling"].float().clamp(min=1e-8)
+    rotation = state["rotation"].float()
+    shs = state["shs"].float()
+
+    rgb = shs.squeeze(1).clamp(0.0, 1.0)
+
+    keep = opacity >= float(min_opacity)
+    xyz = xyz[keep]
+    opacity = opacity[keep]
+    scaling = scaling[keep]
+    rotation = rotation[keep]
+    rgb = rgb[keep]
+
+    if max_gaussians is not None and xyz.shape[0] > int(max_gaussians):
+        g = torch.Generator(device=xyz.device)
+        g.manual_seed(int(seed))
+        idx = torch.randperm(xyz.shape[0], generator=g)[: int(max_gaussians)]
+        xyz = xyz[idx]
+        opacity = opacity[idx]
+        scaling = scaling[idx]
+        rotation = rotation[idx]
+        rgb = rgb[idx]
+
+    half_sizes = scaling * float(ellipsoid_half_size_scale)
+    if max_ellipsoid_half_size is not None:
+        half_sizes = half_sizes.clamp(max=float(max_ellipsoid_half_size))
+
+    rotation = torch.nn.functional.normalize(rotation, dim=-1)
+    if rotation_format == "wxyz":
+        quaternions = rotation[:, [1, 2, 3, 0]]
+    else:
+        quaternions = rotation
+
+    rgba = torch.cat(
+        [
+            (
+                (rgb * opacity.unsqueeze(-1)).clip(0.0, 1.0) * 255.0
+                if color_by_opacity
+                else rgb.clip(0.0, 1.0) * 255.0
+            ),
+            (opacity * 255.0 * float(alpha_scale))
+            .clamp(min=float(min_alpha), max=255.0)
+            .unsqueeze(-1),
+        ],
+        dim=-1,
+    )
+
+    return {
+        "centers": xyz.detach().cpu().numpy().astype(np.float32),
+        "half_sizes": half_sizes.detach().cpu().numpy().astype(np.float32),
+        "quaternions": quaternions.detach().cpu().numpy().astype(np.float32),
+        "colors": rgba.detach().cpu().numpy().astype(np.uint8),
     }
 
 
@@ -356,6 +428,57 @@ def _set_y_up_view_coordinates(rr: Any) -> None:
     _LOGGER.warning("Could not set view coordinates to +Y up (API not available).")
 
 
+def _resolve_ellipsoid_fill_mode(rr: Any, fill_mode: str) -> Any:
+    if not (hasattr(rr, "components") and hasattr(rr.components, "FillMode")):
+        return None
+    mode_enum = rr.components.FillMode
+    normalized = fill_mode.strip().lower()
+    mapping = {
+        "solid": "Solid",
+        "major_wireframe": "MajorWireframe",
+        "dense_wireframe": "DenseWireframe",
+    }
+    name = mapping.get(normalized)
+    if name is None:
+        return None
+    return getattr(mode_enum, name, None)
+
+
+def _apply_ellipsoid_preset(args: "Args") -> None:
+    preset = args.ellipsoid_preset.lower()
+    if preset == "custom":
+        return
+
+    if preset == "smooth":
+        args.max_gaussians_per_person = 30000
+        args.ellipsoid_half_size_scale = 2.2
+        args.max_ellipsoid_half_size = 1.0
+        args.ellipsoid_alpha_scale = 0.35
+        args.ellipsoid_fill_mode = "solid"
+        return
+
+    if preset == "balanced":
+        args.max_gaussians_per_person = 20000
+        args.ellipsoid_half_size_scale = 1.8
+        args.max_ellipsoid_half_size = 0.8
+        args.ellipsoid_alpha_scale = 0.30
+        args.ellipsoid_fill_mode = "major_wireframe"
+        return
+
+    if preset == "fast":
+        args.max_gaussians_per_person = 12000
+        args.ellipsoid_half_size_scale = 1.5
+        args.max_ellipsoid_half_size = 0.6
+        args.ellipsoid_alpha_scale = 0.45
+        args.ellipsoid_fill_mode = "solid"
+        return
+
+    raise ValueError(
+        f"Unsupported ellipsoid_preset={args.ellipsoid_preset!r}. "
+        "Expected one of: custom, smooth, balanced, fast."
+    )
+
+
 @dataclass
 class Args:
     eval_scene_dir: Path
@@ -373,10 +496,21 @@ class Args:
     port_kill_grace_seconds: float = 2.0
 
     app_id: str = "dynamic_3dgs"
-    max_gaussians_per_person: Optional[int] = 200000
-    min_opacity: float = 0.01
-    point_radius_scale: float = 0.02
-    max_point_radius: Optional[float] = 0.05
+    splat_primitive: Literal["ellipsoids", "points"] = "ellipsoids"
+    ellipsoid_preset: Literal["custom", "smooth", "balanced", "fast"] = "custom"
+    rotation_format: Literal["wxyz", "xyzw"] = "wxyz"
+    max_gaussians_per_person: Optional[int] = None
+    min_opacity: float = 0.0
+    point_radius_scale: float = 0.08
+    max_point_radius: Optional[float] = 0.2
+    point_use_radii: bool = True
+    point_color_by_opacity: bool = True
+    ellipsoid_half_size_scale: float = 1.5
+    max_ellipsoid_half_size: Optional[float] = 0.6
+    min_ellipsoid_alpha: int = 24
+    ellipsoid_alpha_scale: float = 0.45
+    ellipsoid_color_by_opacity: bool = True
+    ellipsoid_fill_mode: Literal["solid", "major_wireframe", "dense_wireframe"] = "solid"
 
     include_rgb: bool = True
     rgb_max_side: int = 1280
@@ -387,6 +521,8 @@ class Args:
 def main() -> None:
     _setup_logging()
     args = tyro.cli(Args)
+    if args.splat_primitive == "ellipsoids":
+        _apply_ellipsoid_preset(args)
 
     try:
         import rerun as rr
@@ -422,13 +558,19 @@ def main() -> None:
         raise FileNotFoundError("No frames selected after applying frame_idx_range and subsample_rate.")
 
     _LOGGER.info(
-        "Scene: %s | frames: %d (range=%s, subsample=%d) | people: %d | sink=%s",
+        (
+            "Scene: %s | frames: %d (range=%s, subsample=%d) | people: %d | "
+            "sink=%s | primitive=%s | preset=%s | fill_mode=%s"
+        ),
         str(args.eval_scene_dir),
         len(frame_stems),
         args.frame_idx_range,
         subsample_rate,
         len(person_dirs),
         args.sink_mode,
+        args.splat_primitive,
+        args.ellipsoid_preset,
+        args.ellipsoid_fill_mode,
     )
 
     rr.init(args.app_id)
@@ -466,26 +608,59 @@ def main() -> None:
             state_path = person_dir / f"{frame_stem}.pt"
             person_path = f"world/3dgs/person_{person_dir.name}"
             if not state_path.exists():
-                rr.log(person_path, rr.Points3D(np.zeros((0, 3), dtype=np.float32)))
+                if args.splat_primitive == "ellipsoids":
+                    rr.log(
+                        person_path,
+                        rr.Ellipsoids3D(
+                            centers=np.zeros((0, 3), dtype=np.float32),
+                            half_sizes=np.zeros((0, 3), dtype=np.float32),
+                        ),
+                    )
+                else:
+                    rr.log(person_path, rr.Points3D(np.zeros((0, 3), dtype=np.float32)))
                 continue
 
             state = _torch_load(state_path)
-            point_data = _state_to_point_arrays(
-                state,
-                min_opacity=args.min_opacity,
-                point_radius_scale=args.point_radius_scale,
-                max_point_radius=args.max_point_radius,
-                max_gaussians=args.max_gaussians_per_person,
-                seed=args.seed + frame_idx,
-            )
-            rr.log(
-                person_path,
-                rr.Points3D(
-                    point_data["positions"],
-                    colors=point_data["colors"],
-                    radii=point_data["radii"],
-                ),
-            )
+            if args.splat_primitive == "ellipsoids":
+                ellipsoid_data = _state_to_ellipsoid_arrays(
+                    state,
+                    min_opacity=args.min_opacity,
+                    ellipsoid_half_size_scale=args.ellipsoid_half_size_scale,
+                    max_ellipsoid_half_size=args.max_ellipsoid_half_size,
+                    max_gaussians=args.max_gaussians_per_person,
+                    seed=args.seed + frame_idx,
+                    rotation_format=args.rotation_format,
+                    min_alpha=args.min_ellipsoid_alpha,
+                    alpha_scale=args.ellipsoid_alpha_scale,
+                    color_by_opacity=args.ellipsoid_color_by_opacity,
+                )
+                ellipsoid_kwargs: Dict[str, Any] = {
+                    "centers": ellipsoid_data["centers"],
+                    "half_sizes": ellipsoid_data["half_sizes"],
+                    "quaternions": ellipsoid_data["quaternions"],
+                    "colors": ellipsoid_data["colors"],
+                }
+                fill_mode = _resolve_ellipsoid_fill_mode(rr, args.ellipsoid_fill_mode)
+                if fill_mode is not None:
+                    ellipsoid_kwargs["fill_mode"] = fill_mode
+                rr.log(person_path, rr.Ellipsoids3D(**ellipsoid_kwargs))
+            else:
+                point_data = _state_to_point_arrays(
+                    state,
+                    min_opacity=args.min_opacity,
+                    point_radius_scale=args.point_radius_scale,
+                    max_point_radius=args.max_point_radius,
+                    max_gaussians=args.max_gaussians_per_person,
+                    seed=args.seed + frame_idx,
+                    color_by_opacity=args.point_color_by_opacity,
+                )
+                point_kwargs: Dict[str, Any] = {
+                    "positions": point_data["positions"],
+                    "colors": point_data["colors"],
+                }
+                if args.point_use_radii:
+                    point_kwargs["radii"] = point_data["radii"]
+                rr.log(person_path, rr.Points3D(**point_kwargs))
 
     _LOGGER.info(
         "Logged %d frames across %d people to Rerun (timeline='frame').",

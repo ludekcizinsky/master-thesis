@@ -34,14 +34,18 @@ cd /home/cizinsky/master-thesis
 #    http://localhost:9876/?url=rerun%2Bhttp%3A%2F%2F127.0.0.1%3A9877%2Fproxy
 # If needed once: pip install rerun-sdk
 # The script will reclaim (terminate) processes already listening on 9876/9877.
-eval_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030
+eval_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0000
+# Fast point-cloud profile
 python evaluation/rerun_dynamic_3dgs.py \
   --eval-scene-dir $eval_scene_dir \
-  --frame-idx-range 0 100 \
-  --subsample-rate 5 \
+  --frame-idx-range 0 50 \
+  --subsample-rate 1 \
   --src-cam-id 4 \
-  --sink-mode serve-web \
-  --web-host 0.0.0.0 \
-  --web-port 9876 \
-  --grpc-port 9877 \
-  --no-open-browser
+  --splat-primitive points \
+  --no-point-use-radii \
+  --no-point-color-by-opacity \
+  --include-rgb \
+  --min-opacity 0.1 \
+  --max-gaussians-per-person 50000 \
+  --point-radius-scale 0.2 \
+  --max-point-radius 0.3
