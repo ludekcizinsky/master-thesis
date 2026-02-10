@@ -5,7 +5,7 @@ import time
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Dict, List, Optional, Tuple
+from typing import Annotated, Callable, Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -43,6 +43,14 @@ class Config:
     center_scene: bool = True
     frame_idx_range: Tuple[int, int] = (0, 10)
     vis_3dgs: bool = False
+    background_max_depth: float = 5.0
+    depth_stride: int = 4
+    background_point_size: float = 0.02
+    background_filter_sparse_points: bool = True
+    background_filter_voxel_size: float = 0.05
+    background_filter_min_neighbors: int = 12
+    background_max_points: int = 50000
+    background_floor_percentile: float = 2.0
 
 def _load_skip_frames(scene_dir: Path) -> set[int]:
     skip_path = scene_dir / "skip_frames.csv"
@@ -215,6 +223,288 @@ def _load_depth_map(depths_dir: Path, cam_id: str, frame_id: str) -> Optional[np
         return None
     depth = np.load(depth_path)
     return depth
+
+
+def _load_rgb_for_frame(images_dir: Path, cam_id: str, frame_id: str) -> Optional[np.ndarray]:
+    img_path = _find_frame_image(images_dir, cam_id, frame_id)
+    if img_path is None:
+        return None
+    with Image.open(img_path) as img:
+        return np.asarray(img.convert("RGB"), dtype=np.uint8)
+
+
+def _load_masked_depth_for_frame(
+    scene_dir: Path,
+    depths_dir: Path,
+    cam_id: str,
+    frame_id: str,
+) -> Optional[np.ndarray]:
+    depth = _load_depth_map(depths_dir, cam_id, frame_id)
+    if depth is None:
+        return None
+    depth = np.asarray(depth, dtype=np.float32)
+    if depth.ndim == 3 and depth.shape[-1] == 1:
+        depth = depth[..., 0]
+    if depth.ndim != 2:
+        raise ValueError(f"Expected depth map with shape (H, W), got {depth.shape}")
+
+    mask = _load_union_mask(scene_dir, cam_id, frame_id)
+    if mask is None:
+        return depth
+    if mask.shape[:2] != depth.shape[:2]:
+        raise ValueError(
+            f"Mask shape {mask.shape} does not match depth shape {depth.shape} "
+            f"for frame {frame_id} cam {cam_id}."
+        )
+
+    masked_depth = depth.copy()
+    # Union masks mark foreground people; keep only static background.
+    masked_depth[mask > 0] = 0.0
+    return masked_depth
+
+
+def _remove_sparse_points(
+    points: np.ndarray,
+    colors: Optional[np.ndarray],
+    *,
+    voxel_size: float,
+    min_neighbors: int,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    if points.size == 0:
+        return points, colors
+    if voxel_size <= 0.0 or min_neighbors <= 1:
+        return points, colors
+
+    voxel_coords = np.floor(points / float(voxel_size)).astype(np.int32)
+    unique_voxels, inverse, counts = np.unique(
+        voxel_coords, axis=0, return_inverse=True, return_counts=True
+    )
+
+    count_by_voxel: Dict[Tuple[int, int, int], int] = {}
+    for voxel, count in zip(unique_voxels, counts):
+        key = (int(voxel[0]), int(voxel[1]), int(voxel[2]))
+        count_by_voxel[key] = int(count)
+
+    neighbor_counts = np.zeros(unique_voxels.shape[0], dtype=np.int32)
+    for idx, voxel in enumerate(unique_voxels):
+        vx, vy, vz = int(voxel[0]), int(voxel[1]), int(voxel[2])
+        total = 0
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    total += count_by_voxel.get((vx + dx, vy + dy, vz + dz), 0)
+        neighbor_counts[idx] = total
+
+    keep_mask = neighbor_counts[inverse] >= int(min_neighbors)
+    filtered_points = points[keep_mask]
+    filtered_colors = colors[keep_mask] if colors is not None else None
+    return filtered_points, filtered_colors
+
+
+def _depth_to_point_cloud(
+    depth: np.ndarray,
+    intr: np.ndarray,
+    c2w: np.ndarray,
+    *,
+    stride: int,
+    max_depth: float,
+    rgb: Optional[np.ndarray],
+    filter_sparse_points: bool = False,
+    sparse_voxel_size: float = 0.05,
+    sparse_min_neighbors: int = 12,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    if depth.ndim != 2:
+        raise ValueError(f"Expected depth map with shape (H, W), got {depth.shape}")
+    h, w = depth.shape
+    if rgb is not None and (rgb.shape[0] != h or rgb.shape[1] != w):
+        rgb = np.asarray(
+            Image.fromarray(rgb).resize((w, h), resample=Image.BILINEAR), dtype=np.uint8
+        )
+    stride = max(int(stride), 1)
+    ys = np.arange(0, h, stride, dtype=np.float32)
+    xs = np.arange(0, w, stride, dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    z = depth[::stride, ::stride].astype(np.float32)
+    valid = np.isfinite(z) & (z > 0.0) & (z <= float(max_depth))
+    if not np.any(valid):
+        return np.zeros((0, 3), dtype=np.float32), None
+    x = (grid_x - float(intr[0, 2])) / float(intr[0, 0]) * z
+    y = (grid_y - float(intr[1, 2])) / float(intr[1, 1]) * z
+    points_cam = np.stack([x, y, z], axis=-1)[valid]
+    points_world = (c2w[:3, :3] @ points_cam.T).T + c2w[:3, 3]
+    colors = None
+    if rgb is not None:
+        colors = rgb[::stride, ::stride][valid]
+    points_world = points_world.astype(np.float32)
+    if filter_sparse_points:
+        points_world, colors = _remove_sparse_points(
+            points_world,
+            colors,
+            voxel_size=float(sparse_voxel_size),
+            min_neighbors=int(sparse_min_neighbors),
+        )
+    return points_world, colors
+
+
+def _subsample_point_cloud(
+    points: np.ndarray,
+    colors: Optional[np.ndarray],
+    *,
+    max_points: int,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    if max_points <= 0 or points.shape[0] <= max_points:
+        return points, colors
+    rng = np.random.default_rng(0)
+    idx = rng.choice(points.shape[0], size=max_points, replace=False)
+    sampled_points = points[idx]
+    sampled_colors = colors[idx] if colors is not None else None
+    return sampled_points, sampled_colors
+
+
+def _rotation_matrix_from_to(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    src = src.astype(np.float64)
+    dst = dst.astype(np.float64)
+    src = src / max(np.linalg.norm(src), 1e-12)
+    dst = dst / max(np.linalg.norm(dst), 1e-12)
+
+    v = np.cross(src, dst)
+    c = float(np.clip(np.dot(src, dst), -1.0, 1.0))
+    s = float(np.linalg.norm(v))
+    if s < 1e-12:
+        if c > 0.0:
+            return np.eye(3, dtype=np.float32)
+        # 180-degree rotation: choose a stable orthogonal axis.
+        axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        if abs(src[0]) > 0.9:
+            axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        axis = axis - np.dot(axis, src) * src
+        axis = axis / max(np.linalg.norm(axis), 1e-12)
+        x, y, z = axis
+        R = np.array(
+            [
+                [2 * x * x - 1, 2 * x * y, 2 * x * z],
+                [2 * y * x, 2 * y * y - 1, 2 * y * z],
+                [2 * z * x, 2 * z * y, 2 * z * z - 1],
+            ],
+            dtype=np.float64,
+        )
+        return R.astype(np.float32)
+
+    vx = np.array(
+        [
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ],
+        dtype=np.float64,
+    )
+    R = np.eye(3, dtype=np.float64) + vx + (vx @ vx) * ((1.0 - c) / (s * s))
+    return R.astype(np.float32)
+
+
+def _fit_floor_normal(points: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    if points.shape[0] < 200:
+        return None
+
+    # Keep lower-y points as floor candidates (scene uses +y up).
+    y_thresh = float(np.percentile(points[:, 1], 35.0))
+    floor_points = points[points[:, 1] <= y_thresh]
+    if floor_points.shape[0] < 120:
+        return None
+
+    center = floor_points.mean(axis=0, dtype=np.float64)
+    centered = floor_points.astype(np.float64) - center[None, :]
+    try:
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return None
+    normal = vh[-1].astype(np.float64)
+    n_norm = float(np.linalg.norm(normal))
+    if n_norm < 1e-12:
+        return None
+    normal /= n_norm
+
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    if float(np.dot(normal, up)) < 0.0:
+        normal = -normal
+    return normal.astype(np.float32), center.astype(np.float32)
+
+
+def _align_background_floor_to_up(points: np.ndarray) -> np.ndarray:
+    fit = _fit_floor_normal(points)
+    if fit is None:
+        return points
+    normal, pivot = fit
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    # Avoid applying tiny noisy rotations.
+    cosang = float(np.clip(np.dot(normal, up), -1.0, 1.0))
+    if np.degrees(np.arccos(cosang)) < 1.0:
+        return points
+    R = _rotation_matrix_from_to(normal, up)
+    aligned = ((R @ (points - pivot).T).T + pivot).astype(np.float32)
+    return aligned
+
+
+def _shift_points_bottom_percentile_to_zero(points: np.ndarray, percentile: float) -> np.ndarray:
+    if points.shape[0] == 0:
+        return points
+    p = float(np.clip(percentile, 0.0, 100.0))
+    y0 = float(np.percentile(points[:, 1], p))
+    shifted = points.copy()
+    shifted[:, 1] -= y0
+    return shifted
+
+
+def _compute_first_frame_human_floor_y(
+    frames: List[str],
+    smpl_dir: Path,
+    smplx_dir: Path,
+    mesh_dir: Path,
+    smpl_layer,
+    smplx_layer,
+    device: torch.device,
+    scene_genders: Optional[List[str]],
+    smpl_layer_by_gender: Optional[Dict[str, object]],
+) -> float:
+    if not frames:
+        return 0.0
+    frame_id = frames[0]
+    y_mins: List[float] = []
+
+    mesh_path = mesh_dir / f"{frame_id}.obj"
+    if mesh_path.exists():
+        mesh = trimesh.load_mesh(mesh_path, process=False)
+        if isinstance(mesh, trimesh.Trimesh) and mesh.vertices.size:
+            verts = np.asarray(mesh.vertices, dtype=np.float32)
+            y_mins.append(float(verts[:, 1].min()))
+
+    if smpl_layer is not None or smpl_layer_by_gender is not None:
+        smpl_data = _load_npz(smpl_dir / f"{frame_id}.npz")
+        if smpl_data is not None:
+            ref_smpl_layer = smpl_layer or (
+                next(iter(smpl_layer_by_gender.values())) if smpl_layer_by_gender else None
+            )
+            if ref_smpl_layer is not None:
+                verts = _smpl_vertices(
+                    ref_smpl_layer,
+                    smpl_data,
+                    device,
+                    genders=scene_genders,
+                    layer_by_gender=smpl_layer_by_gender,
+                )
+                if verts is not None and verts.size:
+                    y_mins.append(float(verts[..., 1].min()))
+
+    if smplx_layer is not None:
+        smplx_data = _load_npz(smplx_dir / f"{frame_id}.npz")
+        if smplx_data is not None:
+            verts = _smplx_vertices(smplx_layer, smplx_data, device)
+            if verts is not None and verts.size:
+                y_mins.append(float(verts[..., 1].min()))
+
+    if not y_mins:
+        return 0.0
+    return float(min(y_mins))
 
 def _depth_plot_to_image(depth: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     depth = np.nan_to_num(depth, nan=vmax, posinf=vmax, neginf=vmin)
@@ -760,6 +1050,16 @@ def main() -> None:
         else:
             depth_cam_id = depth_camera_ids[0]
 
+    background_cam_id: Optional[str] = None
+    if depth_cam_id is not None and depth_cam_id in camera_ids:
+        background_cam_id = depth_cam_id
+    else:
+        for cid in camera_ids:
+            if cid in depth_camera_ids:
+                background_cam_id = cid
+                break
+
+
     # Load per-person genders if available (meta.npz -> genders).
     scene_genders = _load_scene_genders(cfg.scene_dir)
     if scene_genders is None:
@@ -809,6 +1109,25 @@ def main() -> None:
         else np.zeros(3, dtype=np.float32)
     )
 
+    first_frame_human_floor_y = _compute_first_frame_human_floor_y(
+        frames,
+        smpl_dir,
+        smplx_dir,
+        mesh_dir,
+        smpl_layer,
+        smplx_layer,
+        device,
+        scene_genders,
+        smpl_layer_by_gender,
+    )
+    human_y_offset = -float(first_frame_human_floor_y)
+    if abs(human_y_offset) > 1e-6:
+        print(
+            f"[info] Applying global human y-offset {human_y_offset:.4f} "
+            f"from first-frame floor y={first_frame_human_floor_y:.4f}."
+        )
+
+    current_idx = 0
 
     # Create the Viser server and a centered root frame.
     server = viser.ViserServer(port=cfg.port)
@@ -953,6 +1272,158 @@ def main() -> None:
             depth_images[frames[0]] = depth_plot
             depth_image_handle = server.gui.add_image(depth_plot, label="Depth map")
 
+    background_handle = None
+    refresh_background_point_cloud: Optional[Callable[[], None]] = None
+    if background_cam_id is not None:
+        def _background_point_cloud_for_frame(
+            frame_id: str,
+            *,
+            max_depth: float,
+            filter_sparse_points: bool,
+            sparse_voxel_size: float,
+            sparse_min_neighbors: int,
+            max_points: int,
+        ) -> Tuple[np.ndarray, np.ndarray]:
+            depth = _load_masked_depth_for_frame(cfg.scene_dir, depths_dir, background_cam_id, frame_id)
+            if depth is None:
+                return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+            cam_params = _load_camera_params(camera_dir, background_cam_id, frame_id)
+            if cam_params is None:
+                return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
+            intr, extr = cam_params
+            w2c = np.eye(4, dtype=np.float32)
+            w2c[:3, :4] = extr
+            c2w = np.linalg.inv(w2c)
+            rgb = _load_rgb_for_frame(images_dir, background_cam_id, frame_id)
+            points, colors = _depth_to_point_cloud(
+                depth,
+                intr,
+                c2w,
+                stride=cfg.depth_stride,
+                max_depth=max_depth,
+                rgb=rgb,
+                filter_sparse_points=filter_sparse_points,
+                sparse_voxel_size=sparse_voxel_size,
+                sparse_min_neighbors=sparse_min_neighbors,
+            )
+            points = _align_background_floor_to_up(points)
+            points = _shift_points_bottom_percentile_to_zero(
+                points, percentile=float(cfg.background_floor_percentile)
+            )
+            points, colors = _subsample_point_cloud(
+                points,
+                colors,
+                max_points=int(max_points),
+            )
+            if colors is None:
+                colors = np.full((points.shape[0], 3), 180, dtype=np.uint8)
+            return points, colors
+
+        init_points, init_colors = _background_point_cloud_for_frame(
+            frames[0],
+            max_depth=float(cfg.background_max_depth),
+            filter_sparse_points=bool(cfg.background_filter_sparse_points),
+            sparse_voxel_size=float(cfg.background_filter_voxel_size),
+            sparse_min_neighbors=int(cfg.background_filter_min_neighbors),
+            max_points=int(cfg.background_max_points),
+        )
+        background_handle = server.scene.add_point_cloud(
+            "/scene/background",
+            points=init_points,
+            colors=init_colors,
+            point_size=float(cfg.background_point_size),
+            point_shape="rounded",
+        )
+        background_handle.visible = False
+
+        with server.gui.add_folder("Background"):
+            bg_checkbox = server.gui.add_checkbox("Show Background", False)
+            bg_sparse_checkbox = server.gui.add_checkbox(
+                "Filter Sparse Points", bool(cfg.background_filter_sparse_points)
+            )
+            bg_depth_slider = server.gui.add_slider(
+                "Max Depth (m)",
+                min=0.5,
+                max=20.0,
+                step=0.1,
+                initial_value=float(cfg.background_max_depth),
+            )
+            bg_voxel_slider = server.gui.add_slider(
+                "Filter Radius (m)",
+                min=0.01,
+                max=0.5,
+                step=0.01,
+                initial_value=float(cfg.background_filter_voxel_size),
+            )
+            bg_neighbor_slider = server.gui.add_slider(
+                "Min Neighbor Count",
+                min=1,
+                max=100,
+                step=1,
+                initial_value=int(cfg.background_filter_min_neighbors),
+            )
+            bg_max_points_slider = server.gui.add_slider(
+                "Max Points",
+                min=1000,
+                max=500000,
+                step=1000,
+                initial_value=int(max(cfg.background_max_points, 1000)),
+            )
+
+            def _refresh_background_point_cloud() -> None:
+                nonlocal background_handle
+                frame_id = frames[current_idx]
+                try:
+                    points, colors = _background_point_cloud_for_frame(
+                        frame_id,
+                        max_depth=float(bg_depth_slider.value),
+                        filter_sparse_points=bool(bg_sparse_checkbox.value),
+                        sparse_voxel_size=float(bg_voxel_slider.value),
+                        sparse_min_neighbors=int(bg_neighbor_slider.value),
+                        max_points=int(bg_max_points_slider.value),
+                    )
+                except Exception as exc:
+                    print(f"[WARN] Failed to build background point cloud for frame {frame_id}: {exc}")
+                    points = np.zeros((0, 3), dtype=np.float32)
+                    colors = np.zeros((0, 3), dtype=np.uint8)
+                # Re-adding with the same name replaces the existing node in Viser and
+                # avoids races from concurrent callback-triggered remove() calls.
+                background_handle = server.scene.add_point_cloud(
+                    "/scene/background",
+                    points=points,
+                    colors=colors,
+                    point_size=float(cfg.background_point_size),
+                    point_shape="rounded",
+                )
+                background_handle.visible = bool(bg_checkbox.value)
+
+            refresh_background_point_cloud = _refresh_background_point_cloud
+
+            @bg_checkbox.on_update
+            def _(_event=None) -> None:
+                if background_handle is not None:
+                    background_handle.visible = bool(bg_checkbox.value)
+
+            @bg_depth_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_sparse_checkbox.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_voxel_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_neighbor_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
+            @bg_max_points_slider.on_update
+            def _(_event=None) -> None:
+                _refresh_background_point_cloud()
+
     # Colors for different modalities.
     smpl_base = np.array([255, 140, 70], dtype=np.float32)
     smplx_base = np.array([70, 130, 255], dtype=np.float32)
@@ -981,9 +1452,11 @@ def main() -> None:
                 if verts is not None:
                     for pid in range(verts.shape[0]):
                         color = _color_for_person(smpl_base, pid)
+                        verts_pid = np.asarray(verts[pid], dtype=np.float32).copy()
+                        verts_pid[:, 1] += human_y_offset
                         server.scene.add_mesh_simple(
                             f"/scene/smpl/f_{frame_id}/person_{pid}",
-                            vertices=verts[pid],
+                            vertices=verts_pid,
                             faces=smpl_faces,
                             color=color,
                         )
@@ -1005,9 +1478,11 @@ def main() -> None:
                 if verts is not None:
                     for pid in range(verts.shape[0]):
                         color = _color_for_person(smplx_base, pid)
+                        verts_pid = np.asarray(verts[pid], dtype=np.float32).copy()
+                        verts_pid[:, 1] += human_y_offset
                         server.scene.add_mesh_simple(
                             f"/scene/smplx/f_{frame_id}/person_{pid}",
-                            vertices=verts[pid],
+                            vertices=verts_pid,
                             faces=smplx_faces,
                             color=color,
                         )
@@ -1023,9 +1498,11 @@ def main() -> None:
             if mesh_path.exists():
                 mesh = trimesh.load_mesh(mesh_path, process=False)
                 if isinstance(mesh, trimesh.Trimesh) and mesh.vertices.size and mesh.faces.size:
+                    verts = np.asarray(mesh.vertices, dtype=np.float32).copy()
+                    verts[:, 1] += human_y_offset
                     server.scene.add_mesh_simple(
                         f"/scene/meshes/f_{frame_id}/mesh",
-                        vertices=np.asarray(mesh.vertices, dtype=np.float32),
+                        vertices=verts,
                         faces=np.asarray(mesh.faces, dtype=np.int32),
                         color=mesh_color,
                     )
@@ -1071,7 +1548,10 @@ def main() -> None:
             node = server.scene.add_frame(f"/scene/3dgs/f_{frame_id}", show_axes=False)
             gs_nodes.append(node)
             splat = all_posed_3dgs[frame_idx]
-            centers = splat["centers"]
+            centers = np.asarray(splat["centers"], dtype=np.float32)
+            if centers.size:
+                centers = centers.copy()
+                centers[:, 1] += human_y_offset
             if centers.size:
                 server.scene.add_gaussian_splats(
                     f"/scene/3dgs/f_{frame_id}/splats",
@@ -1081,8 +1561,6 @@ def main() -> None:
                     covariances=splat["covariances"],
                 )
             node.visible = False
-
-    current_idx = 0
 
     # Update visibility to show only the selected frame.
     def _apply_visibility(frame_idx: int) -> None:
@@ -1136,6 +1614,9 @@ def main() -> None:
                     depth_plot = np.zeros((1, 1, 3), dtype=np.uint8)
                 depth_images[frames[frame_idx]] = depth_plot
             _set_gui_image(depth_image_handle, depth_plot)
+
+        if refresh_background_point_cloud is not None:
+            refresh_background_point_cloud()
 
     # Refresh visibility for the current frame when toggles change.
     def _refresh_current() -> None:

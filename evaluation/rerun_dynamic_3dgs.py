@@ -123,6 +123,160 @@ def _torch_load(path: Path) -> Dict[str, Any]:
         return torch.load(path, map_location="cpu")
 
 
+def _load_camera_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    with np.load(path) as cams:
+        if "intrinsics" not in cams.files or "extrinsics" not in cams.files:
+            raise KeyError(f"Missing intrinsics/extrinsics in {path}")
+        intr = cams["intrinsics"]
+        extr = cams["extrinsics"]
+    if intr.ndim == 3:
+        intr = intr[0]
+    if extr.ndim == 3:
+        extr = extr[0]
+    if intr.shape != (3, 3) or extr.shape != (3, 4):
+        raise ValueError(f"Unexpected camera shapes in {path}: {intr.shape}, {extr.shape}")
+    return intr.astype(np.float32), extr.astype(np.float32)
+
+
+def _infer_resolution(intr: np.ndarray, fallback_rgb: Optional[np.ndarray]) -> Tuple[int, int]:
+    cx = float(intr[0, 2])
+    cy = float(intr[1, 2])
+    width = int(round(cx * 2.0))
+    height = int(round(cy * 2.0))
+    if width > 0 and height > 0:
+        return width, height
+    if fallback_rgb is not None and fallback_rgb.ndim == 3:
+        return int(fallback_rgb.shape[1]), int(fallback_rgb.shape[0])
+    width = max(1, width)
+    height = max(1, height)
+    return width, height
+
+
+def _scale_intrinsics(intr: np.ndarray, sx: float, sy: float) -> np.ndarray:
+    out = intr.copy()
+    out[0, 0] *= float(sx)
+    out[1, 1] *= float(sy)
+    out[0, 2] *= float(sx)
+    out[1, 2] *= float(sy)
+    return out
+
+
+def _w2c_3x4_to_4x4(extr: np.ndarray) -> np.ndarray:
+    w2c = np.eye(4, dtype=np.float32)
+    w2c[:3, :4] = extr
+    return w2c
+
+
+def _resolve_gsplat_rasterization(gs: Any) -> Any:
+    if hasattr(gs, "rasterization"):
+        return gs.rasterization
+    if hasattr(gs, "rendering") and hasattr(gs.rendering, "rasterization"):
+        return gs.rendering.rasterization
+    return None
+
+
+def _state_to_gsplat_arrays(
+    state: Dict[str, Any],
+    *,
+    min_opacity: float,
+    max_gaussians: Optional[int],
+    seed: int,
+    rotation_format: Literal["wxyz", "xyzw"],
+) -> Dict[str, torch.Tensor]:
+    xyz = state["xyz"].float()
+    opacity = state["opacity"].float().squeeze(-1).clamp(0.0, 1.0)
+    scaling = state["scaling"].float().clamp(min=1e-8)
+    rotation = state["rotation"].float()
+    shs = state["shs"].float()
+
+    rgb = shs.squeeze(1).clamp(0.0, 1.0)
+
+    keep = opacity >= float(min_opacity)
+    xyz = xyz[keep]
+    opacity = opacity[keep]
+    scaling = scaling[keep]
+    rotation = rotation[keep]
+    rgb = rgb[keep]
+
+    if max_gaussians is not None and xyz.shape[0] > int(max_gaussians):
+        g = torch.Generator(device=xyz.device)
+        g.manual_seed(int(seed))
+        idx = torch.randperm(xyz.shape[0], generator=g)[: int(max_gaussians)]
+        xyz = xyz[idx]
+        opacity = opacity[idx]
+        scaling = scaling[idx]
+        rotation = rotation[idx]
+        rgb = rgb[idx]
+
+    quats = torch.nn.functional.normalize(rotation, dim=-1)
+    if rotation_format == "xyzw":
+        quats = quats[:, [3, 0, 1, 2]]
+
+    return {
+        "means": xyz,
+        "scales": scaling,
+        "quats": quats,
+        "opacities": opacity,
+        "colors": rgb,
+    }
+
+
+def _render_gsplat_image(
+    *,
+    rasterization: Any,
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    quats: torch.Tensor,
+    opacities: torch.Tensor,
+    colors: torch.Tensor,
+    intrinsics: np.ndarray,
+    extrinsics: np.ndarray,
+    width: int,
+    height: int,
+    device: torch.device,
+    packed: bool,
+    rasterize_mode: Literal["classic", "antialiased"],
+    near_plane: float,
+    far_plane: float,
+    radius_clip: float,
+    white_background: bool,
+) -> np.ndarray:
+    means = means.to(device=device, dtype=torch.float32, non_blocking=True)
+    scales = scales.to(device=device, dtype=torch.float32, non_blocking=True)
+    quats = quats.to(device=device, dtype=torch.float32, non_blocking=True)
+    opacities = opacities.to(device=device, dtype=torch.float32, non_blocking=True)
+    colors = colors.to(device=device, dtype=torch.float32, non_blocking=True)
+
+    K = torch.from_numpy(intrinsics.astype(np.float32)).to(device)
+    viewmat = torch.from_numpy(_w2c_3x4_to_4x4(extrinsics)).to(device)
+
+    backgrounds = None
+    if white_background:
+        backgrounds = torch.ones((1, 3), dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        renders, _alphas, _meta = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=colors,
+            viewmats=viewmat[None, ...],
+            Ks=K[None, ...],
+            width=int(width),
+            height=int(height),
+            packed=bool(packed),
+            near_plane=float(near_plane),
+            far_plane=float(far_plane),
+            radius_clip=float(radius_clip),
+            rasterize_mode=rasterize_mode,
+            render_mode="RGB",
+            backgrounds=backgrounds,
+        )
+        rgb = renders[0, :, :, :3].clamp(0.0, 1.0).detach().cpu().numpy()
+    return (rgb * 255.0).astype(np.uint8)
+
+
 def _state_to_point_arrays(
     state: Dict[str, Any],
     *,
@@ -514,6 +668,15 @@ class Args:
 
     include_rgb: bool = True
     rgb_max_side: int = 1280
+    include_gsplat_render: bool = False
+    gsplat_max_side: int = 960
+    gsplat_device: Literal["auto", "cuda", "cpu"] = "auto"
+    gsplat_background: Literal["black", "white"] = "black"
+    gsplat_packed: bool = False
+    gsplat_rasterize_mode: Literal["classic", "antialiased"] = "antialiased"
+    gsplat_near_plane: float = 0.01
+    gsplat_far_plane: float = 1.0e10
+    gsplat_radius_clip: float = 0.0
     seed: int = 0
     hold_open: bool = True
 
@@ -530,6 +693,29 @@ def main() -> None:
         raise ImportError(
             "rerun-sdk is required. Install with: pip install rerun-sdk"
         ) from exc
+
+    gsplat_rasterization = None
+    gsplat_device: Optional[torch.device] = None
+    if args.include_gsplat_render:
+        try:
+            import gsplat as gs
+        except ImportError as exc:
+            raise ImportError(
+                "gsplat is required for --include-gsplat-render. Install gsplat in the active env."
+            ) from exc
+
+        gsplat_rasterization = _resolve_gsplat_rasterization(gs)
+        if gsplat_rasterization is None:
+            raise RuntimeError("Could not find gsplat rasterization() API in installed gsplat.")
+
+        requested_device = args.gsplat_device.lower()
+        if requested_device == "auto":
+            requested_device = "cuda" if torch.cuda.is_available() else "cpu"
+        if requested_device == "cuda" and not torch.cuda.is_available():
+            _LOGGER.warning("Requested gsplat_device='cuda' but CUDA is unavailable. Falling back to CPU.")
+            requested_device = "cpu"
+        gsplat_device = torch.device(requested_device)
+        _LOGGER.info(f"gsplat render enabled on device={gsplat_device}")
 
     posed_3dgs_dir = args.eval_scene_dir / "posed_3dgs_per_frame"
     if not posed_3dgs_dir.exists():
@@ -599,10 +785,18 @@ def main() -> None:
     ):
         rr.set_time("frame", sequence=frame_idx)
 
+        rgb_for_resolution: Optional[np.ndarray] = None
         if args.include_rgb:
             rgb = _get_rgb(frame_stem)
             if rgb is not None:
+                rgb_for_resolution = rgb
                 rr.log(f"world/rgb/cam_{args.src_cam_id}", rr.Image(rgb))
+
+        gs_means: List[torch.Tensor] = []
+        gs_scales: List[torch.Tensor] = []
+        gs_quats: List[torch.Tensor] = []
+        gs_opacities: List[torch.Tensor] = []
+        gs_colors: List[torch.Tensor] = []
 
         for person_dir in person_dirs:
             state_path = person_dir / f"{frame_stem}.pt"
@@ -621,6 +815,21 @@ def main() -> None:
                 continue
 
             state = _torch_load(state_path)
+            if gsplat_rasterization is not None:
+                gs_data = _state_to_gsplat_arrays(
+                    state,
+                    min_opacity=args.min_opacity,
+                    max_gaussians=args.max_gaussians_per_person,
+                    seed=args.seed + frame_idx,
+                    rotation_format=args.rotation_format,
+                )
+                if gs_data["means"].numel() > 0:
+                    gs_means.append(gs_data["means"])
+                    gs_scales.append(gs_data["scales"])
+                    gs_quats.append(gs_data["quats"])
+                    gs_opacities.append(gs_data["opacities"])
+                    gs_colors.append(gs_data["colors"])
+
             if args.splat_primitive == "ellipsoids":
                 ellipsoid_data = _state_to_ellipsoid_arrays(
                     state,
@@ -661,6 +870,51 @@ def main() -> None:
                 if args.point_use_radii:
                     point_kwargs["radii"] = point_data["radii"]
                 rr.log(person_path, rr.Points3D(**point_kwargs))
+
+        if gsplat_rasterization is not None and gs_means:
+            camera_path = (
+                args.eval_scene_dir / "all_cameras" / f"{args.src_cam_id}" / f"{frame_stem}.npz"
+            )
+            if camera_path.exists():
+                try:
+                    intr, extr = _load_camera_npz(camera_path)
+                    width, height = _infer_resolution(intr, rgb_for_resolution)
+                    max_side = int(args.gsplat_max_side)
+                    if max_side > 0 and max(width, height) > max_side:
+                        scale = float(max_side) / float(max(width, height))
+                        new_w = max(1, int(round(width * scale)))
+                        new_h = max(1, int(round(height * scale)))
+                        sx = float(new_w) / float(width)
+                        sy = float(new_h) / float(height)
+                        intr = _scale_intrinsics(intr, sx, sy)
+                        width, height = new_w, new_h
+
+                    gsplat_rgb = _render_gsplat_image(
+                        rasterization=gsplat_rasterization,
+                        means=torch.cat(gs_means, dim=0),
+                        scales=torch.cat(gs_scales, dim=0),
+                        quats=torch.cat(gs_quats, dim=0),
+                        opacities=torch.cat(gs_opacities, dim=0),
+                        colors=torch.cat(gs_colors, dim=0),
+                        intrinsics=intr,
+                        extrinsics=extr,
+                        width=width,
+                        height=height,
+                        device=gsplat_device if gsplat_device is not None else torch.device("cpu"),
+                        packed=args.gsplat_packed,
+                        rasterize_mode=args.gsplat_rasterize_mode,
+                        near_plane=args.gsplat_near_plane,
+                        far_plane=args.gsplat_far_plane,
+                        radius_clip=args.gsplat_radius_clip,
+                        white_background=args.gsplat_background == "white",
+                    )
+                    rr.log(f"world/gsplat/cam_{args.src_cam_id}/rgb", rr.Image(gsplat_rgb))
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "Skipping gsplat render for frame %s due to: %s", frame_stem, str(exc)
+                    )
+            else:
+                _LOGGER.warning("Missing camera file for gsplat render: %s", str(camera_path))
 
     _LOGGER.info(
         "Logged %d frames across %d people to Rerun (timeline='frame').",
