@@ -23,7 +23,7 @@ class Args:
     exp_name: str
     results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
     docs_root: Path = Path("/home/cizinsky/master-thesis/docs/results")
-    epoch: str = "latest"
+    epoch: str = "all"
     verbose: bool = True
 
 
@@ -64,6 +64,20 @@ def _find_evaluation_dir(scene_dir: Path, exp_name: str) -> Path | None:
         return old_layout
 
     return None
+
+
+def _list_epoch_names_for_experiment(args: Args) -> List[str]:
+    epoch_names = set()
+    for scene_dir in sorted(args.results_root.iterdir()):
+        if not scene_dir.is_dir():
+            continue
+        eval_dir = _find_evaluation_dir(scene_dir, args.exp_name)
+        if eval_dir is None:
+            continue
+        for epoch_dir in eval_dir.iterdir():
+            if epoch_dir.is_dir() and re.fullmatch(r"epoch_\d+", epoch_dir.name):
+                epoch_names.add(epoch_dir.name)
+    return sorted(epoch_names, key=lambda name: int(name.split("_", 1)[1]))
 
 
 def _epoch_name_from_arg(epoch_arg: str) -> str:
@@ -180,12 +194,16 @@ def _markdown_table(scene_to_metrics: Dict[str, Dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
-def _build_markdown(grouped: Dict[str, Dict[str, Dict[str, Dict[str, float]]]], args: Args) -> str:
+def _build_markdown(
+    grouped: Dict[str, Dict[str, Dict[str, Dict[str, float]]]],
+    args: Args,
+    epoch_label: str,
+) -> str:
     lines: List[str] = []
     lines.append(f"# Quantitative Results: `{args.exp_name}`")
     lines.append("")
     lines.append(f"- results root: `{args.results_root}`")
-    lines.append(f"- epoch selection: `{args.epoch}`")
+    lines.append(f"- epoch selection: `{epoch_label}`")
     lines.append("")
 
     if not grouped:
@@ -206,28 +224,74 @@ def _build_markdown(grouped: Dict[str, Dict[str, Dict[str, Dict[str, float]]]], 
 
     return "\n".join(lines).rstrip() + "\n"
 
+def _output_rel_name_for_epoch(epoch_arg: str) -> str:
+    if epoch_arg == "latest":
+        return "epoch_latest.md"
+    return f"{_epoch_name_from_arg(epoch_arg)}.md"
+
 
 def main() -> None:
     console = Console()
     args = tyro.cli(Args)
-    with console.status("[bold cyan]Scanning results and aggregating metrics...[/bold cyan]"):
-        grouped, warnings = _collect_by_task_and_dataset(args)
-        markdown = _build_markdown(grouped, args)
-
-    output_dir = args.docs_root / args.exp_name
+    sum_folder = args.docs_root / args.exp_name
+    output_dir = sum_folder / "quant_results"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "quan_results.md"
-    output_path.write_text(markdown, encoding="utf-8")
 
-    console.print(
-        Panel.fit(
-            f"[bold green]Wrote[/bold green] [cyan]{output_path}[/cyan]",
-            title="Quantitative Summary",
-            border_style="green",
+    if args.epoch == "all":
+        epoch_targets = _list_epoch_names_for_experiment(args)
+    else:
+        epoch_targets = [args.epoch]
+
+    if not epoch_targets:
+        console.print(
+            Panel.fit(
+                f"[bold yellow]No epoch directories found for experiment[/bold yellow] "
+                f"[cyan]{args.exp_name}[/cyan]",
+                title="Quantitative Summary",
+                border_style="yellow",
+            )
         )
+        return
+
+    all_warnings: List[str] = []
+    all_tasks = set()
+    all_datasets = set()
+    output_paths: List[Path] = []
+    with console.status("[bold cyan]Scanning results and aggregating metrics...[/bold cyan]"):
+        for epoch_target in epoch_targets:
+            grouped, warnings = _collect_by_task_and_dataset(
+                Args(
+                    exp_name=args.exp_name,
+                    results_root=args.results_root,
+                    docs_root=args.docs_root,
+                    epoch=epoch_target,
+                    verbose=args.verbose,
+                )
+            )
+            markdown = _build_markdown(grouped, args, epoch_target)
+            output_path = output_dir / _output_rel_name_for_epoch(epoch_target)
+            output_path.write_text(markdown, encoding="utf-8")
+            output_paths.append(output_path)
+            all_warnings.extend(warnings)
+            all_tasks.update(grouped.keys())
+            all_datasets.update(
+                dataset for task_data in grouped.values() for dataset in task_data.keys()
+            )
+
+    wrote_table = Table(
+        title="Quantitative Summary",
+        show_header=True,
+        header_style="bold green",
+        border_style="green",
     )
+    wrote_table.add_column("#", style="dim", width=4, justify="right")
+    wrote_table.add_column("Output Path", overflow="fold")
+    for idx, out_path in enumerate(output_paths, start=1):
+        wrote_table.add_row(str(idx), str(out_path))
+    console.print(wrote_table)
+
     if args.verbose:
-        if warnings:
+        if all_warnings:
             warning_table = Table(
                 title="Warnings",
                 show_header=True,
@@ -236,14 +300,10 @@ def main() -> None:
             )
             warning_table.add_column("#", style="dim", width=4, justify="right")
             warning_table.add_column("Message", overflow="fold")
-            for idx, warning in enumerate(warnings, start=1):
+            for idx, warning in enumerate(all_warnings, start=1):
                 warning_table.add_row(str(idx), warning)
             console.print(warning_table)
 
-        discovered_tasks = sorted(grouped.keys())
-        discovered_datasets = sorted(
-            {dataset for task_data in grouped.values() for dataset in task_data.keys()}
-        )
         summary_table = Table(
             title="Discovery",
             show_header=True,
@@ -254,11 +314,11 @@ def main() -> None:
         summary_table.add_column("Values")
         summary_table.add_row(
             "Tasks",
-            ", ".join(discovered_tasks) if discovered_tasks else "none",
+            ", ".join(sorted(all_tasks)) if all_tasks else "none",
         )
         summary_table.add_row(
             "Datasets",
-            ", ".join(discovered_datasets) if discovered_datasets else "none",
+            ", ".join(sorted(all_datasets)) if all_datasets else "none",
         )
         console.print(summary_table)
 

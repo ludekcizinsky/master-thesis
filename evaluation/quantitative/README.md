@@ -8,9 +8,10 @@ It aggregates quantitative metrics for one experiment across all scenes found un
 
 - `/scratch/izar/cizinsky/thesis/results`
 
-and writes a single markdown report to:
+and writes markdown reports to:
 
-- `/home/cizinsky/master-thesis/docs/results/<exp_name>/quan_results.md`
+- `/home/cizinsky/master-thesis/docs/results/<exp_name>/quant_results/epoch_*.md`
+- Default behavior writes one file per discovered epoch.
 
 ## What it reads
 
@@ -48,7 +49,13 @@ From repo root:
 python evaluation/quantitative/run.py --exp-name v104_testing_new_code
 ```
 
-Use a specific epoch (instead of latest per scene):
+The default above runs for all epochs found for the experiment and writes:
+
+- `epoch_0000.md`
+- `epoch_0015.md`
+- ...
+
+Use a specific epoch (instead of all epochs):
 
 ```bash
 python evaluation/quantitative/run.py --exp-name v104_testing_new_code --epoch 30
