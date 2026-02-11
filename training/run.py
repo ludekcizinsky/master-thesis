@@ -24,6 +24,7 @@ class Scene:
 class SlurmConfig:
     job_name: str = "train_scene"
     slurm_script: Path = Path("training/submit.slurm")
+    time: str = "03:00:00"
     array_parallelism: Optional[int] = None
 
 
@@ -121,6 +122,7 @@ def _print_submission_summary(
     print("About to submit training array with:")
     print(f"  Slurm script: {slurm_script}")
     print(f"  Job name: {cfg.slurm.job_name}")
+    print(f"  Time: {cfg.slurm.time}")
     print(f"  Array: {array_spec} ({len(scenes)} scenes)")
     print(f"  exp_name: {cfg.exp_name}")
     if cfg.scene_name_includes:
@@ -201,6 +203,8 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
         "sbatch",
         "--job-name",
         cfg.slurm.job_name,
+        "--time",
+        cfg.slurm.time,
         "--array",
         array_spec,
         "--export",

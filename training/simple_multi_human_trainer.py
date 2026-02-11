@@ -1585,10 +1585,23 @@ class MultiHumanTrainer:
                     "output_dir": str(self.output_dir),
                     "loss_weights": self.cfg.loss_weights,
                     "sample_every": self.cfg.sample_every,
+                    "slurm_name": self._resolve_slurm_name(),
                 },
                 name=self.cfg.exp_name,
                 tags=list(self.cfg.wandb.tags) if "tags" in self.cfg.wandb else None,
             )
+
+    @staticmethod
+    def _resolve_slurm_name() -> Optional[str]:
+        job_name = os.getenv("SLURM_JOB_NAME")
+        job_id = os.getenv("SLURM_JOB_ID")
+        array_task_id = os.getenv("SLURM_ARRAY_TASK_ID")
+
+        if not job_name or not job_id:
+            return None
+        if array_task_id:
+            return f"{job_name}.{job_id}_{array_task_id}"
+        return f"{job_name}.{job_id}"
 
     # ---------------- Training loop ----------------
     def train_loop(self):
@@ -3127,12 +3140,12 @@ class MultiHumanTrainer:
 
         # Quantitative evaluation against provided ground truth
         # - Novel view synthesis evaluation
-#         if self.test_scene_dir is None:
-            # print("No GT scene directory available. Skipping novel view synthesis evaluation.")
-        # elif len(self.cfg.nvs_eval.target_camera_ids) == 0:
-            # print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
-        # else:
-            # self.eval_loop_nvs(epoch)
+        if self.test_scene_dir is None:
+             print("No GT scene directory available. Skipping novel view synthesis evaluation.")
+        elif len(self.cfg.nvs_eval.target_camera_ids) == 0:
+             print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
+        else:
+             self.eval_loop_nvs(epoch)
 
 
         # - Pose estimation evaluation
@@ -3153,7 +3166,6 @@ class MultiHumanTrainer:
         # Qualitative evaluation (saving posed 3dgs, cameras, depth maps, images)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
         self.eval_loop_qualitative(epoch)
-        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")

@@ -2,7 +2,7 @@
 #SBATCH --job-name=train_scene
 #SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%A_%a.out
 #SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%A_%a.err
-#SBATCH --time=10:00:00
+#SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
