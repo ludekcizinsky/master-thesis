@@ -68,6 +68,6 @@ python preprocess/train/run.py --submit --partition=gpuA --qos=normal
 These extra args are forwarded to `sbatch`.
 
 ## Notes
-- The scene list is loaded from `preprocess/train/scenes/*.json` if present.
+- The scene list is loaded from `preprocess/scenes/*.json` if present.
 - If the `scenes/` directory is empty or missing, `run.py` falls back to its internal defaults.
 - Filtering uses substring matching on `seq_name`.

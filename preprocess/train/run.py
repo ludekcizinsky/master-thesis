@@ -34,7 +34,7 @@ class Config:
     repo_dir: Path = REPO_ROOT
     preprocess_dir: Path = Path("/scratch/izar/cizinsky/thesis/v2_preprocessing")
     infer_scene_script: Path = Path("preprocess/train/helpers/infer_initial_scene.py")
-    scenes_dir: Optional[Path] = Path("preprocess/train/scenes")
+    scenes_dir: Optional[Path] = Path("preprocess/scenes")
     scenes: List[Scene] = field(default_factory=list)
     seq_name_includes: Optional[str] = None
     run_all: bool = False

@@ -50,6 +50,28 @@ def apply_se3_to_points(T: np.ndarray, P: np.ndarray) -> np.ndarray:
     t = T[:3, 3]
     return (P @ R.T) + t  # row vectors
 
+
+def apply_se3_to_points_torch(T: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
+    """
+    Apply batched SE(3) transforms to batched point sets.
+
+    Args:
+        T: [B,4,4] transforms.
+        P: [B,...,3] points in row-vector convention.
+    Returns:
+        Transformed points with same shape as P.
+    """
+    if T.dim() != 3 or T.shape[1:] != (4, 4):
+        raise ValueError(f"Expected T shape [B,4,4], got {T.shape}")
+    if P.dim() < 3 or P.shape[0] != T.shape[0] or P.shape[-1] != 3:
+        raise ValueError(f"Expected P shape [B,...,3], got {P.shape}")
+
+    R = T[:, :3, :3]
+    t = T[:, :3, 3]
+    view_shape = [T.shape[0]] + [1] * (P.dim() - 2) + [3]
+    out = torch.einsum("b...j,bkj->b...k", P, R) + t.view(*view_shape)
+    return out
+
 def compute_world_align_from_gt_c2w_and_pred_c2w(
     T_gt_c2w: np.ndarray,
     T_pred_c2w: np.ndarray,
@@ -590,11 +612,18 @@ def compute_smpl_mpjpe_per_frame(
     gt_smpl_params: Dict[str, torch.Tensor],
     body_model_layer,
     unit: str = "mm",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     pred_layers = _select_layers_for_params(body_model_layer, pred_smpl_params, "SMPL", "pred")
     gt_layers = _select_layers_for_params(body_model_layer, gt_smpl_params, "SMPL", "gt")
     pred_joints = _smpl_params_to_joints(pred_smpl_params, pred_layers)
     gt_joints = _smpl_params_to_joints(gt_smpl_params, gt_layers)
+    if gt_to_pred_transform is not None:
+        gt_joints = apply_se3_to_points_torch(gt_to_pred_transform, gt_joints)
+    if root_relative:
+        pred_joints = pred_joints - pred_joints[:, :, :1, :]
+        gt_joints = gt_joints - gt_joints[:, :, :1, :]
     per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
     per_frame = per_joint.mean(dim=(1, 2))
 
@@ -616,11 +645,18 @@ def compute_smplx_mpjpe_per_frame(
     gt_smplx_params: Dict[str, torch.Tensor],
     body_model_layer,
     unit: str = "mm",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     pred_layers = _select_layers_for_params(body_model_layer, pred_smplx_params, "SMPL-X", "pred")
     gt_layers = _select_layers_for_params(body_model_layer, gt_smplx_params, "SMPL-X", "gt")
     pred_joints = _smplx_params_to_joints(pred_smplx_params, pred_layers)
     gt_joints = _smplx_params_to_joints(gt_smplx_params, gt_layers)
+    if gt_to_pred_transform is not None:
+        gt_joints = apply_se3_to_points_torch(gt_to_pred_transform, gt_joints)
+    if root_relative:
+        pred_joints = pred_joints - pred_joints[:, :, :1, :]
+        gt_joints = gt_joints - gt_joints[:, :, :1, :]
     per_joint = torch.linalg.norm(pred_joints - gt_joints, dim=-1)
     per_frame = per_joint.mean(dim=(1, 2))
 
@@ -643,11 +679,27 @@ def compute_pose_mpjpe_per_frame(
     body_model_layer,
     unit: str = "mm",
     pose_type: str = "smplx",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     if pose_type == "smplx":
-        return compute_smplx_mpjpe_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+        return compute_smplx_mpjpe_per_frame(
+            pred_params,
+            gt_params,
+            body_model_layer,
+            unit=unit,
+            root_relative=root_relative,
+            gt_to_pred_transform=gt_to_pred_transform,
+        )
     if pose_type == "smpl":
-        return compute_smpl_mpjpe_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+        return compute_smpl_mpjpe_per_frame(
+            pred_params,
+            gt_params,
+            body_model_layer,
+            unit=unit,
+            root_relative=root_relative,
+            gt_to_pred_transform=gt_to_pred_transform,
+        )
     raise ValueError(f"Unknown pose_type: {pose_type}")
 
 
@@ -766,11 +818,22 @@ def compute_smpl_mve_per_frame(
     gt_smpl_params: Dict[str, torch.Tensor],
     body_model_layer,
     unit: str = "mm",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     pred_layers = _select_layers_for_params(body_model_layer, pred_smpl_params, "SMPL", "pred")
     gt_layers = _select_layers_for_params(body_model_layer, gt_smpl_params, "SMPL", "gt")
     pred_verts = _smpl_params_to_vertices(pred_smpl_params, pred_layers)
     gt_verts = _smpl_params_to_vertices(gt_smpl_params, gt_layers)
+    if gt_to_pred_transform is not None:
+        gt_verts = apply_se3_to_points_torch(gt_to_pred_transform, gt_verts)
+    if root_relative:
+        pred_joints = _smpl_params_to_joints(pred_smpl_params, pred_layers)
+        gt_joints = _smpl_params_to_joints(gt_smpl_params, gt_layers)
+        if gt_to_pred_transform is not None:
+            gt_joints = apply_se3_to_points_torch(gt_to_pred_transform, gt_joints)
+        pred_verts = pred_verts - pred_joints[:, :, :1, :]
+        gt_verts = gt_verts - gt_joints[:, :, :1, :]
     per_vertex = torch.linalg.norm(pred_verts - gt_verts, dim=-1)
     per_frame = per_vertex.mean(dim=(1, 2))
 
@@ -792,11 +855,22 @@ def compute_smplx_mve_per_frame(
     gt_smplx_params: Dict[str, torch.Tensor],
     body_model_layer,
     unit: str = "mm",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     pred_layers = _select_layers_for_params(body_model_layer, pred_smplx_params, "SMPL-X", "pred")
     gt_layers = _select_layers_for_params(body_model_layer, gt_smplx_params, "SMPL-X", "gt")
     pred_verts = _smplx_params_to_vertices(pred_smplx_params, pred_layers)
     gt_verts = _smplx_params_to_vertices(gt_smplx_params, gt_layers)
+    if gt_to_pred_transform is not None:
+        gt_verts = apply_se3_to_points_torch(gt_to_pred_transform, gt_verts)
+    if root_relative:
+        pred_joints = _smplx_params_to_joints(pred_smplx_params, pred_layers)
+        gt_joints = _smplx_params_to_joints(gt_smplx_params, gt_layers)
+        if gt_to_pred_transform is not None:
+            gt_joints = apply_se3_to_points_torch(gt_to_pred_transform, gt_joints)
+        pred_verts = pred_verts - pred_joints[:, :, :1, :]
+        gt_verts = gt_verts - gt_joints[:, :, :1, :]
     per_vertex = torch.linalg.norm(pred_verts - gt_verts, dim=-1)
     per_frame = per_vertex.mean(dim=(1, 2))
 
@@ -819,11 +893,27 @@ def compute_pose_mve_per_frame(
     body_model_layer,
     unit: str = "mm",
     pose_type: str = "smplx",
+    root_relative: bool = False,
+    gt_to_pred_transform: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     if pose_type == "smplx":
-        return compute_smplx_mve_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+        return compute_smplx_mve_per_frame(
+            pred_params,
+            gt_params,
+            body_model_layer,
+            unit=unit,
+            root_relative=root_relative,
+            gt_to_pred_transform=gt_to_pred_transform,
+        )
     if pose_type == "smpl":
-        return compute_smpl_mve_per_frame(pred_params, gt_params, body_model_layer, unit=unit)
+        return compute_smpl_mve_per_frame(
+            pred_params,
+            gt_params,
+            body_model_layer,
+            unit=unit,
+            root_relative=root_relative,
+            gt_to_pred_transform=gt_to_pred_transform,
+        )
     raise ValueError(f"Unknown pose_type: {pose_type}")
 
 

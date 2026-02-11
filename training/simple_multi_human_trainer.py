@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from collections import deque
@@ -10,10 +11,10 @@ import pandas as pd
 import hydra
 import numpy as np
 import wandb
+import trimesh
 from tqdm import tqdm
 from omegaconf import DictConfig
 from PIL import Image
-import trimesh
 
 
 import torch
@@ -38,6 +39,7 @@ from training.helpers.dataset import (
     fetch_cameras_if_exist, 
     root_dir_to_image_dir, 
     root_dir_to_mask_dir, 
+    root_dir_to_mask_root_dir,
     root_dir_to_skip_frames_path, 
     root_dir_to_depth_dir,
     root_dir_to_all_cameras_dir,
@@ -53,23 +55,14 @@ from training.helpers.debug import (
     create_and_save_depth_debug_vis,
     save_gt_image_and_mask_comparison,
 )
-from training.helpers.gs_to_mesh import get_meshes_from_3dgs
 from training.helpers.eval_metrics import (
-    ssim, psnr, lpips, _ensure_nchw, segmentation_mask_metrics,
+    ssim, psnr, lpips, _ensure_nchw,
     compute_pose_mpjpe_per_frame,
     compute_pose_mve_per_frame,
     compute_pose_contact_distance_per_frame,
     compute_pose_pcdr_per_frame,
-    gt_mesh_from_sample,
     merge_mesh_dict,
     posed_gs_list_to_serializable_dict,
-    align_pred_meshes_icp,
-    apply_se3_to_points,
-    save_aligned_meshes,
-    compute_chamfer_distance,
-    compute_p2s_distance,
-    compute_normal_consistency,
-    compute_volumetric_iou
 )
 from fused_ssim import fused_ssim
 
@@ -84,9 +77,6 @@ from training.helpers.masking import (
     estimate_masks_from_smplx_batch, 
     estimate_masks_from_src_reprojection_batch, 
     overlay_mask_on_image, 
-    get_masked_images, 
-    get_gt_est_masks_overlay, 
-    save_segmentation_debug_figures
 )
 
 # ---------------------------------------------------------------------------
@@ -381,12 +371,23 @@ class MultiHumanTrainer:
         self.unreliable_frame_names: Optional[set] = None
         self.frame_quality_avg_iou: Optional[float] = None
         self.frame_quality_reliable_ratio: Optional[float] = None
+        self.num_persons: Optional[int] = None
         self.tuner_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.preprocess_dir = Path(cfg.preprocessing_dir)
-        self.output_dir = Path(cfg.output_dir)
-        self.trn_data_dir = Path(cfg.input_data_dir) / "train" / f"{cfg.scene_name}" / f"{self.cfg.exp_name}"
+        self.scene_registry_dir = self._resolve_scene_registry_dir()
+        self.source_camera_id = self._resolve_source_camera_id_from_scene_metadata()
+        self.trn_scene_dir = self._resolve_trn_scene_dir()
+        self.test_scene_dir = self._resolve_test_scene_dir()
+        self.output_dir = Path(cfg.output_dir) / f"{self.cfg.exp_name}"
+        self.debug_dir = self.output_dir / "debug"
+        self.evaluation_dir = self.output_dir / "evaluation"
+        self.input_data_dir = self.output_dir / "input_data"
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        self.evaluation_dir.mkdir(parents=True, exist_ok=True)
+        self.input_data_dir.mkdir(parents=True, exist_ok=True)
+        self.trn_data_dir = self.input_data_dir / "train"
         self.trn_data_dir.mkdir(parents=True, exist_ok=True)
-        self.test_data_dir = Path(cfg.input_data_dir) / "test" / f"{cfg.scene_name}" / f"{self.cfg.exp_name}"
+        self.test_data_dir = self.input_data_dir / "test"
         self.test_data_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.train_params = tuple(cfg.train_params)
@@ -413,6 +414,80 @@ class MultiHumanTrainer:
         self._init_nv_generation()
         self.nv_gen_done = False
 
+    def _resolve_trn_scene_dir(self) -> Path:
+        trn_scene_dir = self.cfg.get("trn_scene_dir", None)
+        if trn_scene_dir is None:
+            trn_scene_dir = self.cfg.get("frames_scene_dir", self.cfg.preprocessing_dir)
+        return Path(trn_scene_dir)
+
+    def _resolve_test_scene_dir(self) -> Path:
+        test_scene_dir = self.cfg.get("test_scene_dir", None)
+        if test_scene_dir is None or str(test_scene_dir).strip() == "":
+            raise ValueError(
+                "Missing required config 'test_scene_dir'. "
+                "Please provide an explicit test scene directory override."
+            )
+        return Path(test_scene_dir)
+
+    def _resolve_scene_registry_dir(self) -> Path:
+        cfg_dir = self.cfg.get("scene_registry_dir", None)
+        if cfg_dir is not None and str(cfg_dir).strip() != "":
+            return Path(cfg_dir)
+        # repo_root / preprocess / scenes
+        return Path(__file__).resolve().parents[1] / "preprocess" / "scenes"
+
+    def _resolve_source_camera_id_from_scene_metadata(self) -> int:
+        scene_name = str(self.cfg.scene_name)
+        scene_json_path = self.scene_registry_dir / f"{scene_name}.json"
+        if not scene_json_path.exists():
+            raise FileNotFoundError(
+                f"Scene metadata JSON not found: {scene_json_path}. "
+                "Expected this file to define source camera under key 'cam_id'."
+            )
+        with open(scene_json_path, "r") as f:
+            scene_meta = json.load(f)
+        if "cam_id" not in scene_meta:
+            raise KeyError(
+                f"Missing 'cam_id' in scene metadata: {scene_json_path}"
+            )
+
+        source_cam_id = int(scene_meta["cam_id"])
+        prev_source_cam_id = self.cfg.nvs_eval.get("source_camera_id", None)
+        self.cfg.nvs_eval.source_camera_id = source_cam_id
+        if prev_source_cam_id is None or int(prev_source_cam_id) != source_cam_id:
+            print(
+                f"Source camera resolved from scene metadata: {source_cam_id} "
+                f"(scene: {scene_json_path})"
+            )
+        return source_cam_id
+
+    @staticmethod
+    def _scene_has_depth(scene_dir: Path, cam_id: int) -> bool:
+        return root_dir_to_depth_dir(scene_dir, cam_id).exists()
+
+    @staticmethod
+    def _scene_has_smpl(scene_dir: Path) -> bool:
+        return root_dir_to_smpl_dir(scene_dir).exists()
+
+    @staticmethod
+    def _infer_num_persons_from_seg(scene_dir: Path, cam_id: int) -> int:
+        mask_root_dir = root_dir_to_mask_root_dir(scene_dir, cam_id)
+        if not mask_root_dir.exists():
+            raise FileNotFoundError(
+                f"Segmentation directory not found: {mask_root_dir}"
+            )
+
+        track_dirs = [
+            d for d in mask_root_dir.iterdir()
+            if d.is_dir() and d.name != "all" and d.name.isdigit()
+        ]
+        if len(track_dirs) == 0:
+            raise RuntimeError(
+                f"No person track directories found in {mask_root_dir}. "
+                "Expected per-person dirs like '0', '1', ... alongside 'all'."
+            )
+        return len(track_dirs)
+
     
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
@@ -421,15 +496,23 @@ class MultiHumanTrainer:
 
         # Fetch training dataset from the specified directories 
         # to the training data dir if not already present
+        depth_scene_dir = (
+            self.trn_scene_dir
+            if self.cfg.use_depth and self._scene_has_depth(self.trn_scene_dir, src_cam_id)
+            else None
+        )
+        smpl_scene_dir = (
+            self.trn_scene_dir if self._scene_has_smpl(self.trn_scene_dir) else None
+        )
         fetch_data_if_available(
             self.trn_data_dir,
             src_cam_id,
-            Path(self.cfg.frames_scene_dir),
-            Path(self.cfg.masks_scene_dir),
-            Path(self.cfg.cameras_scene_dir),
-            Path(self.cfg.smplx_params_scene_dir),
-            Path(self.cfg.depths_scene_dir) if self.cfg.use_depth else None,
-            Path(self.cfg.smpl_params_scene_dir) if self.cfg.smpl_params_scene_dir is not None else None,
+            self.trn_scene_dir,
+            self.trn_scene_dir,
+            self.trn_scene_dir,
+            self.trn_scene_dir,
+            depth_scene_dir,
+            smpl_scene_dir,
         )
 
         # Load skip frames if needed
@@ -450,7 +533,9 @@ class MultiHumanTrainer:
         self.trn_datasets.append(trn_ds)
         self.trn_dataset = trn_ds
         self.trn_render_hw = self.trn_dataset.trn_render_hw
+        self.num_persons = self._infer_num_persons_from_seg(self.trn_data_dir, src_cam_id)
         print(f"Source Camera Training dataset initialised at {self.trn_data_dir} with {len(self.trn_dataset)} images.")
+        print(f"Inferred number of persons from segmentation tracks: {self.num_persons}")
 
     def _init_test_scene_dir(self):
 
@@ -458,30 +543,36 @@ class MultiHumanTrainer:
         src_cam_id: int = self.cfg.nvs_eval.source_camera_id
         tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
         all_cam_ids = [src_cam_id] + tgt_cam_ids
-        if self.cfg.test_frames_scene_dir is None:
-            print("No test frames scene directory specified. Skipping test dataset initialization.")
-            return
-        frames_dir = Path(self.cfg.test_frames_scene_dir)
-        masks_dir = Path(self.cfg.test_masks_scene_dir) if self.cfg.test_masks_scene_dir is not None else None
-        cameras_dir = Path(self.cfg.test_cameras_scene_dir) if self.cfg.test_cameras_scene_dir is not None else None
-        smplx_params_dir = Path(self.cfg.test_smplx_params_scene_dir) if self.cfg.test_smplx_params_scene_dir is not None else None
-        depths_dir = Path(self.cfg.test_depths_scene_dir) if self.cfg.test_depths_scene_dir is not None else None
-        smpl_params_dir = Path(self.cfg.test_smpl_params_scene_dir) if self.cfg.test_smpl_params_scene_dir is not None else None
-        meshes_dir = Path(self.cfg.test_meshes_scene_dir) if self.cfg.test_meshes_scene_dir is not None else None
+        if not self.test_scene_dir.exists():
+            raise FileNotFoundError(
+                f"Configured test scene directory does not exist: {self.test_scene_dir}"
+            )
+        src_frames_dir = root_dir_to_image_dir(self.test_scene_dir, src_cam_id)
+        if not src_frames_dir.exists():
+            raise FileNotFoundError(
+                f"Configured test scene directory is missing source camera frames at: {src_frames_dir}"
+            )
 
 
         # Fetch testing dataset from the specified directories 
         for cam_id in all_cam_ids:
+            depth_scene_dir = (
+                self.test_scene_dir
+                if self.cfg.use_depth and self._scene_has_depth(self.test_scene_dir, cam_id)
+                else None
+            )
+            smpl_scene_dir = (
+                self.test_scene_dir if self._scene_has_smpl(self.test_scene_dir) else None
+            )
             fetch_data_if_available(
                 self.test_data_dir,
                 cam_id,
-                frames_dir,
-                masks_dir,
-                cameras_dir,
-                smplx_params_dir,
-                depths_dir,
-                smpl_params_dir,
-                meshes_dir,
+                self.test_scene_dir,
+                self.test_scene_dir,
+                self.test_scene_dir,
+                self.test_scene_dir,
+                depth_scene_dir,
+                smpl_scene_dir,
             )
 
     # ---------------- Pose tuning utilities ----------------
@@ -656,6 +747,251 @@ class MultiHumanTrainer:
                     expression=expr[i].detach().cpu().numpy(),
                 )
 
+    @torch.no_grad()
+    def _save_posed_smplx_meshes_from_params_dir(
+        self,
+        smplx_params_dir: Path,
+        out_dir: Path,
+        root_relative: bool = False,
+        frame_to_transform: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> None:
+        smplx_files = sorted(smplx_params_dir.glob("*.npz"))
+        if len(smplx_files) == 0:
+            print(f"No SMPL-X parameter files found in {smplx_params_dir}; skipping SMPL-X mesh export.")
+            return
+
+        smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
+        if smplx_layer is None:
+            raise RuntimeError("SMPL-X layer not available; cannot export posed SMPL-X meshes.")
+        smplx_layer = smplx_layer.to(self.tuner_device).eval()
+        smplx_faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int32)
+        expr_dim = int(getattr(getattr(self.renderer.smplx_model, "smpl_x", None), "expr_param_dim", 0))
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for smplx_path in smplx_files:
+            smplx_params = SceneDataset._load_smplx(smplx_path, device=self.tuner_device)
+            n_persons = int(smplx_params["betas"].shape[0])
+
+            frame_name = smplx_path.stem
+            frame_key = self._canonical_frame_name(frame_name)
+            T = None
+            if frame_to_transform is not None:
+                T = frame_to_transform.get(frame_key)
+                if T is None:
+                    print(
+                        f"Skipping frame '{frame_name}' in {smplx_params_dir}: "
+                        f"missing camera alignment transform for key '{frame_key}'."
+                    )
+                    continue
+                T = T.to(self.tuner_device)
+                R = T[:3, :3]
+                t = T[:3, 3]
+
+            if frame_name.isdigit():
+                frame_name = f"{int(frame_name):06d}"
+
+            smplx_meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+            for person_idx in range(n_persons):
+                betas = smplx_params["betas"][person_idx : person_idx + 1]
+                root_pose = smplx_params["root_pose"][person_idx : person_idx + 1]
+                body_pose = smplx_params["body_pose"][person_idx : person_idx + 1]
+                jaw_pose = smplx_params["jaw_pose"][person_idx : person_idx + 1]
+                leye_pose = smplx_params["leye_pose"][person_idx : person_idx + 1]
+                reye_pose = smplx_params["reye_pose"][person_idx : person_idx + 1]
+                lhand_pose = smplx_params["lhand_pose"][person_idx : person_idx + 1]
+                rhand_pose = smplx_params["rhand_pose"][person_idx : person_idx + 1]
+                trans = smplx_params["trans"][person_idx : person_idx + 1]
+
+                expression = None
+                if expr_dim > 0:
+                    expr = smplx_params.get("expr")
+                    if expr is None:
+                        expression = torch.zeros((1, expr_dim), device=self.tuner_device, dtype=betas.dtype)
+                    else:
+                        expr_person = expr[person_idx : person_idx + 1].reshape(1, -1)
+                        if expr_person.shape[1] < expr_dim:
+                            pad = torch.zeros(
+                                (1, expr_dim - expr_person.shape[1]),
+                                device=self.tuner_device,
+                                dtype=expr_person.dtype,
+                            )
+                            expr_person = torch.cat([expr_person, pad], dim=1)
+                        expression = expr_person[:, :expr_dim]
+
+                smplx_out = smplx_layer(
+                    global_orient=root_pose,
+                    body_pose=body_pose,
+                    jaw_pose=jaw_pose,
+                    leye_pose=leye_pose,
+                    reye_pose=reye_pose,
+                    left_hand_pose=lhand_pose,
+                    right_hand_pose=rhand_pose,
+                    betas=betas,
+                    transl=trans,
+                    expression=expression,
+                )
+                vertices_t = smplx_out.vertices[0].detach()
+                if T is not None:
+                    vertices_t = vertices_t @ R.T + t
+                if root_relative:
+                    # Match root-relative metric frame: subtract per-person root joint.
+                    root_joint_t = smplx_out.joints[0, 0].detach()
+                    vertices_t = vertices_t - root_joint_t.unsqueeze(0)
+                vertices = vertices_t.cpu().numpy()
+                smplx_meshes_for_frame[person_idx] = (vertices, smplx_faces)
+
+            # Save per-person meshes
+            for person_idx in range(n_persons):
+                person_dir = out_dir / f"{person_idx:02d}"
+                person_dir.mkdir(parents=True, exist_ok=True)
+                out_path = person_dir / f"{frame_name}.obj"
+
+                mesh = smplx_meshes_for_frame.get(person_idx)
+                if mesh is None:
+                    out_path.write_text("")
+                    continue
+                vertices, faces = mesh
+                if vertices.size == 0 or faces.size == 0:
+                    out_path.write_text("")
+                    continue
+                trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
+
+            # Save merged mesh
+            merged_smplx_mesh = merge_mesh_dict(smplx_meshes_for_frame)
+            merged_smplx_path = out_dir / f"{frame_name}.obj"
+            if merged_smplx_mesh[0].size and merged_smplx_mesh[1].size:
+                trimesh.Trimesh(
+                    vertices=merged_smplx_mesh[0],
+                    faces=merged_smplx_mesh[1],
+                    process=False,
+                ).export(merged_smplx_path)
+
+    @staticmethod
+    def _canonical_frame_name(frame_name: str) -> str:
+        s = str(frame_name)
+        if s.isdigit():
+            return str(int(s))
+        return s
+
+    def _index_cam_params_by_canonical(
+        self, frame_cam_params: Dict[str, Dict[str, torch.Tensor]]
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        indexed: Dict[str, Dict[str, torch.Tensor]] = {}
+        for frame_name, params in frame_cam_params.items():
+            indexed[self._canonical_frame_name(frame_name)] = params
+        return indexed
+
+    @staticmethod
+    def _extract_people_translations(pose_params: Dict[str, torch.Tensor]) -> torch.Tensor:
+        trans = pose_params["trans"]
+        if trans.dim() == 3:
+            if trans.shape[0] != 1:
+                raise ValueError(f"Unexpected trans shape {trans.shape}; expected [1,P,3] or [P,3].")
+            trans = trans[0]
+        if trans.dim() == 1:
+            if trans.numel() != 3:
+                raise ValueError(f"Unexpected trans shape {trans.shape}; expected [...,3].")
+            trans = trans.unsqueeze(0)
+        if trans.dim() != 2 or trans.shape[-1] != 3:
+            raise ValueError(f"Unexpected trans shape {trans.shape}; expected [P,3].")
+        return trans
+
+    def _estimate_rigid_transform_gt_to_pred(
+        self, gt_points: torch.Tensor, pred_points: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Estimate rigid transform T mapping GT points to Pred points: x_pred = R*x_gt + t.
+        Args:
+            gt_points: [N,3]
+            pred_points: [N,3]
+        Returns:
+            T: [4,4]
+        """
+        if gt_points.shape != pred_points.shape or gt_points.dim() != 2 or gt_points.shape[1] != 3:
+            raise ValueError(
+                f"Point sets must match with shape [N,3]. Got gt {gt_points.shape}, pred {pred_points.shape}."
+            )
+        if gt_points.shape[0] < 3:
+            raise RuntimeError("At least 3 correspondence points are required for rigid alignment.")
+
+        gt_mean = gt_points.mean(dim=0, keepdim=True)
+        pred_mean = pred_points.mean(dim=0, keepdim=True)
+        gt_centered = gt_points - gt_mean
+        pred_centered = pred_points - pred_mean
+
+        H = gt_centered.transpose(0, 1) @ pred_centered
+        U, _S, Vh = torch.linalg.svd(H, full_matrices=True)
+        R = Vh.transpose(0, 1) @ U.transpose(0, 1)
+        if torch.det(R) < 0:
+            Vh = Vh.clone()
+            Vh[-1, :] *= -1
+            R = Vh.transpose(0, 1) @ U.transpose(0, 1)
+        t = pred_mean[0] - (R @ gt_mean[0])
+
+        T = torch.eye(4, device=gt_points.device, dtype=gt_points.dtype)
+        T[:3, :3] = R
+        T[:3, 3] = t
+        return T
+
+    def _build_gt_to_pred_transforms_by_frame(
+        self,
+        pose_align_method: str,
+        frame_names_all: List[str],
+        pred_pose_by_key: Dict[str, Dict[str, torch.Tensor]],
+        gt_pose_by_key: Dict[str, Dict[str, torch.Tensor]],
+        src_camera_params_over_time: Dict[str, Dict[str, torch.Tensor]],
+        gt_camera_params_over_time: Dict[str, Dict[str, torch.Tensor]],
+    ) -> Dict[str, torch.Tensor]:
+        gt_to_pred_transform_by_frame: Dict[str, torch.Tensor] = {}
+        if pose_align_method == "camera":
+            # Build per-frame camera alignment transforms mapping GT world -> Pred world.
+            # T_pred_from_gt = c2w_pred @ inv(c2w_gt)
+            for frame_key in frame_names_all:
+                pred_cam = src_camera_params_over_time.get(frame_key)
+                gt_cam = gt_camera_params_over_time.get(frame_key)
+                if pred_cam is None or gt_cam is None:
+                    raise RuntimeError(
+                        f"Missing camera params for frame '{frame_key}' "
+                        f"(pred_exists={pred_cam is not None}, gt_exists={gt_cam is not None})."
+                    )
+                c2w_pred = pred_cam["c2w"]
+                c2w_gt = gt_cam["c2w"]
+                gt_to_pred_transform_by_frame[frame_key] = c2w_pred @ torch.inverse(c2w_gt)
+            return gt_to_pred_transform_by_frame
+
+        if pose_align_method == "pelvis_trajectory":
+            gt_points_all = []
+            pred_points_all = []
+            for frame_key in frame_names_all:
+                pred_pose = pred_pose_by_key.get(frame_key)
+                gt_pose = gt_pose_by_key.get(frame_key)
+                if pred_pose is None or gt_pose is None:
+                    continue
+                pred_trans = self._extract_people_translations(pred_pose)
+                gt_trans = self._extract_people_translations(gt_pose)
+                n_common = min(pred_trans.shape[0], gt_trans.shape[0])
+                if n_common <= 0:
+                    continue
+                pred_points_all.append(pred_trans[:n_common])
+                gt_points_all.append(gt_trans[:n_common])
+
+            if not gt_points_all or not pred_points_all:
+                raise RuntimeError(
+                    "Could not build pelvis-trajectory correspondences for world alignment."
+                )
+
+            gt_points = torch.cat(gt_points_all, dim=0).to(self.tuner_device)
+            pred_points = torch.cat(pred_points_all, dim=0).to(self.tuner_device)
+            T_global = self._estimate_rigid_transform_gt_to_pred(gt_points, pred_points)
+            for frame_key in frame_names_all:
+                gt_to_pred_transform_by_frame[frame_key] = T_global
+            return gt_to_pred_transform_by_frame
+
+        raise ValueError(
+            f"Unknown pose world alignment method '{pose_align_method}'. "
+            "Supported: 'pelvis_trajectory', 'camera'."
+        )
+
 
     # ---------------- Model  ------------------------------
     def _load_model(self):
@@ -665,10 +1001,21 @@ class MultiHumanTrainer:
         # - in practice, I currently use betas only
         smplx_params = self.trn_dataset[0]["smplx_params"]
         self.query_points, self.tranform_mat_neutral_pose = self.renderer.get_query_points(smplx_params, self.tuner_device)
+        if self.num_persons is None:
+            raise RuntimeError("num_persons was not initialized before model loading.")
+        query_point_count = int(self.query_points.shape[0]) if torch.is_tensor(self.query_points) else len(self.query_points)
+        if query_point_count != self.num_persons:
+            raise RuntimeError(
+                f"Mismatch between inferred num_persons ({self.num_persons}) and query points ({query_point_count})."
+            )
 
         # Load Canonical 3DGS
         root_gs_model_dir = self.preprocess_dir / "canon_3dgs_lhm"
         self.gs_model_list = torch.load(root_gs_model_dir / "union" / "gs.pt", map_location=self.tuner_device, weights_only=False)
+        if len(self.gs_model_list) != self.num_persons:
+            raise RuntimeError(
+                f"Mismatch between inferred num_persons ({self.num_persons}) and loaded GS models ({len(self.gs_model_list)})."
+            )
 
         if getattr(self.cfg, "use_random_init", False):
             self._randomize_gs_attributes()
@@ -1590,7 +1937,7 @@ class MultiHumanTrainer:
                 # space for debug stuff is here
                 if batch_idx in [0] and (epoch + 1) % 2 == 0:
                     # - create a joined image from pred_masked and gt_masked for debugging
-                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "rgb"
+                    debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "rgb"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     overlay = pred_rgb*0.5 + gt_masked*0.5
                     joined_image = torch.cat([pred_rgb, gt_masked, overlay], dim=3)  # Concatenate along width
@@ -1603,7 +1950,7 @@ class MultiHumanTrainer:
 
                     # - save depth comparison images (only if depth supervision is available)
                     if depths is not None:
-                        debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "depth"
+                        debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "depth"
                         debug_save_dir.mkdir(parents=True, exist_ok=True)
                         for i in range(pred_depth.shape[0]):
                             frame_name = fnames[i]
@@ -1612,7 +1959,7 @@ class MultiHumanTrainer:
                             save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
                     # - save render and mask comparison images
-                    debug_save_dir = self.output_dir / "debug" / self.cfg.exp_name / f"epoch_{epoch+1:04d}" / "gt_input"
+                    debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "gt_input"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     for i in range(masks.shape[0]):
                         frame_name = fnames[i] 
@@ -1728,7 +2075,8 @@ class MultiHumanTrainer:
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
         # fetch all trn nv camera ids params into the trn data dir
-        cam_scene_dir = Path(self.cfg.cameras_scene_dir)
+        # Prefer test scene cameras (canonical GT) because training scene often contains only the source view.
+        cam_scene_dir = self.test_scene_dir if self.test_scene_dir.exists() else self.trn_scene_dir
         for cam_id in self.camera_ids:
             fetch_cameras_if_exist(cam_scene_dir, self.trn_data_dir, cam_id, dict())
 
@@ -1774,7 +2122,7 @@ class MultiHumanTrainer:
             cam_id,
             Path("/dummy/frames/dir"), 
             Path("/dummy/masks/dir"),
-            cam_scene_dir=Path(self.cfg.cameras_scene_dir),   
+            cam_scene_dir=self.trn_scene_dir,
             frame_paths=self.curr_trn_frame_paths,
         )
 
@@ -2051,8 +2399,8 @@ class MultiHumanTrainer:
         else:
             for cam_id in new_cams:
                 print(f"Preparing NV masks for cam {cam_id} by fetching from scene masks dir")
-                were_masks_fetched = fetch_masks_if_exist(Path(self.cfg.masks_scene_dir), self.trn_data_dir, cam_id)
-                assert were_masks_fetched, f"Masks for cam {cam_id} not found in {self.cfg.masks_scene_dir}"
+                were_masks_fetched = fetch_masks_if_exist(self.trn_scene_dir, self.trn_data_dir, cam_id)
+                assert were_masks_fetched, f"Masks for cam {cam_id} not found in {self.trn_scene_dir}"
 
         # Update the left and right previous cam ids
         self.left_cam_id = new_left_cam_id
@@ -2071,7 +2419,7 @@ class MultiHumanTrainer:
 
         # Parse the evaluation setup
         target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
-        root_save_dir: Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        root_save_dir: Path = self.evaluation_dir / f"epoch_{epoch:04d}"
         root_save_dir.mkdir(parents=True, exist_ok=True)
 
         # Load skip frames
@@ -2309,149 +2657,6 @@ class MultiHumanTrainer:
             torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def eval_loop_segmentation(self, epoch): 
-
-        # Init save directory        
-        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        tgt_cam_ids = self.cfg.nvs_eval.target_camera_ids
-        src_cam_id = self.cfg.nvs_eval.source_camera_id
-        metrics_per_frame = []
-        for tgt_cam_id in tgt_cam_ids:
-
-            # Only eval source camera masks
-            if tgt_cam_id != src_cam_id:
-                continue
-
-            # Init save directory for this cam
-            cam_save_dir : Path = save_dir / f"{tgt_cam_id}"
-            cam_save_dir.mkdir(parents=True, exist_ok=True)
-
-            # From cam save dir, init segm_metrics_debug dir
-            segm_metrics_debug_dir = cam_save_dir / "segm_metrics_debug_inputs"
-            segm_metrics_debug_dir.mkdir(parents=True, exist_ok=True)
-
-            # Prepare gt datasets for given camera
-            skip_frames = load_skip_frames(self.trn_data_dir)
-            # - For the estimated dataset, use same sample_every and skip frames if evaluating on source camera
-            if tgt_cam_id == src_cam_id:
-                est_sample_every = self.sample_every
-                est_skip_frames = skip_frames
-            else:
-                est_sample_every = 1
-                est_skip_frames = []  # no skip frames for test dataset
-
-            est_dataset = SceneDataset(self.trn_data_dir, tgt_cam_id, 
-                                       device=self.tuner_device,sample_every=est_sample_every, skip_frames=est_skip_frames)
-            # - For the gt dataset, always use the test dataset with original sample_every and skip frames
-            gt_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
-                                       device=self.tuner_device, sample_every=self.sample_every, skip_frames=skip_frames)
-
-            # Prepare dataloader
-            loader = DataLoader(
-                est_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
-            )
-
-
-            # Evaluate in batches
-            for batch in tqdm(loader, desc=f"Segmentation Eval cam {tgt_cam_id}", leave=False):
-
-                # Parse estimated masks
-                est_masks = batch["mask"]               # [B, H, W, 1]
-                est_frame_indices = batch["frame_idx"]      # [B]
-                fnames = batch["frame_name"]      # [B]
-                frames = batch["image"]             # [B, H, W, 3]
-
-                # Parse gt masks
-                gt_masks = []
-                gt_frame_names = []
-                for i in range(est_masks.shape[0]):
-                    sample_dict = gt_dataset[est_frame_indices[i].item()]
-                    gt_mask = sample_dict["mask"]  # [H, W, 1], 0-1
-                    gt_frame_names.append(sample_dict["frame_name"])
-                    gt_masks.append(gt_mask.to(self.tuner_device))
-                gt_masks = torch.stack(gt_masks, dim=0)  # [B, H, W, 1]
-                assert list(gt_frame_names) == list(fnames), "Estimated and GT frame names do not match!"
-
-                # Compute metrics
-                segm_metrics = segmentation_mask_metrics(
-                    gt_masks=gt_masks.squeeze(-1),
-                    pred_masks=est_masks.squeeze(-1),
-                )
-                segm_iou, segm_recall, segm_f1 = segm_metrics["segm_iou"], segm_metrics["segm_recall"], segm_metrics["segm_f1"]
-                for fname, iou, recall, f1 in zip(fnames, segm_iou, segm_recall, segm_f1):
-                    fid = int(fname)
-                    metrics_per_frame.append(
-                        (tgt_cam_id, fid, iou.item(), recall.item(), f1.item())
-                    )
-
-                # Save debug inputs for this batch
-                gt_masked_frames = get_masked_images(frames, gt_masks)
-                est_masked_frames = get_masked_images(frames, est_masks)
-                gt_est_masks_overlay = get_gt_est_masks_overlay(gt_masks, est_masks) 
-                save_segmentation_debug_figures(
-                    gt_masked_frames,
-                    est_masked_frames,
-                    gt_est_masks_overlay,
-                    frame_names=fnames,
-                    iou=segm_iou,
-                    recall=segm_recall,
-                    f1=segm_f1,
-                    save_dir=segm_metrics_debug_dir,
-                )
-                
-
-        # Save metrics to CSV
-        # - save per-frame metrics
-        df = pd.DataFrame(metrics_per_frame, columns=["camera_id", "frame_id", "iou", "recall", "f1"])
-        csv_path = save_dir / "segmentation_metrics_per_frame.csv"
-        df.to_csv(csv_path, index=False)
-
-        # - save average metrics per camera
-        df_avg_cam = df.groupby("camera_id").agg({"iou": "mean", "recall": "mean", "f1": "mean"}).reset_index()
-        csv_path_avg_cam = save_dir / "segmentation_metrics_avg_per_camera.csv"
-        df_avg_cam.to_csv(csv_path_avg_cam, index=False)
-
-        # - log to wandb the per cam metrics
-        if self.cfg.wandb.enable:
-            for _, row in df_avg_cam.iterrows():
-                to_log = {f"eval_segm/cam_{int(row['camera_id'])}/{metric_name}": row[metric_name] for metric_name in ["iou", "recall", "f1"]}
-                to_log["epoch"] = epoch
-                wandb.log(to_log)
-
-        # - save average across all cameras except from source camera
-        df_excluding_source = df[df["camera_id"] != self.cfg.nvs_eval.source_camera_id]
-        overall_avg = {
-            "iou": df_excluding_source["iou"].mean(),
-            "recall": df_excluding_source["recall"].mean(),
-            "f1": df_excluding_source["f1"].mean(),
-        }
-        overall_avg_path = save_dir / "segmentation_overall_results.txt"
-        with open(overall_avg_path, "w") as f:
-            for k, v in overall_avg.items():
-                f.write(f"{k}: {v:.4f}\n")
-        
-        # - log the overall average metrics to wandb
-        if self.cfg.wandb.enable:
-            to_log = {f"eval_segm/all_cam/{metric_name}": v for metric_name, v in overall_avg.items()}
-            to_log["epoch"] = epoch
-            wandb.log(to_log)
-
-        # - log the source training view metrics to wandb
-        if self.cfg.wandb.enable:
-            df_source = df[df["camera_id"] == self.cfg.nvs_eval.source_camera_id]
-            if not df_source.empty:
-                source_avg = {
-                    "iou": df_source["iou"].mean(),
-                    "recall": df_source["recall"].mean(),
-                    "f1": df_source["f1"].mean(),
-                }
-                to_log = {f"eval_segm/trn_cam/{metric_name}": v for metric_name, v in source_avg.items()}
-                to_log["epoch"] = epoch
-                wandb.log(to_log)
-
-    @torch.no_grad()
     def eval_loop_pose_estimation(self, epoch, pose_type="smplx"):
 
         # Parse source camera ID
@@ -2459,7 +2664,7 @@ class MultiHumanTrainer:
 
         # Prepare directories to save results
         # - root save directory        
-        save_dir : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir : Path = self.evaluation_dir / f"epoch_{epoch:04d}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the updated pred SMPL-X params with pose tuning applied
@@ -2501,8 +2706,48 @@ class MultiHumanTrainer:
         batched_pred_pose_params, batched_pred_fnames = pose_params_dict_to_batch(pred_fname_to_pose_params, batch_size)
 
         # - cameras
-        all_cameras = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
-        src_camera_params_over_time = all_cameras[src_cam_id]
+        all_cameras_pred = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
+        all_cameras_gt = get_all_scene_dir_cams(self.test_data_dir, self.tuner_device)
+        src_camera_params_over_time = self._index_cam_params_by_canonical(all_cameras_pred[src_cam_id])
+        gt_camera_params_over_time = self._index_cam_params_by_canonical(all_cameras_gt[src_cam_id])
+
+        pred_pose_by_key = {
+            self._canonical_frame_name(k): v for k, v in pred_fname_to_pose_params.items()
+        }
+        gt_pose_by_key = {
+            self._canonical_frame_name(k): v for k, v in gt_fname_to_pose_params.items()
+        }
+        frame_names_all = sorted(set(pred_pose_by_key.keys()) & set(gt_pose_by_key.keys()))
+        if not frame_names_all:
+            raise RuntimeError("No overlapping frame names found between predicted and GT pose params.")
+
+        pose_align_cfg = self.cfg.get("pose_world_alignment", {})
+        pose_align_method = str(pose_align_cfg.get("method", "pelvis_trajectory")).lower()
+        print(f"Pose world alignment method: {pose_align_method}")
+        gt_to_pred_transform_by_frame = self._build_gt_to_pred_transforms_by_frame(
+            pose_align_method=pose_align_method,
+            frame_names_all=frame_names_all,
+            pred_pose_by_key=pred_pose_by_key,
+            gt_pose_by_key=gt_pose_by_key,
+            src_camera_params_over_time=src_camera_params_over_time,
+            gt_camera_params_over_time=gt_camera_params_over_time,
+        )
+
+        if pose_type == "smplx":
+            pred_mesh_dir = save_dir / "posed_smplx_meshes_per_frame"
+            self._save_posed_smplx_meshes_from_params_dir(
+                pose_tuned_smplx_params_dir,
+                pred_mesh_dir,
+                root_relative=False,
+            )
+            gt_smplx_params_dir = root_dir_to_smplx_dir(self.test_data_dir)
+            gt_mesh_dir = save_dir / "gt_inputs" / "pose" / "gt_smplx_meshes_per_frame"
+            self._save_posed_smplx_meshes_from_params_dir(
+                gt_smplx_params_dir,
+                gt_mesh_dir,
+                root_relative=False,
+                frame_to_transform=gt_to_pred_transform_by_frame,
+            )
 
         # Get pose layers (per-person)
         sample_params = next(iter(pred_fname_to_pose_params.values()), None)
@@ -2574,25 +2819,34 @@ class MultiHumanTrainer:
             )
 
             # Get corresponding c2ws
-            c2ws = [src_camera_params_over_time[fname]["c2w"] for fname in fnames]
+            c2ws = [src_camera_params_over_time[self._canonical_frame_name(fname)]["c2w"] for fname in fnames]
             c2ws = torch.stack(c2ws, dim=0)  # [B, 4, 4]
 
-            # - Compute pose metrics
-            # -- MPJPE per frame
-            mpjpe_per_frame = compute_pose_mpjpe_per_frame(
-                pred_pose_params,
-                gt_pose_params,
-                pose_layers,
-                unit="mm",
-                pose_type=pose_type,
+            gt_to_pred_transform = torch.stack(
+                [gt_to_pred_transform_by_frame[self._canonical_frame_name(fname)] for fname in fnames],
+                dim=0,
             )
-            # -- MVE per frame
-            mve_per_frame = compute_pose_mve_per_frame(
+
+            # - Compute pose metrics
+            # -- Root-relative MPJPE per frame
+            rr_mpjpe_per_frame = compute_pose_mpjpe_per_frame(
                 pred_pose_params,
                 gt_pose_params,
                 pose_layers,
                 unit="mm",
                 pose_type=pose_type,
+                root_relative=True,
+                gt_to_pred_transform=gt_to_pred_transform,
+            )
+            # -- Root-relative MVE per frame
+            rr_mve_per_frame = compute_pose_mve_per_frame(
+                pred_pose_params,
+                gt_pose_params,
+                pose_layers,
+                unit="mm",
+                pose_type=pose_type,
+                root_relative=True,
+                gt_to_pred_transform=gt_to_pred_transform,
             )
             # -- Contact distance per frame (if available)
             batch_has_contact = bool(contact_mask.any().item())
@@ -2616,8 +2870,8 @@ class MultiHumanTrainer:
             )
 
             # - Collect metrics per frame (use NaN for frames without contact)
-            for idx, (fname, mpjpe, mve) in enumerate(
-                zip(fnames, mpjpe_per_frame, mve_per_frame)
+            for idx, (fname, rr_mpjpe, rr_mve) in enumerate(
+                zip(fnames, rr_mpjpe_per_frame, rr_mve_per_frame)
             ):
                 fid = int(fname)
                 if batch_has_contact and bool(contact_mask[idx].item()):
@@ -2627,8 +2881,8 @@ class MultiHumanTrainer:
                 metrics_per_frame.append(
                     (
                         fid,
-                        mpjpe.item(),
-                        mve.item(),
+                        rr_mpjpe.item(),
+                        rr_mve.item(),
                         cd_val,
                         pcdr["pcdr"][idx].item(),
                     )
@@ -2640,8 +2894,8 @@ class MultiHumanTrainer:
             metrics_per_frame,
             columns=[
                 "frame_id",
-                "mpjpe_mm",
-                "mve_mm",
+                "rr_mpjpe_mm",
+                "rr_mve_mm",
                 "cd_mm",
                 "pcdr",
             ],
@@ -2653,8 +2907,8 @@ class MultiHumanTrainer:
 
         # - save average metrics
         overall_avg = {
-            "mpjpe_mm": df["mpjpe_mm"].mean(),
-            "mve_mm": df["mve_mm"].mean(),
+            "rr_mpjpe_mm": df["rr_mpjpe_mm"].mean(),
+            "rr_mve_mm": df["rr_mve_mm"].mean(),
             "pcdr": df["pcdr"].mean(),
         }
         if has_contact:
@@ -2669,8 +2923,8 @@ class MultiHumanTrainer:
         # - log the overall average metrics to wandb
         if self.cfg.wandb.enable:
             to_log = {
-                f"{pose_type}_eval_pose/mpjpe_mm": overall_avg["mpjpe_mm"],
-                f"{pose_type}_eval_pose/mve_mm": overall_avg["mve_mm"],
+                f"{pose_type}_eval_pose/rr_mpjpe_mm": overall_avg["rr_mpjpe_mm"],
+                f"{pose_type}_eval_pose/rr_mve_mm": overall_avg["rr_mve_mm"],
                 f"{pose_type}_eval_pose/pcdr": overall_avg["pcdr"],
             }
             if has_contact and "cd_mm" in overall_avg:
@@ -2683,267 +2937,18 @@ class MultiHumanTrainer:
         if debug_cd is not None:
             print(
                 "Overall Pose Estimation "
-                f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
-                f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+                f"RR-MPJPE (mm): {overall_avg['rr_mpjpe_mm']:.4f}, "
+                f"RR-MVE (mm): {overall_avg['rr_mve_mm']:.4f}, "
                 f"CD (mm): {overall_avg['cd_mm']:.4f}, "
                 f"PCDR: {overall_avg['pcdr']:.2f}"
             )
         else:
             print(
                     "Overall Pose Estimation "
-                    f"MPJPE (mm): {overall_avg['mpjpe_mm']:.4f}, "
-                    f"MVE (mm): {overall_avg['mve_mm']:.4f}, "
+                    f"RR-MPJPE (mm): {overall_avg['rr_mpjpe_mm']:.4f}, "
+                    f"RR-MVE (mm): {overall_avg['rr_mve_mm']:.4f}, "
                     f"PCDR: {overall_avg['pcdr']:.2f}"
                 )
-
-
-    @torch.no_grad()
-    def eval_loop_reconstruction(self, epoch):
-
-        # Prepare directories to save results
-        # - root save directory        
-        save_dir_root : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
-        save_dir_root.mkdir(parents=True, exist_ok=True)
-
-        # - posed 3DGS save directory (one file per frame)
-        save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
-        save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
-
-        # - posed mesh save directory (one merged mesh per frame)
-        save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
-        save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
-
-        # - aligned posed mesh save directory (one merged mesh per frame)
-        save_dir_aligned_meshes: Path = save_dir_root / "aligned_posed_meshes_per_frame"
-        save_dir_aligned_meshes.mkdir(parents=True, exist_ok=True)
-
-        # Fetch configurations
-        # - 3dgs to mesh config
-        tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
-        tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()]
-        # - reconstruction evaluation config
-        icp_cfg = self.cfg["reconstruction_eval"]["icp"]
-        metrics_cfg = self.cfg.get("reconstruction_eval", {}).get("metrics", {})
-        metrics_n_samples = metrics_cfg.get("n_samples", 50000)
-        metrics_units = metrics_cfg.get("units", "cm")
-        viou_cfg = self.cfg.get("reconstruction_eval", {}).get("viou", {})
-        viou_voxel_size = viou_cfg.get("voxel_size", 0.02)
-        viou_padding = viou_cfg.get("padding", 0.05)
-
-        # Init datasets
-        skip_frames = load_skip_frames(self.trn_data_dir)
-        # - Ground truth dataset
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id # this should not have any effect since we will eval human reconstruction in world coords
-        gt_dataset = SceneDataset(
-            self.test_data_dir,
-            src_cam_id,
-            device=self.tuner_device,
-            skip_frames=skip_frames,
-            use_meshes=True,
-            use_masks=False,
-            use_cameras=True,
-            use_smplx=False,
-        )
-
-        # - Prediction dataset 
-        pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames)
-        pred_loader = DataLoader(
-            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
-        )
-
-        # Compute metrics per frame
-        metrics_per_frame = []
-        for pred_batch in tqdm(pred_loader, desc="Evaluating Reconstruction"):
-
-            # - Parse batch data
-            num_views = pred_batch["K"].shape[0]
-            fnames = pred_batch["frame_name"]      # [B]
-            batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(num_views, 1, 1, 1, 1)
-            pred_batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform # [B, P, 55, 4, 4]
-            smplx_params = pred_batch["smplx_params"] # each key has value of shape [B, P, ...] where P is num persons
-            smplx_params = self._apply_pose_tuning(smplx_params, fnames)
-            pred_c2ws = [c2w.detach().cpu().numpy() for c2w in pred_batch["c2w"]]  # [B, 4, 4]
-
-            # - Fetch GT meshes directly from the GT dataset for matching frame indices.
-            frame_indices = pred_batch["frame_idx"]
-            gt_meshes = []
-            gt_c2ws = []
-            for i in range(frame_indices.shape[0]):
-                sample_dict = gt_dataset[frame_indices[i].item()]
-                gt_meshes.append(gt_mesh_from_sample(sample_dict["meshes"]))
-                gt_c2ws.append(sample_dict["c2w"].detach().cpu().numpy())
-
-            # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
-            n_persons = len(self.gs_model_list)
-            pred_meshes = []
-            pred_meshes_by_person = []
-            for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
-
-                # -- Pose 3dgs
-                smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
-                all_posed_gs_list = []
-                for person_idx in range(n_persons):
-                    person_canon_3dgs = self.gs_model_list[person_idx]
-                    person_query_pt = self.query_points[person_idx]
-                    person_smplx_data = {k: v[person_idx : person_idx + 1] for k, v in smplx_single_view.items()}
-                    posed_gs, neutral_posed_gs = self.renderer.animate_single_view_and_person(
-                        person_canon_3dgs,
-                        person_query_pt,
-                        person_smplx_data,
-                    )
-                    all_posed_gs_list.append(posed_gs)
-
-                fname = fnames[view_idx]
-                fname_str = str(fname)
-                out_path = save_dir_posed_3dgs / f"{fname_str}.pt"
-                posed_gs_state = posed_gs_list_to_serializable_dict(all_posed_gs_list)
-                torch.save(posed_gs_state, out_path)
-
-                # -- Posed 3dgs -> posed meshes and save to disk
-                render_func = self.renderer.forward_single_view_gsplat
-                frame_name = str(fnames[view_idx])
-                gs_to_mesh_method = self.cfg.gs_to_mesh_method
-                meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
-                                                        tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
-                pred_meshes_by_person.append(meshes_for_frame)
-                merged_mesh = merge_mesh_dict(meshes_for_frame)
-                pred_meshes.append(merged_mesh)
-                merged_path = save_dir_posed_meshes / f"{fname_str}.obj"
-                if merged_mesh[0].size and merged_mesh[1].size:
-                    trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
-
-            # - Before metric computation, perform ICP alignment (similarity).
-            pred_meshes_aligned, pred_meshes_align_T = align_pred_meshes_icp(
-                pred_meshes,
-                gt_meshes,
-                cameras=(pred_c2ws, gt_c2ws),
-                n_samples=icp_cfg.get("n_samples", 50000),
-                max_iterations=icp_cfg.get("max_iterations", 20),
-                threshold=icp_cfg.get("threshold", 1e-5),
-            )
-            save_aligned_meshes(pred_meshes_aligned, save_dir_aligned_meshes, fnames)
-
-            # - Save before alignment and aligned per-person meshes (per frame).
-            for frame_idx, (meshes_for_frame, T_align) in enumerate(
-                zip(pred_meshes_by_person, pred_meshes_align_T)
-            ):
-                # -- Parse frame name 
-                frame_name = str(fnames[frame_idx])
-                if frame_name.isdigit():
-                    frame_name = f"{int(frame_name):06d}"
-                
-                for person_idx in range(n_persons):
-
-                    # -- Get per-person mesh (before alignment)
-                    mesh = meshes_for_frame.get(person_idx)
-                    if mesh is None:
-                        out_path.write_text("")
-                        continue
-                    vertices, faces = mesh
-                    if vertices.size == 0 or faces.size == 0:
-                        out_path.write_text("")
-                        continue
-                        
-                    # -- Saved posed per-person mesh
-                    person_dir = save_dir_posed_meshes / f"{person_idx:02d}"
-                    person_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = person_dir / f"{frame_name}.obj"
-                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
-
-                    # -- Saved aligned per-person mesh
-                    aligned_person_dir = save_dir_aligned_meshes / f"{person_idx:02d}"
-                    aligned_person_dir.mkdir(parents=True, exist_ok=True)
-                    aligned_out_path = aligned_person_dir / f"{frame_name}.obj"
-                    aligned_vertices = apply_se3_to_points(T_align, vertices)
-                    trimesh.Trimesh(vertices=aligned_vertices, faces=faces, process=False).export(aligned_out_path)
-
-            # - Compute metrics
-            v_iou = compute_volumetric_iou(
-                pred_meshes_aligned,
-                gt_meshes,
-                voxel_size=viou_voxel_size,
-                padding=viou_padding,
-            )
-            chamfer = compute_chamfer_distance(
-                pred_meshes_aligned,
-                gt_meshes,
-                n_samples=metrics_n_samples,
-                units=metrics_units,
-            )
-            p2s = compute_p2s_distance(
-                pred_meshes_aligned,
-                gt_meshes,
-                n_samples=metrics_n_samples,
-                units=metrics_units,
-            )
-            normal_consistency = compute_normal_consistency(
-                pred_meshes_aligned, gt_meshes, n_samples=metrics_n_samples
-            )
-
-
-            # - Store per-frame metrics
-            for idx, fname in enumerate(fnames):
-                fid = int(fname)
-                row_to_save = (
-                    fid,
-                    v_iou[idx].item(),
-                    chamfer[idx].item(),
-                    p2s[idx].item(),
-                    normal_consistency[idx].item(),
-                )
-                metrics_per_frame.append(row_to_save)
-
-                # - Debug: print per-frame metrics
-                print(
-                    f"Frame {fname}: "
-                    f"V-IoU: {v_iou[idx].item():.4f}, "
-                    f"Chamfer ({metrics_units}): {chamfer[idx].item():.4f}, "
-                    f"P2S ({metrics_units}): {p2s[idx].item():.4f}, "
-                    f"Normal Consistency: {normal_consistency[idx].item():.4f} "
-                )
-            # quit()
-
-        # Save the results
-        # - save per-frame metrics
-        df = pd.DataFrame(
-            metrics_per_frame,
-            columns=[
-                "frame_id",
-                "v_iou",
-                f"chamfer_{metrics_units}",
-                f"p2s_{metrics_units}",
-                "normal_consistency",
-            ],
-        )
-        csv_path = save_dir_posed_meshes.parent / "reconstruction_metrics_per_frame.csv"
-        df.to_csv(csv_path, index=False)
-
-        # - save average across frame metrics
-        overall_avg = {
-            "v_iou": df["v_iou"].mean(),
-            f"chamfer_{metrics_units}": df[f"chamfer_{metrics_units}"].mean(),
-            f"p2s_{metrics_units}": df[f"p2s_{metrics_units}"].mean(),
-            "normal_consistency": df["normal_consistency"].mean(),
-        }
-        overall_avg_path = save_dir_posed_meshes.parent / "reconstruction_overall_results.txt"
-        with open(overall_avg_path, "w") as f:
-            for k, v in overall_avg.items():
-                f.write(f"{k}: {v:.4f}\n")
-
-        # - log the overall average metrics to wandb
-        if self.cfg.wandb.enable:
-            to_log = {f"eval_recon/{metric_name}": v for metric_name, v in overall_avg.items()}
-            to_log["epoch"] = epoch
-            wandb.log(to_log)
-
-#         # - debug (show the overall results)
-        # print(
-            # "Overall Reconstruction "
-            # f"V-IoU: {overall_avg['v_iou']:.4f}, "
-            # f"Chamfer ({metrics_units}): {overall_avg[f'chamfer_{metrics_units}']:.4f}, "
-            # f"P2S ({metrics_units}): {overall_avg[f'p2s_{metrics_units}']:.4f}, "
-            # f"Normal Consistency: {overall_avg['normal_consistency']:.4f} "
-        # )
 
 
     @torch.no_grad()
@@ -2951,7 +2956,7 @@ class MultiHumanTrainer:
 
         # Prepare directories to save results
         # - root save directory        
-        save_dir_root : Path = self.output_dir / "evaluation" / self.cfg.exp_name / f"epoch_{epoch:04d}"
+        save_dir_root : Path = self.evaluation_dir / f"epoch_{epoch:04d}"
         save_dir_root.mkdir(parents=True, exist_ok=True)
 
         # - posed 3DGS save directory (one file per frame)
@@ -2966,27 +2971,22 @@ class MultiHumanTrainer:
         pred_loader = DataLoader(
             pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
-
-        # Fetch configs
-        # - mesh
-        save_dir_posed_meshes: Path = save_dir_root / "posed_meshes_per_frame"
-        save_dir_posed_meshes.mkdir(parents=True, exist_ok=True)
-        tsdf_camera_files = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
-        tsdf_cam_ids = [int(cam_id) for cam_id in tsdf_camera_files.keys()] 
-        posed_meshes_exist = False # check if there are already saved meshes to speed up processing
-        if any(save_dir_posed_meshes.glob("*.obj")):
-            posed_meshes_exist = True
-            print(f"Posed meshes already exist in {save_dir_posed_meshes}, skipping mesh generation.")
-
-        # - smplx
+        save_dir_smplx: Path = save_dir_root / "smplx"
+        save_dir_smplx.mkdir(parents=True, exist_ok=True)
+        self._save_pose_tuned_smplx_params(pred_dataset, save_dir_smplx)
         save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
         save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
-        smplx_layer = getattr(self.renderer.smplx_model, "smplx_layer", None)
-        if smplx_layer is None:
-            raise RuntimeError("SMPL-X layer not available; cannot export posed SMPL-X meshes.")
-        smplx_layer = smplx_layer.to(self.tuner_device).eval()
-        smplx_faces = np.asarray(getattr(smplx_layer, "faces"), dtype=np.int32)
-        expr_dim = int(getattr(getattr(self.renderer.smplx_model, "smpl_x", None), "expr_param_dim", 0))
+        posed_smplx_meshes_exist = any(save_dir_posed_smplx_meshes.rglob("*.obj"))
+        if posed_smplx_meshes_exist:
+            print(f"SMPL-X posed meshes already exist in {save_dir_posed_smplx_meshes}, skipping export.")
+        else:
+            self._save_posed_smplx_meshes_from_params_dir(
+                save_dir_smplx,
+                save_dir_posed_smplx_meshes,
+                root_relative=True,
+            )
+
+        # Fetch configs
         # - cameras
         save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
         save_dir_cameras.mkdir(parents=True, exist_ok=True)
@@ -2997,7 +2997,8 @@ class MultiHumanTrainer:
         save_dir_images: Path = save_dir_root / "images" / f"{src_cam_id}"
         save_dir_images.mkdir(parents=True, exist_ok=True)
 
-        # For each frame in the prediction dataset, save posed 3dgs, posed meshes, cameras, masked depth maps (if available), and images
+        # For each frame in the prediction dataset, save posed 3dgs, cameras, masked depth maps (if available), and images.
+        # SMPL-X params are saved above to save_dir_smplx.
         for pred_batch in tqdm(pred_loader, desc="Evaluating In-The-Wild"):
 
             # - Parse batch data
@@ -3009,12 +3010,9 @@ class MultiHumanTrainer:
             smplx_params = self._apply_pose_tuning(smplx_params, fnames)
 
 
-            # - For each view, pose 3dgs and convert to meshes (plus save to disk both 3dgs and meshes)
+            # - For each view, pose 3dgs and save them to disk
             n_persons = len(self.gs_model_list)
-            pred_meshes_by_person = []
-            pred_smplx_meshes_by_person = []
-
-            for view_idx in tqdm(range(num_views), desc="3DGS -> Posed Meshes", total=num_views, leave=False):
+            for view_idx in tqdm(range(num_views), desc="3DGS -> Posed GS", total=num_views, leave=False):
 
                 # -- Pose 3dgs
                 smplx_single_view = {k: v[view_idx] for k, v in smplx_params.items()}
@@ -3076,123 +3074,6 @@ class MultiHumanTrainer:
                     person_state = posed_gs_list_to_serializable_dict([person_gs])
                     torch.save(person_state, person_path)
 
-                # -- Posed 3dgs -> posed meshes and save to disk
-                if not posed_meshes_exist:
-                    render_func = self.renderer.forward_single_view_gsplat
-                    gs_to_mesh_method = self.cfg.gs_to_mesh_method
-                    meshes_for_frame = get_meshes_from_3dgs(gs_to_mesh_method, all_posed_gs_list, tsdf_camera_files, 
-                                                            tsdf_cam_ids, frame_name, self.trn_render_hw, render_func)
-
-                    pred_meshes_by_person.append(meshes_for_frame)
-
-                # -- SMPL-X parameters -> posed meshes
-                smplx_meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-                for person_idx in range(n_persons):
-                    betas = smplx_single_view["betas"][person_idx : person_idx + 1]
-                    root_pose = smplx_single_view["root_pose"][person_idx : person_idx + 1]
-                    body_pose = smplx_single_view["body_pose"][person_idx : person_idx + 1]
-                    jaw_pose = smplx_single_view["jaw_pose"][person_idx : person_idx + 1]
-                    leye_pose = smplx_single_view["leye_pose"][person_idx : person_idx + 1]
-                    reye_pose = smplx_single_view["reye_pose"][person_idx : person_idx + 1]
-                    lhand_pose = smplx_single_view["lhand_pose"][person_idx : person_idx + 1]
-                    rhand_pose = smplx_single_view["rhand_pose"][person_idx : person_idx + 1]
-                    trans = smplx_single_view["trans"][person_idx : person_idx + 1]
-
-                    expression = None
-                    if expr_dim > 0:
-                        expr = smplx_single_view.get("expr")
-                        if expr is not None:
-                            expr_person = expr[person_idx : person_idx + 1].reshape(1, -1)
-                            if expr_person.shape[1] >= expr_dim:
-                                expression = expr_person[:, :expr_dim]
-                            else:
-                                expression = torch.zeros(
-                                    (1, expr_dim), device=self.tuner_device, dtype=betas.dtype
-                                )
-                        else:
-                            expression = torch.zeros(
-                                (1, expr_dim), device=self.tuner_device, dtype=betas.dtype
-                            )
-
-                    smplx_out = smplx_layer(
-                        global_orient=root_pose,
-                        body_pose=body_pose,
-                        jaw_pose=jaw_pose,
-                        leye_pose=leye_pose,
-                        reye_pose=reye_pose,
-                        left_hand_pose=lhand_pose,
-                        right_hand_pose=rhand_pose,
-                        betas=betas,
-                        transl=trans,
-                        expression=expression,
-                    )
-                    vertices = smplx_out.vertices[0].detach().cpu().numpy()
-                    smplx_meshes_for_frame[person_idx] = (vertices, smplx_faces)
-                pred_smplx_meshes_by_person.append(smplx_meshes_for_frame)
-
-            # - Save per-person meshes and merged mesh (per frame).
-            for frame_idx, meshes_for_frame in enumerate(pred_meshes_by_person):
-                # -- Parse frame name (we follow the 6digit convention adapted across code base)
-                frame_name = str(fnames[frame_idx])
-                if frame_name.isdigit():
-                    frame_name = f"{int(frame_name):06d}"
-
-                # -- Save per person meshes
-                for person_idx in range(n_persons):
-                    person_dir = save_dir_posed_meshes / f"{person_idx:02d}"
-                    person_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = person_dir / f"{frame_name}.obj"
-
-                    mesh = meshes_for_frame.get(person_idx)
-                    if mesh is None:
-                        out_path.write_text("")
-                        continue
-                    vertices, faces = mesh
-                    if vertices.size == 0 or faces.size == 0:
-                        out_path.write_text("")
-                        continue
-                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
-
-                # -- Save merged mesh
-                merged_mesh = merge_mesh_dict(meshes_for_frame)
-                merged_path = save_dir_posed_meshes / f"{frame_name}.obj"
-                if merged_mesh[0].size and merged_mesh[1].size:
-                    trimesh.Trimesh(vertices=merged_mesh[0], faces=merged_mesh[1], process=False).export(merged_path)
-
-
-            # - Save SMPL-X meshes
-            for frame_idx in range(num_views):
-
-                # -- Parse frame name (we follow the 6digit convention adapted across code base)
-                frame_name = str(fnames[frame_idx])
-                if frame_name.isdigit():
-                    frame_name = f"{int(frame_name):06d}"
-
-                smplx_meshes_for_frame = pred_smplx_meshes_by_person[frame_idx]
-                for person_idx in range(n_persons):
-                    person_dir = save_dir_posed_smplx_meshes / f"{person_idx:02d}"
-                    person_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = person_dir / f"{frame_name}.obj"
-
-                    mesh = smplx_meshes_for_frame.get(person_idx)
-                    if mesh is None:
-                        out_path.write_text("")
-                        continue
-                    vertices, faces = mesh
-                    if vertices.size == 0 or faces.size == 0:
-                        out_path.write_text("")
-                        continue
-                    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
-
-                merged_smplx_mesh = merge_mesh_dict(smplx_meshes_for_frame)
-                merged_smplx_path = save_dir_posed_smplx_meshes / f"{frame_name}.obj"
-                if merged_smplx_mesh[0].size and merged_smplx_mesh[1].size:
-                    trimesh.Trimesh(
-                        vertices=merged_smplx_mesh[0],
-                        faces=merged_smplx_mesh[1],
-                        process=False,
-                    ).export(merged_smplx_path)
-            
 
     @torch.no_grad()
     def eval_loop(self, epoch):
@@ -3200,33 +3081,33 @@ class MultiHumanTrainer:
 
         # Quantitative evaluation against provided ground truth
         # - Novel view synthesis evaluation
-        if len(self.cfg.nvs_eval.target_camera_ids) == 0:
-            print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
-        else:
-            self.eval_loop_nvs(epoch)
+#         if self.test_scene_dir is None:
+            # print("No GT scene directory available. Skipping novel view synthesis evaluation.")
+        # elif len(self.cfg.nvs_eval.target_camera_ids) == 0:
+            # print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
+        # else:
+            # self.eval_loop_nvs(epoch)
 
-        # - Segmentation evaluation
-        #if self.cfg.test_masks_scene_dir is None:
-            #print("No test masks scene directory specified for segmentation evaluation. Skipping segmentation evaluation.")
-        #else:
-            #self.eval_loop_segmentation(epoch)
-        
+
         # - Pose estimation evaluation
-        if self.cfg.test_smpl_params_scene_dir is None:
-            print("No test smpl params scene directory specified for pose estimation evaluation. Skipping pose estimation evaluation.")
+        if self.test_scene_dir is None:
+            print("No GT scene directory available. Skipping pose estimation evaluation.")
         else:
-            self.eval_loop_pose_estimation(epoch, pose_type="smplx")
-            self.eval_loop_pose_estimation(epoch, pose_type="smpl")
+            if not root_dir_to_smplx_dir(self.test_data_dir).exists():
+                print("No test SMPL-X params found in test data directory. Skipping SMPL-X pose evaluation.")
+            else:
+                self.eval_loop_pose_estimation(epoch, pose_type="smplx")
 
-        # - Reconstruction evaluation
-        if self.cfg.test_meshes_scene_dir is None:
-            print("No test meshes scene directory specified for reconstruction evaluation. Skipping reconstruction evaluation.")
-        else:
-            self.eval_loop_reconstruction(epoch)
+            if bool(self.cfg.get("eval_smpl", False)):
+                if not root_dir_to_smpl_dir(self.test_data_dir).exists():
+                    print("No test SMPL params found in test data directory. Skipping SMPL pose evaluation.")
+                else:
+                    self.eval_loop_pose_estimation(epoch, pose_type="smpl")
 
-        # Qualitative evaluation (saving posed 3dgs, meshes, cameras)
+        # Qualitative evaluation (saving posed 3dgs, cameras, depth maps, images)
         # Note: this loop might compute some things for the 2nd time, but for simplicity of things we run it again. 
         self.eval_loop_qualitative(epoch)
+        quit()
 
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")

@@ -292,6 +292,7 @@ def main(args: Args) -> None:
     posed_3dgs_dir = args.eval_scene_dir / "posed_3dgs_per_frame"
     posed_meshes_dir = args.eval_scene_dir / "posed_meshes_per_frame"
     posed_smplx_meshes_dir = args.eval_scene_dir / "posed_smplx_meshes_per_frame"
+    gt_smplx_meshes_dir = args.eval_scene_dir / "gt_inputs" / "pose" / "gt_smplx_meshes_per_frame"
     cameras_dir = args.eval_scene_dir / "all_cameras"
     masked_depth_dir = args.eval_scene_dir / "masked_depth_maps"
 
@@ -383,6 +384,33 @@ def main(args: Args) -> None:
     else:
         print(f"No posed SMPL-X meshes directory found at {posed_smplx_meshes_dir}")
 
+    gt_smplx_entries: List[Tuple[str, np.ndarray, np.ndarray, Tuple[int, int, int]]] = []
+    if gt_smplx_meshes_dir.exists():
+        track_dirs = sorted(
+            [p for p in gt_smplx_meshes_dir.iterdir() if p.is_dir()], key=lambda p: p.name
+        )
+        for track_dir in track_dirs:
+            frame_files = _sorted_frame_files(track_dir, args.smplx_mesh_pattern)
+            if not frame_files:
+                print(
+                    f"Skipping GT SMPL-X {track_dir.name}: no files matching {args.smplx_mesh_pattern}"
+                )
+                continue
+            try:
+                frame_path = _select_frame(frame_files, args.frame_index, args.frame_name)
+            except (FileNotFoundError, IndexError, RuntimeError) as exc:
+                print(f"Skipping GT SMPL-X {track_dir.name}: {exc}")
+                continue
+            try:
+                verts, faces = _load_mesh(frame_path)
+            except RuntimeError as exc:
+                print(f"Skipping GT SMPL-X {track_dir.name}: {exc}")
+                continue
+            color = _color_for_track(f"gt_smplx_{track_dir.name}")
+            gt_smplx_entries.append((track_dir.name, verts, faces, color))
+    else:
+        print(f"No GT SMPL-X meshes directory found at {gt_smplx_meshes_dir}")
+
     camera_data: List[Tuple[str, np.ndarray, np.ndarray, float, float, Tuple[int, int, int]]] = []
     if cameras_dir.exists():
         camera_ids = sorted([p for p in cameras_dir.iterdir() if p.is_dir()], key=lambda p: p.name)
@@ -452,10 +480,13 @@ def main(args: Args) -> None:
         not per_person_splats
         and not mesh_entries
         and not smplx_entries
+        and not gt_smplx_entries
         and not camera_data
         and background_depth is None
     ):
-        raise FileNotFoundError("No 3DGS, mesh, SMPL-X mesh, or camera data found to visualize.")
+        raise FileNotFoundError(
+            "No 3DGS, mesh, SMPL-X mesh, GT SMPL-X mesh, or camera data found to visualize."
+        )
 
     bounds: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None)
     for _, _, person_xyz in per_person_splats:
@@ -464,6 +495,8 @@ def main(args: Args) -> None:
     for _, verts, _, _ in mesh_entries:
         bounds = _update_bounds(verts, bounds)
     for _, verts, _, _ in smplx_entries:
+        bounds = _update_bounds(verts, bounds)
+    for _, verts, _, _ in gt_smplx_entries:
         bounds = _update_bounds(verts, bounds)
 
     center_offset = np.zeros(3, dtype=np.float32)
@@ -516,6 +549,19 @@ def main(args: Args) -> None:
             handle.opacity = float(args.mesh_opacity)
         handle.visible = False
         smplx_handles.append((track_id, handle))
+
+    gt_smplx_handles: List[Tuple[str, object]] = []
+    for track_id, verts, faces, color in gt_smplx_entries:
+        handle = server.scene.add_mesh_simple(
+            f"/scene/gt_smplx_meshes/{track_id}",
+            vertices=verts,
+            faces=faces,
+            color=color,
+        )
+        if hasattr(handle, "opacity"):
+            handle.opacity = float(args.mesh_opacity)
+        handle.visible = False
+        gt_smplx_handles.append((track_id, handle))
 
     camera_entries: List[Tuple[str, object]] = []
     for cam_id, c2w, fov, aspect, color, is_source in camera_data:
@@ -661,10 +707,17 @@ def main(args: Args) -> None:
                 def _(_event=None, handle=handle, checkbox=checkbox) -> None:
                     handle.visible = bool(checkbox.value)
 
-    if smplx_handles:
+    if smplx_handles or gt_smplx_handles:
         with server.gui.add_folder("SMPL-X Meshes"):
             for track_id, handle in smplx_handles:
-                checkbox = server.gui.add_checkbox(f"Show {track_id}", False)
+                checkbox = server.gui.add_checkbox(f"Show Pred {track_id}", False)
+
+                @checkbox.on_update
+                def _(_event=None, handle=handle, checkbox=checkbox) -> None:
+                    handle.visible = bool(checkbox.value)
+
+            for track_id, handle in gt_smplx_handles:
+                checkbox = server.gui.add_checkbox(f"Show GT {track_id}", False)
 
                 @checkbox.on_update
                 def _(_event=None, handle=handle, checkbox=checkbox) -> None:

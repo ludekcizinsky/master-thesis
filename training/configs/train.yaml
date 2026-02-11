@@ -1,8 +1,9 @@
 scene_name: ???
-num_persons: ???
+num_persons: null  # inferred at runtime from seg/img_seg_mask/<src_cam_id>/<person_id>
 exp_name: ???
-root_gt_dir_path: ???
-preprocessing_dir: /scratch/izar/cizinsky/thesis/preprocessing/${scene_name}
+scene_registry_dir: /home/cizinsky/master-thesis/preprocess/scenes
+canonical_gt_scene_root_dir: /scratch/izar/cizinsky/thesis/gt_scene_data
+preprocessing_dir: /scratch/izar/cizinsky/thesis/v2_preprocessing/${scene_name}
 output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
 input_data_dir: /scratch/izar/cizinsky/thesis/input_data
 epochs: 30
@@ -25,14 +26,9 @@ use_random_init: false
 nv_gen_epoch: 15 # set to -1 to disable training data augmentation
 
 # train
-cameras_scene_dir: ${root_gt_dir_path}
-frames_scene_dir: ${preprocessing_dir}
-masks_scene_dir: ${preprocessing_dir}
+trn_scene_dir: ${preprocessing_dir}
 use_estimated_masks: true
 mask_estimator_kind: "rgb_render_based" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
-smplx_params_scene_dir: ${preprocessing_dir} # we use this for the movement of 3dgs during training
-depths_scene_dir: ${preprocessing_dir}  
-smpl_params_scene_dir: ${preprocessing_dir} # for now, this is just here to be able to compute pose metrics during eval, these are derived from smplx params
 use_depth: true
 enable_alternate_opt: false
 confidence_threshold: 0.75 # confidence threshold for IoU to consider a frame reliable
@@ -40,13 +36,7 @@ confidence_update_every: 5 # how often (in epochs) to update frame reliability
 conf_tr_aggregation: null # null = static threshold; "median" = dynamic threshold via median avg IoU
 
 # test
-test_cameras_scene_dir: ${root_gt_dir_path}
-test_frames_scene_dir: ${root_gt_dir_path}
-test_masks_scene_dir: ${root_gt_dir_path}
-test_smplx_params_scene_dir: ${root_gt_dir_path}
-test_depths_scene_dir: null  # ${root_gt_dir_path}  # set to null if no depths are used
-test_smpl_params_scene_dir: ${root_gt_dir_path}
-test_meshes_scene_dir: ${root_gt_dir_path}  # for now, this is just here to be able to compute mesh metrics during eval 
+test_scene_dir: ${canonical_gt_scene_root_dir}/${scene_name}
 
 difix:
   eval_enable: false
@@ -105,8 +95,11 @@ regularization:
   acap_margin: 0.03 # meters (3 cm), v975 baseline combo
 
 eval_pretrain: true
+eval_smpl: true
+pose_world_alignment:
+  method: pelvis_trajectory  # options: pelvis_trajectory, camera
 nvs_eval:
-  source_camera_id: 4
+  source_camera_id: null  # resolved at runtime from preprocess/scenes/${scene_name}.json -> cam_id
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2
 

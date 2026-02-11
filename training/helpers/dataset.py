@@ -387,28 +387,53 @@ class SceneDataset(Dataset):
 
     @staticmethod
     def _load_smplx(path: Path, device: torch.device = torch.device("cuda")):
+        with np.load(path) as npz:
 
-        npz = np.load(path)
+            def add_key(key):
+                arrs = torch.from_numpy(npz[key]).float()
+                return arrs.to(device)  # [P, ...]
 
-        def add_key(key):
-            arrs = torch.from_numpy(npz[key]).float()
-            return arrs.to(device)  # [P, ...]
+            smplx = {
+                "betas": add_key("betas"),
+                "root_pose": add_key("root_pose"),   # [P,3] world axis-angle
+                "body_pose": add_key("body_pose"),
+                "jaw_pose": add_key("jaw_pose"),
+                "leye_pose": add_key("leye_pose"),
+                "reye_pose": add_key("reye_pose"),
+                "lhand_pose": add_key("lhand_pose"),
+                "rhand_pose": add_key("rhand_pose"),
+                "trans": add_key("trans"),           # [P,3] world translation
+            }
 
-        smplx = {
-            "betas": add_key("betas"),
-            "root_pose": add_key("root_pose"),   # [P,3] world axis-angle
-            "body_pose": add_key("body_pose"),
-            "jaw_pose": add_key("jaw_pose"),
-            "leye_pose": add_key("leye_pose"),
-            "reye_pose": add_key("reye_pose"),
-            "lhand_pose": add_key("lhand_pose"),
-            "rhand_pose": add_key("rhand_pose"),
-            "trans": add_key("trans"),           # [P,3] world translation
-            "expr": add_key("expression"),
-        }
+            # Expression can be missing in some SMPL-X dumps.
+            # Fallback to zeros so training/eval can proceed without GT expression coefficients.
+            expr_np = None
+            if "expression" in npz:
+                expr_np = npz["expression"]
+            elif "expr" in npz:
+                expr_np = npz["expr"]
 
-        smplx["expr"] = torch.zeros(smplx["expr"].shape[0], smplx["expr"].shape[1], 100, device=device)
-        return smplx
+            if expr_np is None:
+                n_people = int(smplx["betas"].shape[0])
+                smplx["expr"] = torch.zeros((n_people, 100), device=device, dtype=smplx["betas"].dtype)
+            else:
+                expr = torch.from_numpy(expr_np).float().to(device)
+                if expr.dim() == 1:
+                    expr = expr.unsqueeze(0)
+                if expr.dim() > 2:
+                    expr = expr.reshape(expr.shape[0], -1)
+                if expr.shape[-1] < 100:
+                    pad = torch.zeros(
+                        (expr.shape[0], 100 - expr.shape[-1]),
+                        device=device,
+                        dtype=expr.dtype,
+                    )
+                    expr = torch.cat([expr, pad], dim=-1)
+                elif expr.shape[-1] > 100:
+                    expr = expr[:, :100]
+                smplx["expr"] = expr
+
+            return smplx
 
     @staticmethod
     def _load_smpl(path: Path, device: torch.device = torch.device("cuda")):
