@@ -3,17 +3,21 @@
 ## Context
 This memo summarizes why we switched from Human3R to PromptHMR-Vid and documents both limitations and positive examples on our HI4D scene data.
 
-1. We switched from Human3R ([project page](https://fanegg.github.io/Human3R/)) to PromptHMR-Vid ([project page](https://yufu-wang.github.io/phmr-page/)) to obtain camera and human poses in world coordinates.
+**Why the switch?** We switched from Human3R ([project page](https://fanegg.github.io/Human3R/)) to PromptHMR-Vid ([project page](https://yufu-wang.github.io/phmr-page/)) because Humanr3R's own quant results showed that PHMR performs better. In addition, PHMR was specifically trained on interaction data, which is expected to be beneficial for our scenes.  Another key practical reason for switching is easier alignment of tracking and mesh extraction. We refactored PromptHMR-Vid to use SAM3 for tracks and per-person masks, then feed these masks into the image model. This gives direct alignment between extracted masks and SMPL-X poses. In contrast, Human3R performs tracking internally, which required extra alignment between Human3R tracks and SAM3 tracks for downstream optimization that also depends on masks.
 
-2. Human3R is a feed-forward recurrent method that adds a human-specific head to CUT3R for SMPL-X prediction. Its main advantage is end-to-end full-scene reconstruction without a multi-stage pipeline.
-PromptHMR follows a different philosophy: a multi-step pipeline with image and video stages. The image model predicts human meshes in camera coordinates from spatial prompts (bbox, masks), semantic prompts (text describing shape), and interaction cues. In practice, we use all of these prompts except text-based body-shape description. The video head then refines parameters temporally with a transformer encoder that processes per-person tokens across frames, together with cues such as bboxes, to output smoother SMPL-X parameters.
+**How does PromptHMR-Vid work compare to Human3R?** Human3R is a feed-forward recurrent method that adds a human-specific head to CUT3R for SMPL-X prediction. Its main advantage is end-to-end full-scene reconstruction without a multi-stage pipeline. PromptHMR follows a different philosophy: a multi-step pipeline with image and video stages. The image model predicts human meshes in camera coordinates from spatial prompts (bbox, masks), semantic prompts (text describing shape), and interaction cues. In practice, we use all of these prompts except text-based body-shape description. The video head then refines parameters temporally with a transformer encoder that processes per-person tokens across frames, together with cues such as bboxes, to output smoother SMPL-X parameters.
 
-3. A key practical reason for switching is easier alignment of tracking and mesh extraction. We refactored PromptHMR-Vid to use SAM3 for tracks and per-person masks, then feed these masks into the image model. This gives direct alignment between extracted masks and SMPL-X poses. In contrast, Human3R performs tracking internally, which required extra alignment between Human3R tracks and SAM3 tracks for downstream optimization that also depends on masks.
+## Quantitative results on HI4D scenes
 
-4. PromptHMR is explicitly trained to handle inter-human interactions, which is expected to be beneficial in our setting.
+We have used the preprocessed outputs from the PHMR in our training pipeline. The main takeaways from the quantitative results are:
+1. We obtain close to idential NVS results with PHMR as we did with H3R
+2. We get worse results on pose estimation compare to H3R, however, the main driver of these bad results is piggyback scene which also show below that is the problematic one where for some reason the PHMR output is very bad. If we exclude piggyback, the pose estimation results are slightly better with PHMR than H3R.
+
+For details, please refer to this [results folder](../../results/v104_testing_new_code/quant_results).
 
 
-## Positive Examples
+## Qualitative results from preprocessing stage
+### Positive Examples
 1. **For easy poses, 2D alignment is good**
    - In simpler poses/interactions, predicted silhouettes align well in image space.
    - This likely goes together with strong mask quality from SAM3.
@@ -26,7 +30,7 @@ For reference, we also include how Human3R handled the same scene:
 <img src="figures/h3r_good_easy_pose_2d_alignment_pair.png" alt="Good 2D alignment on easy poses from Human3R (two examples)" width="50%" />
 
 
-## Negative Examples and Limitations
+### Negative Examples and Limitations
 
 1. [mentioned in the paper] **No explicit face/hand pose estimation in the current flow**
    - Hands are effectively kept at neutral defaults (mean/identity convention, depending on stage).
@@ -56,3 +60,11 @@ For reference, how Human3R handled the world placement of the same scenes:
    - Main failure mode was incorrect body height (while other shape attributes could still look plausible).
 
 <img src="figures/a_limit_bad_shape.png" alt="Bad shape estimate example (height mismatch)" width="50%" />
+
+## Conclusion
+Overall, PromptHMR-Vid provides a strong foundation for our reconstruction pipeline, and its integration allowed us to make the preprocessing pipeline fully autonomous. Its main limitations are
+1. Lack of explicit hand/face pose estimation, which limits fine articulation realism,
+2. Failing on the piggyback scene,
+3. Not having as strong world placement as Human3R.
+
+Despite these limitations, we believe it is a good choice going forward.
