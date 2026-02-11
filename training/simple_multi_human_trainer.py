@@ -36,7 +36,6 @@ from training.helpers.gs_renderer import GS3DRenderer, Camera
 from training.helpers.dataset import (
     SceneDataset, 
     fetch_data_if_available,
-    fetch_cameras_if_exist, 
     root_dir_to_image_dir, 
     root_dir_to_mask_dir, 
     root_dir_to_mask_root_dir,
@@ -77,6 +76,11 @@ from training.helpers.masking import (
     estimate_masks_from_smplx_batch, 
     estimate_masks_from_src_reprojection_batch, 
     overlay_mask_on_image, 
+)
+from training.helpers.virtual_cameras import (
+    RuntimeCameraConfig,
+    VirtualCameraPlanner,
+    build_camera_strategy,
 )
 
 # ---------------------------------------------------------------------------
@@ -363,10 +367,11 @@ class MultiHumanTrainer:
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
-        self.enable_alternate_opt = bool(cfg.get("enable_alternate_opt", False))
-        self.confidence_threshold = float(cfg.get("confidence_threshold", 0.8))
-        self.confidence_update_every = int(cfg.get("confidence_update_every", 5))
-        self.conf_tr_aggregation = cfg.get("conf_tr_aggregation", None)
+        self.enable_alternate_opt = bool(cfg.enable_alternate_opt)
+        alternate_opt_cfg = cfg.alternate_optimization
+        self.confidence_threshold = float(alternate_opt_cfg.confidence_threshold)
+        self.confidence_update_every = int(alternate_opt_cfg.confidence_update_every)
+        self.conf_tr_aggregation = alternate_opt_cfg.conf_tr_aggregation
         self.reliable_frame_names: Optional[set] = None
         self.unreliable_frame_names: Optional[set] = None
         self.frame_quality_avg_iou: Optional[float] = None
@@ -395,6 +400,9 @@ class MultiHumanTrainer:
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
 
+        # Configure default local W&B paths before wandb.init().
+        self._set_default_wandb_local_dirs()
+
         # Initialize wandb 
         self._init_wandb()
 
@@ -410,18 +418,17 @@ class MultiHumanTrainer:
         # - 3dgs
         self._load_model()
 
-        # Initialize difix
-        self._init_nv_generation()
+        # Novel-view generation init is done lazily right before first NV generation epoch.
+        # This avoids touching/copying NV camera assets during startup.
+        self.nv_generation_initialized = False
         self.nv_gen_done = False
+        self.virtual_camera_planner: Optional[VirtualCameraPlanner] = None
 
     def _resolve_trn_scene_dir(self) -> Path:
-        trn_scene_dir = self.cfg.get("trn_scene_dir", None)
-        if trn_scene_dir is None:
-            trn_scene_dir = self.cfg.get("frames_scene_dir", self.cfg.preprocessing_dir)
-        return Path(trn_scene_dir)
+        return Path(self.cfg.trn_scene_dir)
 
     def _resolve_test_scene_dir(self) -> Path:
-        test_scene_dir = self.cfg.get("test_scene_dir", None)
+        test_scene_dir = self.cfg.test_scene_dir
         if test_scene_dir is None or str(test_scene_dir).strip() == "":
             raise ValueError(
                 "Missing required config 'test_scene_dir'. "
@@ -430,11 +437,13 @@ class MultiHumanTrainer:
         return Path(test_scene_dir)
 
     def _resolve_scene_registry_dir(self) -> Path:
-        cfg_dir = self.cfg.get("scene_registry_dir", None)
-        if cfg_dir is not None and str(cfg_dir).strip() != "":
-            return Path(cfg_dir)
-        # repo_root / preprocess / scenes
-        return Path(__file__).resolve().parents[1] / "preprocess" / "scenes"
+        cfg_dir = self.cfg.scene_registry_dir
+        if cfg_dir is None or str(cfg_dir).strip() == "":
+            raise ValueError(
+                "Missing required config 'scene_registry_dir'. "
+                "Please provide an explicit scene registry directory."
+            )
+        return Path(cfg_dir)
 
     def _resolve_source_camera_id_from_scene_metadata(self) -> int:
         scene_name = str(self.cfg.scene_name)
@@ -452,13 +461,10 @@ class MultiHumanTrainer:
             )
 
         source_cam_id = int(scene_meta["cam_id"])
-        prev_source_cam_id = self.cfg.nvs_eval.get("source_camera_id", None)
-        self.cfg.nvs_eval.source_camera_id = source_cam_id
-        if prev_source_cam_id is None or int(prev_source_cam_id) != source_cam_id:
-            print(
-                f"Source camera resolved from scene metadata: {source_cam_id} "
-                f"(scene: {scene_json_path})"
-            )
+        print(
+            f"Source camera resolved from scene metadata: {source_cam_id} "
+            f"(scene: {scene_json_path})"
+        )
         return source_cam_id
 
     @staticmethod
@@ -492,7 +498,7 @@ class MultiHumanTrainer:
     # ---------------- Datasets ----------------------------
     def _init_train_dataset(self):
 
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_id: int = self.source_camera_id
 
         # Fetch training dataset from the specified directories 
         # to the training data dir if not already present
@@ -540,7 +546,7 @@ class MultiHumanTrainer:
     def _init_test_scene_dir(self):
 
         # Parse settings
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_id: int = self.source_camera_id
         tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
         all_cam_ids = [src_cam_id] + tgt_cam_ids
         if not self.test_scene_dir.exists():
@@ -1017,7 +1023,7 @@ class MultiHumanTrainer:
                 f"Mismatch between inferred num_persons ({self.num_persons}) and loaded GS models ({len(self.gs_model_list)})."
             )
 
-        if getattr(self.cfg, "use_random_init", False):
+        if self.cfg.use_random_init:
             self._randomize_gs_attributes()
 
     def _randomize_gs_attributes(self) -> None:
@@ -1139,8 +1145,8 @@ class MultiHumanTrainer:
         if len(posed_gs_list) < 2:
             return torch.zeros((), device=self.tuner_device)
 
-        margin = float(getattr(self.cfg, "interpenetration_margin", 0.01))
-        max_points = int(getattr(self.cfg, "interpenetration_max_points", 2000))
+        margin = float(self.cfg.interpenetration_margin)
+        max_points = int(self.cfg.interpenetration_max_points)
 
         total = torch.zeros((), device=posed_gs_list[0].xyz.device)
         pair_count = 0
@@ -1396,7 +1402,7 @@ class MultiHumanTrainer:
         if not self.enable_alternate_opt:
             return
 
-        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        src_cam_id = self.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
         src_dataset = SceneDataset(
             self.trn_data_dir,
@@ -1546,6 +1552,20 @@ class MultiHumanTrainer:
         return loader
 
     # ---------------- Logging utilities ----------------
+    def _set_default_wandb_local_dirs(self) -> None:
+        base_root = Path(self.cfg.wandb_local_root_dir)
+        wandb_root = base_root / "wandb"
+        env_to_path = {
+            "WANDB_DIR": wandb_root / "runs",
+            "WANDB_CACHE_DIR": wandb_root / "cache",
+            "WANDB_DATA_DIR": wandb_root / "data",
+            "WANDB_ARTIFACT_DIR": wandb_root / "artifacts",
+            "WANDB_CONFIG_DIR": wandb_root / "config",
+        }
+        for env_key, default_path in env_to_path.items():
+            os.environ.setdefault(env_key, str(default_path))
+            Path(os.environ[env_key]).mkdir(parents=True, exist_ok=True)
+
     def _init_wandb(self):
         if not self.cfg.wandb.enable or wandb is None:
             return
@@ -1662,7 +1682,7 @@ class MultiHumanTrainer:
                 bsize = int(frames.shape[0])
 
                 # Identify source camera samples in the batch
-                src_cam_id = self.cfg.nvs_eval.source_camera_id
+                src_cam_id = self.source_camera_id
                 cam_id_tensor = batch["cam_id"]  # [B]
                 is_src_cam = (cam_id_tensor == src_cam_id)  # [B]
 
@@ -1987,7 +2007,7 @@ class MultiHumanTrainer:
                 wandb.log(to_log)
 
             # - Run eval loop if neccesary
-            if getattr(self.cfg, "eval_every_epoch", 0) > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
+            if self.cfg.eval_every_epoch > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
                 self.eval_loop(epoch + 1)
 
         # End of training    
@@ -1996,16 +2016,20 @@ class MultiHumanTrainer:
 
     # ---------------- Novel view generation -------------------
     def _maybe_augment_training_data(self, epoch: int) -> bool:
-        nv_gen_epoch = getattr(self.cfg, "nv_gen_epoch", 0)
+        nv_gen_epoch = self.cfg.nv_gen_epoch
         if self.nv_gen_done or nv_gen_epoch < 0 or epoch != nv_gen_epoch:
             return False
+
+        if not self.nv_generation_initialized:
+            self._init_nv_generation()
+            self.nv_generation_initialized = True
 
         self._augment_training_data()
         return True
 
     def _augment_training_data(self) -> None:
 
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_id: int = self.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
         if self.enable_alternate_opt:
             if self.unreliable_frame_names is None:
@@ -2060,9 +2084,14 @@ class MultiHumanTrainer:
         print(f"Training dataset augmented with novel views from cameras: {self.difix_cam_ids_all}. Currently has {len(self.trn_dataset)} images from {len(self.trn_datasets)} cameras.")
 
     def _init_nv_generation(self):
-        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        # Runtime virtual camera planning is initialized lazily right before NV generation.
+        src_cam_id = self.source_camera_id
         self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id
         self.camera_ids = self.cfg.trn_nv_gen.camera_ids
+        if src_cam_id not in self.camera_ids:
+            raise ValueError(
+                f"Source camera id {src_cam_id} is not present in trn_nv_gen.camera_ids: {self.camera_ids}"
+            )
         src_cam_idx = self.camera_ids.index(src_cam_id)
         half_n = (len(self.camera_ids) - 1) // 2
         other_half_n = len(self.camera_ids) - 1 - half_n
@@ -2074,11 +2103,23 @@ class MultiHumanTrainer:
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
-        # fetch all trn nv camera ids params into the trn data dir
-        # Prefer test scene cameras (canonical GT) because training scene often contains only the source view.
-        cam_scene_dir = self.test_scene_dir if self.test_scene_dir.exists() else self.trn_scene_dir
-        for cam_id in self.camera_ids:
-            fetch_cameras_if_exist(cam_scene_dir, self.trn_data_dir, cam_id, dict())
+        runtime_cfg = self.cfg.trn_nv_gen.get("runtime_camera", {})
+        runtime_camera_cfg = RuntimeCameraConfig(
+            strategy=str(runtime_cfg.get("strategy", "static_orbit")),
+            body_radius_m=float(runtime_cfg.get("body_radius_m", 1.3)),
+            up=tuple(float(v) for v in runtime_cfg.get("up", [0.0, 1.0, 0.0])),
+        )
+        strategy = build_camera_strategy(runtime_camera_cfg)
+        self.virtual_camera_planner = VirtualCameraPlanner(
+            scene_root_dir=self.trn_data_dir,
+            src_cam_id=src_cam_id,
+            all_target_cam_ids=self.difix_cam_ids_all,
+            strategy=strategy,
+        )
+        print(
+            "Runtime virtual camera planner initialized "
+            f"(strategy={runtime_camera_cfg.strategy})."
+        )
 
     @torch.no_grad()
     def prepare_nv_rgb_frames(self, cam_id: int, prev_cam_id: int, difix_pipe: Optional[DifixPipeline] = None):
@@ -2096,7 +2137,7 @@ class MultiHumanTrainer:
         # - if previous cam is always source cam, use that
         if is_prev_cam_always_source:
             sample_every = self.sample_every
-            prev_cam_id = self.cfg.nvs_eval.source_camera_id
+            prev_cam_id = self.source_camera_id
             skip_frames = load_skip_frames(self.trn_data_dir)
         # - we just started, so previous cam dataset is the original GT dataset for both left/right
         elif self.left_cam_id == self.right_cam_id:
@@ -2117,12 +2158,18 @@ class MultiHumanTrainer:
         refined_frames_save_dir = root_dir_to_image_dir(self.trn_data_dir, cam_id)
         if os.path.exists(refined_frames_save_dir):
             return # already done
+        if self.virtual_camera_planner is None:
+            raise RuntimeError("Virtual camera planner is not initialized.")
+        self.virtual_camera_planner.ensure_camera_files(
+            target_cam_ids=[cam_id],
+            frame_paths=self.curr_trn_frame_paths,
+        )
         fetch_data_if_available(
             self.trn_data_dir,
             cam_id,
             Path("/dummy/frames/dir"), 
             Path("/dummy/masks/dir"),
-            cam_scene_dir=self.trn_scene_dir,
+            cam_scene_dir=None,
             frame_paths=self.curr_trn_frame_paths,
         )
 
@@ -2257,7 +2304,7 @@ class MultiHumanTrainer:
         src_K = None
         src_c2w = None
         if mask_estimation_method == "src_reprojection":
-            src_cam_id = self.cfg.nvs_eval.source_camera_id
+            src_cam_id = self.source_camera_id
             skip_frames = load_skip_frames(self.trn_data_dir)
             src_dataset = SceneDataset(
                 self.trn_data_dir,
@@ -2426,7 +2473,7 @@ class MultiHumanTrainer:
         skip_frames = load_skip_frames(self.test_data_dir)
 
         # Init source camera dataset for Difix reference images
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_id: int = self.source_camera_id
         src_cam_dataset = SceneDataset(self.test_data_dir, src_cam_id, 
                                        device=self.tuner_device, skip_frames=skip_frames)
 
@@ -2620,8 +2667,8 @@ class MultiHumanTrainer:
                 to_log["epoch"] = epoch
                 wandb.log(to_log)
 
-        # - save overall average metrics excluding self.cfg.nvs_eval.source_camera_id
-        df_excluding_source = df[df["camera_id"] != self.cfg.nvs_eval.source_camera_id]
+        # - save overall average metrics excluding source camera
+        df_excluding_source = df[df["camera_id"] != self.source_camera_id]
         overall_avg = {
             "psnr": df_excluding_source["psnr"].mean(),
             "ssim": df_excluding_source["ssim"].mean(),
@@ -2640,7 +2687,7 @@ class MultiHumanTrainer:
 
         # - log the source training view metrics to wandb
         if self.cfg.wandb.enable:
-            df_source = df[df["camera_id"] == self.cfg.nvs_eval.source_camera_id]
+            df_source = df[df["camera_id"] == self.source_camera_id]
             if not df_source.empty:
                 source_avg = {
                     "psnr": df_source["psnr"].mean(),
@@ -2660,7 +2707,7 @@ class MultiHumanTrainer:
     def eval_loop_pose_estimation(self, epoch, pose_type="smplx"):
 
         # Parse source camera ID
-        src_cam_id = self.cfg.nvs_eval.source_camera_id
+        src_cam_id = self.source_camera_id
 
         # Prepare directories to save results
         # - root save directory        
@@ -2721,8 +2768,7 @@ class MultiHumanTrainer:
         if not frame_names_all:
             raise RuntimeError("No overlapping frame names found between predicted and GT pose params.")
 
-        pose_align_cfg = self.cfg.get("pose_world_alignment", {})
-        pose_align_method = str(pose_align_cfg.get("method", "pelvis_trajectory")).lower()
+        pose_align_method = str(self.cfg.pose_eval.world_alignment_method).lower()
         print(f"Pose world alignment method: {pose_align_method}")
         gt_to_pred_transform_by_frame = self._build_gt_to_pred_transforms_by_frame(
             pose_align_method=pose_align_method,
@@ -2965,7 +3011,7 @@ class MultiHumanTrainer:
 
 
         # Prediction dataset 
-        src_cam_id: int = self.cfg.nvs_eval.source_camera_id
+        src_cam_id: int = self.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
         pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames, use_depth=True)
         pred_loader = DataLoader(
@@ -3098,7 +3144,7 @@ class MultiHumanTrainer:
             else:
                 self.eval_loop_pose_estimation(epoch, pose_type="smplx")
 
-            if bool(self.cfg.get("eval_smpl", False)):
+            if bool(self.cfg.pose_eval.eval_smpl):
                 if not root_dir_to_smpl_dir(self.test_data_dir).exists():
                     print("No test SMPL params found in test data directory. Skipping SMPL pose evaluation.")
                 else:

@@ -1,43 +1,107 @@
+# ----------------------------
+# Experiment Identity
+# ----------------------------
 scene_name: ???
-num_persons: null  # inferred at runtime from seg/img_seg_mask/<src_cam_id>/<person_id>
 exp_name: ???
+output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
+
+# ----------------------------
+# Scene / Data Roots
+# ----------------------------
 scene_registry_dir: /home/cizinsky/master-thesis/preprocess/scenes
 canonical_gt_scene_root_dir: /scratch/izar/cizinsky/thesis/gt_scene_data
 preprocessing_dir: /scratch/izar/cizinsky/thesis/v2_preprocessing/${scene_name}
-output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
-input_data_dir: /scratch/izar/cizinsky/thesis/input_data
+trn_scene_dir: ${preprocessing_dir}
+test_scene_dir: ${canonical_gt_scene_root_dir}/${scene_name}
+
+# ----------------------------
+# Optimization Core
+# ----------------------------
 epochs: 30
 batch_size: 5
 lr: 5e-5 # v975 baseline combo
 weight_decay: 5e-4
 grad_clip: 0.1
 sample_every: 5
-eval_every_epoch: 15
 train_params:
   - offset_xyz
   - rotation
   - scaling
   - opacity
   - shs
+
+# ----------------------------
+# Supervision / Data Options
+# ----------------------------
+use_depth: true
+use_estimated_masks: true
+mask_estimator_kind: "rgb_render_based" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
 use_bbox_crop: true
 bbox_pad: 50
 apply_mask_to_render_for_nvs: false
 use_random_init: false
-nv_gen_epoch: 15 # set to -1 to disable training data augmentation
 
-# train
-trn_scene_dir: ${preprocessing_dir}
-use_estimated_masks: true
-mask_estimator_kind: "rgb_render_based" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
-use_depth: true
+# ----------------------------
+# Alternating Optimization
+# Used only when enable_alternate_opt=true
+# ----------------------------
 enable_alternate_opt: false
-confidence_threshold: 0.75 # confidence threshold for IoU to consider a frame reliable
-confidence_update_every: 5 # how often (in epochs) to update frame reliability
-conf_tr_aggregation: null # null = static threshold; "median" = dynamic threshold via median avg IoU
+alternate_optimization:
+  confidence_threshold: 0.75 # IoU threshold for reliable frames
+  confidence_update_every: 5 # epochs between reliability recomputation
+  conf_tr_aggregation: null # null=static threshold, "median"=dynamic threshold
 
-# test
-test_scene_dir: ${canonical_gt_scene_root_dir}/${scene_name}
+# ----------------------------
+# Pose Tuning (SMPL-X)
+# ----------------------------
+pose_tuning:
+  enable: true
+  params: ["root_pose", "body_pose", "trans", "betas"]
+  lr: 2e-4
+  reg_w: 1e-4
+  start_epoch: 0
+  end_epoch: 14
 
+# ----------------------------
+# 3DGS Tuning Schedule
+# ----------------------------
+gs_tuning:
+  start_epoch: 15
+  end_epoch: 30
+
+# ----------------------------
+# Losses / Regularization
+# ----------------------------
+loss_weights:
+  rgb: 20.0
+  sil: 2.0
+  ssim: 0.8 # v975 baseline combo
+  depth: 0.5
+  depth_order: 0.0
+  interpenetration: 0.0
+
+interpenetration_margin: 0.01 # meters
+interpenetration_max_points: 2000
+
+regularization:
+  asap_w: 200.0
+  acap_w: 200.0
+  acap_margin: 0.03 # meters (3 cm), v975 baseline combo
+
+# ----------------------------
+# Novel View Generation
+# ----------------------------
+nv_gen_epoch: 15 # trigger NV generation at start of epoch 16 (0-based indexing)
+trn_nv_gen:
+  camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
+  runtime_camera:
+    strategy: static_orbit
+    body_radius_m: 1.3
+    up: [0.0, 1.0, 0.0]
+
+# ----------------------------
+# Difix
+# ----------------------------
 difix:
   eval_enable: false
   trn_enable: true
@@ -51,10 +115,21 @@ difix:
   overwrite_existing: false
   resolution_multiple: 8
 
-trn_nv_gen:
-  camera_ids: [4,16,28,40,52,64,76,88]
+# ----------------------------
+# Evaluation
+# ----------------------------
+eval_pretrain: true
+eval_every_epoch: 15
+pose_eval:
+  world_alignment_method: pelvis_trajectory # options: pelvis_trajectory, camera
+  eval_smpl: true
+nvs_eval:
+  target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
+  downscale_factor: 2
 
-
+# ----------------------------
+# Logging / Runtime
+# ----------------------------
 wandb:
   enable: true
   project: "hybrid-lhm"
@@ -62,60 +137,7 @@ wandb:
   tags:
     - using_v2_bas_difix
     - eval
-
-loss_weights:
-  rgb: 20.0
-  sil: 2.0
-  ssim: 0.8 # v975 baseline combo
-  depth: 0.5 
-  depth_order: 0.0
-  interpenetration: 0.0
-
-# Interpenetration loss (posed GS overlap)
-interpenetration_margin: 0.01   # meters
-interpenetration_max_points: 2000
-
-# Pose tuning (SMPL-X)
-pose_tuning:
-  enable: true
-  params: ["root_pose", "body_pose", "trans", "betas"]
-  lr: 2e-4
-  reg_w: 1e-4
-  start_epoch: 0
-  end_epoch: 14
-
-# 3DGS tuning
-gs_tuning:
-  start_epoch: 15
-  end_epoch: ${epochs}
-
-regularization:
-  asap_w: 200.0
-  acap_w: 200.0
-  acap_margin: 0.03 # meters (3 cm), v975 baseline combo
-
-eval_pretrain: true
-eval_smpl: true
-pose_world_alignment:
-  method: pelvis_trajectory  # options: pelvis_trajectory, camera
-nvs_eval:
-  source_camera_id: null  # resolved at runtime from preprocess/scenes/${scene_name}.json -> cam_id
-  target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
-  downscale_factor: 2
-
-gs_to_mesh_method: tsdf # options: tsdf, mc
-
-reconstruction_eval:
-  icp:
-    n_samples: 1000
-    max_iterations: 10
-    threshold: 1e-4
-  viou:
-    voxel_size: 0.02
-    padding: 0.05
-  metrics:
-    n_samples: 1000
-    units: cm
+wandb_local_root_dir: /scratch/izar/cizinsky/thesis
 
 torch_home: /scratch/izar/cizinsky/.cache
 hf_home: /scratch/izar/cizinsky/.cache
