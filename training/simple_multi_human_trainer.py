@@ -14,7 +14,7 @@ import wandb
 import trimesh
 from tqdm import tqdm
 from omegaconf import DictConfig
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
 import torch
@@ -125,6 +125,44 @@ def save_image(tensor: torch.Tensor, filename: str):
         raise ValueError(f"Unsupported tensor shape for save_image: {tensor.shape}")
     image = (image * 255).clip(0, 255).astype("uint8")
     Image.fromarray(image).save(filename)
+
+
+def save_labeled_nv_triplet_image(
+    reference: torch.Tensor,
+    rendered: torch.Tensor,
+    refined: torch.Tensor,
+    filename: str,
+    reference_cam_id: int,
+    rendered_cam_id: int,
+    frame_name: str,
+) -> None:
+    """
+    Save side-by-side [reference | rendered | refined] triplet with labels.
+    Inputs are expected in HWC, values in [0,1].
+    """
+    triplet = torch.cat([reference, rendered, refined], dim=1)
+    image = (triplet.detach().cpu().numpy() * 255).clip(0, 255).astype("uint8")
+    pil_img = Image.fromarray(image)
+    draw = ImageDraw.Draw(pil_img)
+    font = ImageFont.load_default()
+
+    tile_w = reference.shape[1]
+    labels = [
+        f"reference / cam {reference_cam_id} / {frame_name}",
+        f"rendered / cam {rendered_cam_id} / {frame_name}",
+        f"refined / cam {rendered_cam_id} / {frame_name}",
+    ]
+    for idx, label in enumerate(labels):
+        x = idx * tile_w + 8
+        y = 8
+        bbox = draw.textbbox((x, y), label, font=font)
+        draw.rectangle(
+            (bbox[0] - 4, bbox[1] - 2, bbox[2] + 4, bbox[3] + 2),
+            fill=(0, 0, 0),
+        )
+        draw.text((x, y), label, fill=(255, 255, 255), font=font)
+
+    pil_img.save(filename)
 
 
 def _normalize_gender(value: str) -> str:
@@ -2417,10 +2455,17 @@ class MultiHumanTrainer:
             # - Debug: save side-by-side comparison of reference, rendered, refined
             difix_debug_dir = root_dir_to_difix_debug_dir(self.trn_data_dir, cam_id)
             difix_debug_dir.mkdir(parents=True, exist_ok=True)
-            joined = torch.cat([ref_images, pred_rgb, refined_rgb], dim=2)  # side-by-side along width
-            for i in range(joined.shape[0]):
+            for i in range(refined_rgb.shape[0]):
                 save_path = difix_debug_dir / f"{frame_names[i]}.png"
-                save_image(joined[i].permute(2, 0, 1), str(save_path))
+                save_labeled_nv_triplet_image(
+                    reference=ref_images[i],
+                    rendered=pred_rgb[i],
+                    refined=refined_rgb[i],
+                    filename=str(save_path),
+                    reference_cam_id=prev_cam_id,
+                    rendered_cam_id=cam_id,
+                    frame_name=str(frame_names[i]),
+                )
 
     @torch.no_grad()
     def prepare_nv_depth_maps(self, cam_id: int, allow_overwrite: bool = False):
