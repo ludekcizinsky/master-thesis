@@ -123,7 +123,7 @@ eval_pretrain: true
 eval_every_epoch: 15
 pose_eval:
   world_alignment_method: pelvis_trajectory # options: pelvis_trajectory, camera
-  eval_smpl: true
+  eval_smpl: false
 nvs_eval:
   target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
   downscale_factor: 2

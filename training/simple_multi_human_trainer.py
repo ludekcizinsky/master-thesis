@@ -1025,6 +1025,14 @@ class MultiHumanTrainer:
                 root_pose = smpl_params["root_pose"][person_idx : person_idx + 1]
                 body_pose = smpl_params["body_pose"][person_idx : person_idx + 1]
                 trans = smpl_params["trans"][person_idx : person_idx + 1]
+                # SMPL layer expects flattened axis-angle pose vectors [B, D].
+                # Depending on source files, body_pose can be [B, 23, 3].
+                if root_pose.dim() > 2:
+                    root_pose = root_pose.reshape(root_pose.shape[0], -1)
+                if body_pose.dim() > 2:
+                    body_pose = body_pose.reshape(body_pose.shape[0], -1)
+                if trans.dim() > 2:
+                    trans = trans.reshape(trans.shape[0], -1)
 
                 smpl_out = smpl_layer(
                     global_orient=root_pose,
