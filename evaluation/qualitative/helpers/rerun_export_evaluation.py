@@ -162,6 +162,37 @@ def _find_mesh_dir(root: Path) -> Optional[Path]:
     return None
 
 
+def _load_camera_npz(camera_path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    try:
+        with np.load(camera_path) as data:
+            if "intrinsics" not in data or "extrinsics" not in data:
+                return None
+            intrinsics = data["intrinsics"]
+            extrinsics = data["extrinsics"]
+    except Exception:
+        return None
+
+    intrinsics = np.asarray(intrinsics, dtype=np.float32)
+    extrinsics = np.asarray(extrinsics, dtype=np.float32)
+    if intrinsics.ndim == 3:
+        intrinsics = intrinsics[0]
+    if extrinsics.ndim == 3:
+        extrinsics = extrinsics[0]
+    if intrinsics.shape != (3, 3) or extrinsics.shape != (3, 4):
+        return None
+    return intrinsics, extrinsics
+
+
+def _infer_image_resolution(images_dir: Path) -> Optional[Tuple[int, int]]:
+    if not images_dir.is_dir():
+        return None
+    image_files = _numeric_files(images_dir, (".jpg", ".png"))
+    if not image_files:
+        return None
+    sample = _read_rgb(image_files[0])
+    return int(sample.shape[1]), int(sample.shape[0])  # width, height
+
+
 def _load_mesh(mesh_path: Path) -> Optional[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]:
     import trimesh
 
@@ -292,6 +323,75 @@ def _log_pose_task(
             )
 
 
+def _log_pose_source_camera_and_images(
+    rr,
+    epoch_name: str,
+    task_name: str,
+    task_dir: Path,
+    source_cam_id: Optional[int],
+    max_frames: int,
+    stats: Dict[str, int],
+) -> None:
+    if source_cam_id is None:
+        return
+
+    cam_dir = task_dir / "viz" / "all_cameras" / str(source_cam_id)
+    img_dir = task_dir / "viz" / "images" / str(source_cam_id)
+    if not cam_dir.is_dir() and not img_dir.is_dir():
+        return
+
+    cam_entity = f"evaluation/{epoch_name}/{task_name}/world_aligned/source_camera"
+    cam_image_entity = f"{cam_entity}/image"
+    source_view_entity = f"evaluation/{epoch_name}/{task_name}/source_view/rgb"
+
+    resolution = _infer_image_resolution(img_dir)
+    camera_files = _numeric_files(cam_dir, (".npz",)) if cam_dir.is_dir() else []
+    image_files = _numeric_files(img_dir, (".jpg", ".png")) if img_dir.is_dir() else []
+    if max_frames > 0:
+        camera_files = camera_files[:max_frames]
+        image_files = image_files[:max_frames]
+
+    for camera_path in camera_files:
+        if not camera_path.stem.isdigit():
+            continue
+        frame_idx = int(camera_path.stem)
+        loaded = _load_camera_npz(camera_path)
+        if loaded is None:
+            continue
+        intrinsics, extrinsics = loaded
+        rr.set_time("frame", sequence=frame_idx)
+        rr.log(
+            cam_entity,
+            rr.Transform3D(
+                translation=extrinsics[:, 3],
+                mat3x3=extrinsics[:, :3],
+                relation=rr.TransformRelation.ChildFromParent,
+            ),
+        )
+        if resolution is not None:
+            fx = float(intrinsics[0, 0])
+            fy = float(intrinsics[1, 1])
+            cx = float(intrinsics[0, 2])
+            cy = float(intrinsics[1, 2])
+            rr.log(
+                cam_image_entity,
+                rr.Pinhole(
+                    focal_length=[fx, fy],
+                    principal_point=[cx, cy],
+                    resolution=[int(resolution[0]), int(resolution[1])],
+                ),
+            )
+        stats["pose_source_camera_frames"] = stats.get("pose_source_camera_frames", 0) + 1
+
+    for image_path in image_files:
+        if not image_path.stem.isdigit():
+            continue
+        frame_idx = int(image_path.stem)
+        rr.set_time("frame", sequence=frame_idx)
+        rr.log(source_view_entity, rr.Image(_read_rgb(image_path)))
+        stats["pose_source_view_frames"] = stats.get("pose_source_view_frames", 0) + 1
+
+
 def _send_nvs_blueprint(rr, epoch_name: str, cam_names: List[str], source_cam_id: Optional[int]) -> None:
     import rerun.blueprint as rrb
 
@@ -338,6 +438,11 @@ def _send_pose_blueprint(rr, epoch_name: str, task_name: str) -> None:
                     origin=f"/evaluation/{epoch_name}/{task_name}/world_aligned",
                     name="World Aligned (Pred + GT)",
                     visible=False,
+                ),
+                rrb.Spatial2DView(
+                    origin=f"/evaluation/{epoch_name}/{task_name}/source_view/rgb",
+                    name="Source View",
+                    visible=True,
                 ),
             ),
             rrb.BlueprintPanel(state="expanded"),
@@ -450,6 +555,15 @@ def _export_epoch(
                 pose_task_dir,
                 include_meshes=args.include_meshes,
                 max_mesh_frames=args.max_mesh_frames,
+                stats=stats,
+            )
+            _log_pose_source_camera_and_images(
+                rr,
+                epoch_name,
+                pose_task_name,
+                pose_task_dir,
+                source_cam_id=source_cam_id,
+                max_frames=args.max_mesh_frames,
                 stats=stats,
             )
 

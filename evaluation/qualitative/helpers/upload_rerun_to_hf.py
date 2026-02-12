@@ -39,15 +39,16 @@ class Args:
     private: bool = False
     token: str | None = None
     dry_run: bool = False
-    yes: bool = False
 
 
 def _parse_selection(selection: str) -> Tuple[bool, bool]:
     tokens = {token.strip().lower() for token in selection.split(",") if token.strip()}
-    valid = {"eval_latest", "eval_all"}
+    valid = {"eval_latest", "eval_all", "none"}
     unknown = tokens - valid
     if unknown:
         raise ValueError(f"Unknown selection token(s): {sorted(unknown)}")
+    if "none" in tokens and len(tokens) > 1:
+        raise ValueError("selection='none' cannot be combined with other selection tokens.")
     return "eval_latest" in tokens, "eval_all" in tokens
 
 
@@ -66,6 +67,9 @@ def _sorted_eval_rrds(rerun_dir: Path) -> List[Tuple[int, Path]]:
 
 
 def _parse_task_and_epoch(file_name: str) -> Tuple[str, int]:
+    trn = re.fullmatch(r"trn_nv_generation_epoch_(\d+)\.rrd", file_name)
+    if trn:
+        return "trn_nv_generation", int(trn.group(1))
     pose = re.fullmatch(r"evaluation_pose_epoch_(\d+)\.rrd", file_name)
     if pose:
         return "pose", int(pose.group(1))
@@ -133,7 +137,7 @@ def _collect_candidates(args: Args) -> List[CandidateFile]:
                     ):
                         continue
 
-            path_in_repo = f"experiments/{args.exp_name}/{scene_name}/rerun/{path.name}"
+            path_in_repo = f"experiments/{args.exp_name}/{scene_name}/rerun_files/{path.name}"
             candidates.append(
                 CandidateFile(
                     scene_name=scene_name,
@@ -179,99 +183,82 @@ def _human_size(num_bytes: int) -> str:
 def _build_repo_readme(
     args: Args,
     repo_base: str,
+    scene_name: str,
     candidates: List[CandidateFile],
 ) -> str:
-    scene_to_items: Dict[str, List[CandidateFile]] = {}
-    for item in candidates:
-        scene_to_items.setdefault(item.scene_name, []).append(item)
+    scene_items = sorted(candidates, key=lambda item: (item.task, item.epoch, item.local_path.name))
 
-    for scene_items in scene_to_items.values():
-        scene_items.sort(key=lambda item: (item.task, item.epoch, item.local_path.name))
-
-    def _task_rows(scene_items: List[CandidateFile], task_key: str) -> List[str]:
+    def _task_rows_html(scene_items: List[CandidateFile], task_key: str) -> List[str]:
         task_items = [item for item in scene_items if item.task == task_key]
         if not task_items:
-            return []
+            return ["<tr><td>-</td><td>-</td><td>-</td></tr>"]
         rows: List[str] = []
         for item in sorted(task_items, key=lambda it: (it.epoch, it.local_path.name)):
             direct = _resolve_url(repo_base, args.branch, item.path_in_repo)
             rerun_web = _rerun_link(direct, args.rerun_version)
             epoch_text = f"{item.epoch:04d}" if item.epoch >= 0 else "-"
             rows.append(
-                f"| `{epoch_text}` | [rrd]({direct}) | [viewer]({rerun_web}) |"
+                "<tr>"
+                f"<td><code>{epoch_text}</code></td>"
+                f'<td><a href="{direct}">rrd</a></td>'
+                f'<td><a href="{rerun_web}">viewer</a></td>'
+                "</tr>"
             )
         return rows
 
     lines: List[str] = []
-    lines.append(f'<h2 style="margin:0.4em 0 0.2em 0;">Experiment: <code>{args.exp_name}</code></h2>')
-    lines.append("")
     lines.append('<div style="margin:0 0 0.6em 0;">')
-    lines.append(f"  <b>Repo:</b> <code>{args.repo_id}</code><br/>")
-    lines.append(f"  <b>Viewer:</b> <code>{args.rerun_version}</code>")
+    lines.append(f"  <b>Scene:</b> <code>{scene_name}</code><br/>")
+    lines.append(f"  <b>Rerun viewer version:</b> <code>{args.rerun_version}</code>")
     lines.append("</div>")
     lines.append("")
-    lines.append('<h3 style="margin:0.5em 0 0.2em 0;">Scenes</h3>')
+    lines.append('<hr style="margin:0.4em 0;">')
     lines.append("")
-    lines.append("| Scene | Coverage | Epochs |")
-    lines.append("| --- | --- | --- |")
-    for scene_name in sorted(scene_to_items.keys()):
-        scene_items = scene_to_items[scene_name]
-        has_nvs = any(item.task == "nvs" for item in scene_items)
-        has_pose = any(item.task == "pose" for item in scene_items)
-        epochs = sorted({item.epoch for item in scene_items if item.epoch >= 0})
-        epoch_text = " ".join(f"`{epoch:04d}`" for epoch in epochs) if epochs else "-"
-        coverage = f"NVS {'✅' if has_nvs else '❌'} · Pose {'✅' if has_pose else '❌'}"
-        lines.append(f"| **{scene_name}** | {coverage} | {epoch_text} |")
+    lines.append('<h3 style="margin:0.6em 0 0.2em 0;">🥽 Qualitative results</h3>')
+    lines.append("")
+    lines.append("Here, you can visualise qualitative results for the task on which the given scene was evaluated.")
     lines.append("")
 
-    for scene_name in sorted(scene_to_items.keys()):
-        scene_items = scene_to_items[scene_name]
-        nvs_rows = _task_rows(scene_items, "nvs")
-        pose_rows = _task_rows(scene_items, "pose")
+    lines.append('<table width="100%">')
+    lines.append('<tr valign="top">')
+    lines.append('<td width="50%">')
+    lines.append("")
+    lines.append('<div style="margin:0 0 0.2em 0;"><b>Novel view synthesis</b></div>')
+    lines.append("")
+    lines.append("<table>")
+    lines.append("<tr><th>Epoch</th><th>Download</th><th>Open</th></tr>")
+    lines.extend(_task_rows_html(scene_items, "nvs"))
+    lines.append("</table>")
+    lines.append("")
+    lines.append("</td>")
+    lines.append('<td width="50%">')
+    lines.append("")
+    lines.append('<div style="margin:0 0 0.2em 0;"><b>Pose estimation</b></div>')
+    lines.append("")
+    lines.append("<table>")
+    lines.append("<tr><th>Epoch</th><th>Download</th><th>Open</th></tr>")
+    lines.extend(_task_rows_html(scene_items, "pose"))
+    lines.append("</table>")
+    lines.append("")
+    lines.append("</td>")
+    lines.append("</tr>")
+    lines.append("</table>")
+    lines.append("")
 
-        lines.append(f'<h3 style="margin:0.6em 0 0.2em 0;">{scene_name}</h3>')
-        lines.append("")
-        lines.append('<table width="100%">')
-        lines.append('<tr valign="top">')
-        lines.append('<td width="50%">')
-        lines.append("")
-        lines.append('<div style="margin:0 0 0.2em 0;"><b>NVS</b></div>')
-        lines.append("")
-        lines.append("| Epoch | Download | Open |")
-        lines.append("| --- | --- | --- |")
-        if nvs_rows:
-            lines.extend(nvs_rows)
-        else:
-            lines.append("| - | - | - |")
-        lines.append("")
-        lines.append("</td>")
-        lines.append('<td width="50%">')
-        lines.append("")
-        lines.append('<div style="margin:0 0 0.2em 0;"><b>Pose</b></div>')
-        lines.append("")
-        lines.append("| Epoch | Download | Open |")
-        lines.append("| --- | --- | --- |")
-        if pose_rows:
-            lines.extend(pose_rows)
-        else:
-            lines.append("| - | - | - |")
-        lines.append("")
-        lines.append("</td>")
-        lines.append("</tr>")
-        lines.append("</table>")
-        lines.append("")
+    lines.append('<h3 style="margin:0.6em 0 0.2em 0;">📹 View Densification using DiFix</h3>')
+    lines.append("")
+    lines.append(
+        "Here, you can rerun the view densification process, i.e., synthesising novel pseudo ground truth views "
+        "which are then used in the 3DGS optimisation."
+    )
+    lines.append("")
+    lines.append("<table>")
+    lines.append("<tr><th>Epoch</th><th>Download</th><th>Open</th></tr>")
+    lines.extend(_task_rows_html(scene_items, "trn_nv_generation"))
+    lines.append("</table>")
+    lines.append("")
 
     return "\n".join(lines)
-
-
-def _prompt_confirmation(console: Console) -> bool:
-    try:
-        response = console.input(
-            "[bold]Press Enter to upload, or type anything to cancel:[/bold] "
-        )
-    except EOFError:
-        return False
-    return response.strip() == ""
 
 
 def _print_plan(
@@ -279,7 +266,7 @@ def _print_plan(
     args: Args,
     repo_base: str,
     candidates: List[CandidateFile],
-    readme_path: str,
+    readme_paths: List[str],
 ) -> None:
     total_bytes = sum(item.local_path.stat().st_size for item in candidates)
     console.print(
@@ -287,7 +274,7 @@ def _print_plan(
             f"[bold]Experiment:[/bold] {args.exp_name}\n"
             f"[bold]Repo:[/bold] {args.repo_id} ({args.repo_type})\n"
             f"[bold]Branch:[/bold] {args.branch}\n"
-            f"[bold]Files:[/bold] {len(candidates)} (.rrd) + README\n"
+            f"[bold]Files:[/bold] {len(candidates)} (.rrd) + {len(readme_paths)} README(s)\n"
             f"[bold]Total size:[/bold] {_human_size(total_bytes)}\n"
             f"[bold]Repo base URL:[/bold] {repo_base}",
             title="Upload Plan",
@@ -310,10 +297,15 @@ def _print_plan(
             _human_size(item.local_path.stat().st_size),
         )
     console.print(table)
-    console.print(f"[bold]README path in repo:[/bold] {readme_path}")
+    readme_table = Table(title="README Files to Upload")
+    readme_table.add_column("#", justify="right")
+    readme_table.add_column("Path in Repo")
+    for idx, readme_path in enumerate(sorted(readme_paths), start=1):
+        readme_table.add_row(str(idx), readme_path)
+    console.print(readme_table)
 
 
-def _upload(args: Args, candidates: List[CandidateFile], readme_content: str) -> None:
+def _upload(args: Args, candidates: List[CandidateFile], readmes_by_scene: Dict[str, str]) -> None:
     from huggingface_hub import CommitOperationAdd, HfApi
 
     api = HfApi(token=args.token)
@@ -329,14 +321,17 @@ def _upload(args: Args, candidates: List[CandidateFile], readme_content: str) ->
         for item in candidates
     ]
 
-    readme_repo_path = f"experiments/{args.exp_name}/README.md"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as handle:
-        handle.write(readme_content)
-        temp_readme = Path(handle.name)
+    temp_readmes: List[Path] = []
     try:
-        operations.append(
-            CommitOperationAdd(path_in_repo=readme_repo_path, path_or_fileobj=str(temp_readme))
-        )
+        for scene_name, readme_content in readmes_by_scene.items():
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as handle:
+                handle.write(readme_content)
+                temp_readme = Path(handle.name)
+            temp_readmes.append(temp_readme)
+            readme_repo_path = f"experiments/{args.exp_name}/{scene_name}/README.md"
+            operations.append(
+                CommitOperationAdd(path_in_repo=readme_repo_path, path_or_fileobj=str(temp_readme))
+            )
         api.create_commit(
             repo_id=args.repo_id,
             repo_type=args.repo_type,
@@ -345,7 +340,8 @@ def _upload(args: Args, candidates: List[CandidateFile], readme_content: str) ->
             commit_message=f"Upload Rerun recordings for {args.exp_name}",
         )
     finally:
-        temp_readme.unlink(missing_ok=True)
+        for temp_path in temp_readmes:
+            temp_path.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -369,20 +365,25 @@ def main() -> None:
         return
 
     repo_base = _repo_base_url(args.repo_id, args.repo_type)
-    readme_repo_path = f"experiments/{args.exp_name}/README.md"
-    readme_content = _build_repo_readme(args, repo_base, candidates)
+    scene_to_candidates: Dict[str, List[CandidateFile]] = {}
+    for item in candidates:
+        scene_to_candidates.setdefault(item.scene_name, []).append(item)
+    readmes_by_scene: Dict[str, str] = {
+        scene_name: _build_repo_readme(args, repo_base, scene_name, scene_candidates)
+        for scene_name, scene_candidates in scene_to_candidates.items()
+    }
+    readme_paths = [
+        f"experiments/{args.exp_name}/{scene_name}/README.md"
+        for scene_name in sorted(readmes_by_scene.keys())
+    ]
 
-    _print_plan(console, args, repo_base, candidates, readme_repo_path)
+    _print_plan(console, args, repo_base, candidates, readme_paths)
 
     if args.dry_run:
         console.print("[bold green]Dry run only. No upload performed.[/bold green]")
         return
 
-    if not args.yes and not _prompt_confirmation(console):
-        console.print("[bold yellow]Canceled. No upload performed.[/bold yellow]")
-        return
-
-    _upload(args, candidates, readme_content)
+    _upload(args, candidates, readmes_by_scene)
 
     links_table = Table(title="Uploaded Links")
     links_table.add_column("Scene")
@@ -396,10 +397,10 @@ def main() -> None:
             _rerun_link(direct, args.rerun_version),
         )
     console.print(links_table)
-    console.print(
-        f"[bold green]Done.[/bold green] "
-        f"README uploaded to {repo_base}/blob/{args.branch}/{readme_repo_path}"
-    )
+    console.print("[bold green]Done.[/bold green] Uploaded scene-level README files:")
+    for scene_name in sorted(readmes_by_scene.keys()):
+        readme_path = f"experiments/{args.exp_name}/{scene_name}/README.md"
+        console.print(f"  - {repo_base}/blob/{args.branch}/{readme_path}")
 
 
 if __name__ == "__main__":
