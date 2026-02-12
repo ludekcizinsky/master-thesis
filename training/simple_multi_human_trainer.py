@@ -86,15 +86,19 @@ from training.helpers.virtual_cameras import (
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
+def root_dir_to_nv_generation_misc_dir(root_dir: Path) -> Path:
+    return root_dir / "misc" / "nv_generation"
+
+
 def root_dir_to_difix_debug_dir(root_dir: Path, cam_id: int) -> Path:
-    return root_dir / "est_images_debug" / f"{cam_id}"
+    return root_dir_to_nv_generation_misc_dir(root_dir) / "est_images_debug" / f"{cam_id}"
 
 def root_dir_to_est_masks_debug_dir(root_dir: Path, cam_id: int) -> Path:
-    return root_dir / "est_masks_debug" / f"{cam_id}"
+    return root_dir_to_nv_generation_misc_dir(root_dir) / "est_masks_debug" / f"{cam_id}"
 
 
 def root_dir_to_depths_debug_dir(root_dir: Path, cam_id: int) -> Path:
-    return root_dir / "est_depths_debug" / f"{cam_id}"
+    return root_dir_to_nv_generation_misc_dir(root_dir) / "est_depths_debug" / f"{cam_id}"
 
 def save_image(tensor: torch.Tensor, filename: str):
     """
@@ -384,21 +388,23 @@ class MultiHumanTrainer:
         self.trn_scene_dir = self._resolve_trn_scene_dir()
         self.test_scene_dir = self._resolve_test_scene_dir()
         self.output_dir = Path(cfg.output_dir) / f"{self.cfg.exp_name}"
-        self.debug_dir = self.output_dir / "debug"
+        self.training_artifacts_dir = self.output_dir / "training_artifacts"
         self.evaluation_dir = self.output_dir / "evaluation"
         self.input_data_dir = self.output_dir / "input_data"
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.training_artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.evaluation_dir.mkdir(parents=True, exist_ok=True)
         self.input_data_dir.mkdir(parents=True, exist_ok=True)
         self.trn_data_dir = self.input_data_dir / "train"
         self.trn_data_dir.mkdir(parents=True, exist_ok=True)
         self.test_data_dir = self.input_data_dir / "test"
         self.test_data_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.output_dir / "manifest.json"
         self.train_params = tuple(cfg.train_params)
         self.sample_every = cfg.sample_every
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
+        self._write_output_manifest(eval_epochs=[])
 
         # Configure default local W&B paths before wandb.init().
         self._set_default_wandb_local_dirs()
@@ -423,6 +429,64 @@ class MultiHumanTrainer:
         self.nv_generation_initialized = False
         self.nv_gen_done = False
         self.virtual_camera_planner: Optional[VirtualCameraPlanner] = None
+
+    def _manifest_tasks(self) -> List[str]:
+        tasks: List[str] = []
+        if len(self.cfg.nvs_eval.target_camera_ids) > 0:
+            tasks.append("nvs")
+        tasks.append("pose_smplx")
+        if bool(self.cfg.pose_eval.eval_smpl):
+            tasks.append("pose_smpl")
+        return tasks
+
+    def _write_output_manifest(self, eval_epochs: Optional[List[str]] = None) -> None:
+        existing_eval_epochs: List[str] = []
+        if self.manifest_path.exists():
+            try:
+                with open(self.manifest_path, "r") as f:
+                    existing = json.load(f)
+                existing_eval_epochs = list(existing.get("eval_epochs", []))
+            except Exception:
+                existing_eval_epochs = []
+
+        merged_epochs = sorted(
+            set(existing_eval_epochs + (eval_epochs or [])),
+            key=lambda n: int(n.split("_", 1)[1]) if n.startswith("epoch_") else n,
+        )
+        manifest = {
+            "output_layout_version": "v1",
+            "exp_name": str(self.cfg.exp_name),
+            "scene_name": str(self.cfg.scene_name),
+            "tasks": self._manifest_tasks(),
+            "eval_epochs": merged_epochs,
+            "source_camera_id": int(self.source_camera_id),
+            "nvs_cameras": [int(cam_id) for cam_id in self.cfg.nvs_eval.target_camera_ids],
+            "pose_eval_world_alignment_method": str(self.cfg.pose_eval.world_alignment_method),
+        }
+        with open(self.manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+    def _record_evaluated_epoch(self, epoch: int) -> None:
+        self._write_output_manifest(eval_epochs=[f"epoch_{epoch:04d}"])
+
+    def _eval_epoch_dir(self, epoch: int) -> Path:
+        root = self.evaluation_dir / f"epoch_{epoch:04d}"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _ensure_eval_task_dirs(self, epoch: int, task_name: str) -> Dict[str, Path]:
+        task_root = self._eval_epoch_dir(epoch) / task_name
+        task_dirs = {
+            "root": task_root,
+            "inputs": task_root / "inputs",
+            "pred": task_root / "pred",
+            "gt_inputs": task_root / "gt_inputs",
+            "metrics": task_root / "metrics",
+            "viz": task_root / "viz",
+        }
+        for path in task_dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+        return task_dirs
 
     def _resolve_trn_scene_dir(self) -> Path:
         return Path(self.cfg.trn_scene_dir)
@@ -837,11 +901,12 @@ class MultiHumanTrainer:
                     expression=expression,
                 )
                 vertices_t = smplx_out.vertices[0].detach()
+                root_joint_t = smplx_out.joints[0, 0].detach()
                 if T is not None:
                     vertices_t = vertices_t @ R.T + t
+                    root_joint_t = root_joint_t @ R.T + t
                 if root_relative:
                     # Match root-relative metric frame: subtract per-person root joint.
-                    root_joint_t = smplx_out.joints[0, 0].detach()
                     vertices_t = vertices_t - root_joint_t.unsqueeze(0)
                 vertices = vertices_t.cpu().numpy()
                 smplx_meshes_for_frame[person_idx] = (vertices, smplx_faces)
@@ -871,6 +936,97 @@ class MultiHumanTrainer:
                     faces=merged_smplx_mesh[1],
                     process=False,
                 ).export(merged_smplx_path)
+
+    @torch.no_grad()
+    def _save_posed_smpl_meshes_from_params_dir(
+        self,
+        smpl_params_dir: Path,
+        out_dir: Path,
+        smpl_layers: List[torch.nn.Module],
+        root_relative: bool = False,
+        frame_to_transform: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> None:
+        smpl_files = sorted(smpl_params_dir.glob("*.npz"))
+        if len(smpl_files) == 0:
+            print(f"No SMPL parameter files found in {smpl_params_dir}; skipping SMPL mesh export.")
+            return
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for smpl_path in smpl_files:
+            smpl_params = SceneDataset._load_smpl(smpl_path, device=self.tuner_device)
+            n_persons = int(smpl_params["betas"].shape[0])
+            if len(smpl_layers) != n_persons:
+                raise RuntimeError(
+                    f"Expected {n_persons} SMPL layers, got {len(smpl_layers)} for frame {smpl_path.stem}."
+                )
+
+            frame_name = smpl_path.stem
+            frame_key = self._canonical_frame_name(frame_name)
+            T = None
+            if frame_to_transform is not None:
+                T = frame_to_transform.get(frame_key)
+                if T is None:
+                    print(
+                        f"Skipping frame '{frame_name}' in {smpl_params_dir}: "
+                        f"missing camera alignment transform for key '{frame_key}'."
+                    )
+                    continue
+                T = T.to(self.tuner_device)
+                R = T[:3, :3]
+                t = T[:3, 3]
+
+            if frame_name.isdigit():
+                frame_name = f"{int(frame_name):06d}"
+
+            smpl_meshes_for_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+            for person_idx in range(n_persons):
+                smpl_layer = smpl_layers[person_idx].to(self.tuner_device).eval()
+                smpl_faces = np.asarray(getattr(smpl_layer, "faces"), dtype=np.int32)
+
+                betas = smpl_params["betas"][person_idx : person_idx + 1]
+                root_pose = smpl_params["root_pose"][person_idx : person_idx + 1]
+                body_pose = smpl_params["body_pose"][person_idx : person_idx + 1]
+                trans = smpl_params["trans"][person_idx : person_idx + 1]
+
+                smpl_out = smpl_layer(
+                    global_orient=root_pose,
+                    body_pose=body_pose,
+                    betas=betas,
+                    transl=trans,
+                )
+                vertices_t = smpl_out.vertices[0].detach()
+                root_joint_t = smpl_out.joints[0, 0].detach()
+                if T is not None:
+                    vertices_t = vertices_t @ R.T + t
+                    root_joint_t = root_joint_t @ R.T + t
+                if root_relative:
+                    vertices_t = vertices_t - root_joint_t.unsqueeze(0)
+                vertices = vertices_t.cpu().numpy()
+                smpl_meshes_for_frame[person_idx] = (vertices, smpl_faces)
+
+            for person_idx in range(n_persons):
+                person_dir = out_dir / f"{person_idx:02d}"
+                person_dir.mkdir(parents=True, exist_ok=True)
+                out_path = person_dir / f"{frame_name}.obj"
+
+                mesh = smpl_meshes_for_frame.get(person_idx)
+                if mesh is None:
+                    out_path.write_text("")
+                    continue
+                vertices, faces = mesh
+                if vertices.size == 0 or faces.size == 0:
+                    out_path.write_text("")
+                    continue
+                trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(out_path)
+
+            merged_smpl_mesh = merge_mesh_dict(smpl_meshes_for_frame)
+            merged_smpl_path = out_dir / f"{frame_name}.obj"
+            if merged_smpl_mesh[0].size and merged_smpl_mesh[1].size:
+                trimesh.Trimesh(
+                    vertices=merged_smpl_mesh[0],
+                    faces=merged_smpl_mesh[1],
+                    process=False,
+                ).export(merged_smpl_path)
 
     @staticmethod
     def _canonical_frame_name(frame_name: str) -> str:
@@ -1970,7 +2126,7 @@ class MultiHumanTrainer:
                 # space for debug stuff is here
                 if batch_idx in [0] and (epoch + 1) % 2 == 0:
                     # - create a joined image from pred_masked and gt_masked for debugging
-                    debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "rgb"
+                    debug_save_dir = self.training_artifacts_dir / f"epoch_{epoch+1:04d}" / "rgb"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     overlay = pred_rgb*0.5 + gt_masked*0.5
                     joined_image = torch.cat([pred_rgb, gt_masked, overlay], dim=3)  # Concatenate along width
@@ -1983,7 +2139,7 @@ class MultiHumanTrainer:
 
                     # - save depth comparison images (only if depth supervision is available)
                     if depths is not None:
-                        debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "depth"
+                        debug_save_dir = self.training_artifacts_dir / f"epoch_{epoch+1:04d}" / "depth"
                         debug_save_dir.mkdir(parents=True, exist_ok=True)
                         for i in range(pred_depth.shape[0]):
                             frame_name = fnames[i]
@@ -1992,7 +2148,7 @@ class MultiHumanTrainer:
                             save_depth_comparison(pred_depth[i].squeeze(-1), gt_depth_masked[i].squeeze(-1), str(save_path))
 
                     # - save render and mask comparison images
-                    debug_save_dir = self.debug_dir / f"epoch_{epoch+1:04d}" / "gt_input"
+                    debug_save_dir = self.training_artifacts_dir / f"epoch_{epoch+1:04d}" / "gt_input"
                     debug_save_dir.mkdir(parents=True, exist_ok=True)
                     for i in range(masks.shape[0]):
                         frame_name = fnames[i] 
@@ -2037,10 +2193,31 @@ class MultiHumanTrainer:
             self._init_nv_generation()
             self.nv_generation_initialized = True
 
-        self._augment_training_data()
+        self._augment_training_data(epoch)
         return True
 
-    def _augment_training_data(self) -> None:
+    @torch.no_grad()
+    def _save_nv_generation_pose_state(self, epoch: int, source_dataset: SceneDataset) -> None:
+        """
+        Save the exact tuned SMPL-X pose state used when runtime virtual cameras are generated.
+        """
+        pose_state_dir = (
+            root_dir_to_nv_generation_misc_dir(self.trn_data_dir)
+            / "pose_state"
+            / f"epoch_{epoch + 1:04d}"
+        )
+        pose_state_dir.mkdir(parents=True, exist_ok=True)
+        pose_state_smplx_dir = pose_state_dir / "smplx"
+        pose_state_mesh_dir = pose_state_dir / "posed_smplx_meshes_per_frame"
+
+        self._save_pose_tuned_smplx_params(source_dataset, pose_state_smplx_dir)
+        self._save_posed_smplx_meshes_from_params_dir(
+            pose_state_smplx_dir,
+            pose_state_mesh_dir,
+            root_relative=False,
+        )
+
+    def _augment_training_data(self, epoch: int) -> None:
 
         src_cam_id: int = self.source_camera_id
         skip_frames = load_skip_frames(self.trn_data_dir)
@@ -2072,6 +2249,10 @@ class MultiHumanTrainer:
         self.trn_datasets.append(trn_ds)
         self.trn_dataset = trn_ds
 
+        # Persist the exact pose state (tuned SMPL-X params + meshes) that drives
+        # runtime virtual-camera generation for this augmentation epoch.
+        self._save_nv_generation_pose_state(epoch, trn_ds)
+
         # Generate novel views
         is_nv_gen_done = False
         n_its_nv_gen = 0
@@ -2100,11 +2281,21 @@ class MultiHumanTrainer:
         # Runtime virtual camera planning is initialized lazily right before NV generation.
         src_cam_id = self.source_camera_id
         self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id
-        self.camera_ids = self.cfg.trn_nv_gen.camera_ids
-        if src_cam_id not in self.camera_ids:
+        num_virtual_cams = int(self.cfg.trn_nv_gen.num_cameras)
+        start_cam_id = int(self.cfg.trn_nv_gen.start_camera_id)
+        if num_virtual_cams < 0:
             raise ValueError(
-                f"Source camera id {src_cam_id} is not present in trn_nv_gen.camera_ids: {self.camera_ids}"
+                f"trn_nv_gen.num_cameras must be >= 0, got {num_virtual_cams}"
             )
+        generated_target_cam_ids = [
+            start_cam_id + cam_offset for cam_offset in range(num_virtual_cams)
+        ]
+        if src_cam_id in generated_target_cam_ids:
+            raise ValueError(
+                f"Generated virtual camera ids include source camera id {src_cam_id}. "
+                f"Please change trn_nv_gen.start_camera_id (current={start_cam_id}) or num_cameras."
+            )
+        self.camera_ids = [src_cam_id] + generated_target_cam_ids
         src_cam_idx = self.camera_ids.index(src_cam_id)
         half_n = (len(self.camera_ids) - 1) // 2
         other_half_n = len(self.camera_ids) - 1 - half_n
@@ -2113,14 +2304,15 @@ class MultiHumanTrainer:
         self.from_src_right_traversed_cams = deque((self.camera_ids[src_cam_idx+1:] + self.camera_ids[:src_cam_idx])[:other_half_n])
         self.difix_cam_ids_all = list(self.from_src_left_traversed_cams) + list(self.from_src_right_traversed_cams)
         print("NV camera traversal initialized:")
+        print(f"    Generated virtual camera ids: {generated_target_cam_ids}")
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
-        runtime_cfg = self.cfg.trn_nv_gen.get("runtime_camera", {})
+        runtime_cfg = self.cfg.trn_nv_gen.runtime_camera
         runtime_camera_cfg = RuntimeCameraConfig(
-            strategy=str(runtime_cfg.get("strategy", "static_orbit")),
-            body_radius_m=float(runtime_cfg.get("body_radius_m", 1.3)),
-            up=tuple(float(v) for v in runtime_cfg.get("up", [0.0, 1.0, 0.0])),
+            strategy=str(runtime_cfg.strategy),
+            body_radius_m=float(runtime_cfg.body_radius_m),
+            up=tuple(float(v) for v in runtime_cfg.up),
         )
         strategy = build_camera_strategy(runtime_camera_cfg)
         self.virtual_camera_planner = VirtualCameraPlanner(
@@ -2479,8 +2671,7 @@ class MultiHumanTrainer:
 
         # Parse the evaluation setup
         target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
-        root_save_dir: Path = self.evaluation_dir / f"epoch_{epoch:04d}"
-        root_save_dir.mkdir(parents=True, exist_ok=True)
+        task_dirs = self._ensure_eval_task_dirs(epoch, "nvs")
 
         # Load skip frames
         skip_frames = load_skip_frames(self.test_data_dir)
@@ -2515,8 +2706,13 @@ class MultiHumanTrainer:
             )
 
             # Prepare paths where to save results
-            save_dir = root_save_dir / f"{tgt_cam_id}"
-            save_dir.mkdir(parents=True, exist_ok=True)
+            cam_id_str = f"cam_{tgt_cam_id}"
+            cam_inputs_dir = task_dirs["inputs"] / cam_id_str
+            cam_pred_dir = task_dirs["pred"] / cam_id_str
+            cam_gt_dir = task_dirs["gt_inputs"] / cam_id_str
+            cam_viz_dir = task_dirs["viz"] / cam_id_str
+            for cam_dir in [cam_inputs_dir, cam_pred_dir, cam_gt_dir, cam_viz_dir]:
+                cam_dir.mkdir(parents=True, exist_ok=True)
 
             # Render in batches novel views from target camera
             for batch in tqdm(loader, desc=f"Evaluation NVS cam {tgt_cam_id}", leave=False):
@@ -2556,7 +2752,7 @@ class MultiHumanTrainer:
                     refined_rgb = difix_refine(self.cfg.difix, renders, ref_images, difix_pipe, is_eval=True) # [B, H, W, 3]
 
                     # - Debug: save side-by-side comparison of reference, rendered, refined
-                    difix_debug_dir = save_dir / "difix_debug_comparisons" / f"{tgt_cam_id}"
+                    difix_debug_dir = cam_viz_dir / "difix_debug_comparisons"
                     difix_debug_dir.mkdir(parents=True, exist_ok=True)
                     joined = torch.cat([ref_images, renders, refined_rgb, masked_gt], dim=2)  # side-by-side along width
                     for i in range(joined.shape[0]):
@@ -2567,7 +2763,7 @@ class MultiHumanTrainer:
                     renders = refined_rgb
 
                 # Combine masked render and masked GT with overlay
-                render_vs_gt_dir = save_dir / "render_vs_gt"
+                render_vs_gt_dir = cam_viz_dir / "render_vs_gt"
                 render_vs_gt_dir.mkdir(parents=True, exist_ok=True)
                 columns = [renders, masked_gt]
                 joined = torch.cat(columns, dim=2)  # side-by-side along width
@@ -2576,7 +2772,7 @@ class MultiHumanTrainer:
                     save_image(joined[i].permute(2, 0, 1), str(save_path))
 
                 # Save renders on white background for visualization
-                render_white_bg_dir = save_dir / "render_white_bg"
+                render_white_bg_dir = cam_viz_dir / "render_white_bg"
                 render_white_bg_dir.mkdir(parents=True, exist_ok=True)
                 renders_white_bg, _, _ = self.forward(batch, background_rgb=(1.0, 1.0, 1.0), apply_tuned_smplx_delta=False)
                 for i in range(renders_white_bg.shape[0]):
@@ -2610,7 +2806,7 @@ class MultiHumanTrainer:
                     masks3 = masks.repeat(1, 1, 1, 3)
                 
                 # Save what goes into metrics computation for debugging
-                metrics_debug_dir = save_dir / "metrics_debug_inputs"
+                metrics_debug_dir = cam_inputs_dir / "metrics_debug_inputs"
                 metrics_debug_dir.mkdir(parents=True, exist_ok=True)
                 masked_renders = renders * masks3
                 masked_gt = frames * masks3
@@ -2620,6 +2816,15 @@ class MultiHumanTrainer:
                 for i in range(joined.shape[0]):
                     save_path = metrics_debug_dir / Path(frame_paths[i]).name
                     save_image(joined[i].permute(2, 0, 1), str(save_path))
+
+                pred_metrics_dir = cam_pred_dir / "metrics_input"
+                gt_metrics_dir = cam_gt_dir / "metrics_input"
+                pred_metrics_dir.mkdir(parents=True, exist_ok=True)
+                gt_metrics_dir.mkdir(parents=True, exist_ok=True)
+                for i in range(masked_renders.shape[0]):
+                    img_name = Path(frame_paths[i]).name
+                    save_image(masked_renders[i].permute(2, 0, 1), str(pred_metrics_dir / img_name))
+                    save_image(masked_gt[i].permute(2, 0, 1), str(gt_metrics_dir / img_name))
                     
                 # Compute metrics
                 psnr_vals = psnr(
@@ -2644,8 +2849,8 @@ class MultiHumanTrainer:
                     )
             
             # Create a video from render vs gt images using call to ffmpeg
-            render_vs_gt_dir = root_save_dir / f"{tgt_cam_id}" / "render_vs_gt"
-            video_path = root_save_dir / f"{tgt_cam_id}" / f"cam_{tgt_cam_id}_nvs_epoch_{epoch:04d}.mp4"
+            render_vs_gt_dir = cam_viz_dir / "render_vs_gt"
+            video_path = cam_viz_dir / f"{cam_id_str}_nvs_epoch_{epoch:04d}.mp4"
             jpg_frames = sorted(p for p in render_vs_gt_dir.glob("*.jpg") if p.stem.isdigit())
             if not jpg_frames:
                 raise FileNotFoundError(f"No render_vs_gt frames found in {render_vs_gt_dir}")
@@ -2665,12 +2870,12 @@ class MultiHumanTrainer:
         # Save metrics to CSV
         # - save per-frame metrics
         df = pd.DataFrame(metrics_all_cams_per_frame, columns=["camera_id", "frame_id", "psnr", "ssim", "lpips"])
-        csv_path = root_save_dir / "metrics_all_cams_per_frame.csv"
+        csv_path = task_dirs["metrics"] / "metrics_all_cams_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics per camera
         df_avg_cam = df.groupby("camera_id").agg({"psnr": "mean", "ssim": "mean", "lpips": "mean"}).reset_index()
-        csv_path_avg_cam = root_save_dir / "metrics_avg_per_camera.csv"
+        csv_path_avg_cam = task_dirs["metrics"] / "metrics_avg_per_camera.csv"
         df_avg_cam.to_csv(csv_path_avg_cam, index=False)
 
         # - log to wandb the per cam metrics
@@ -2687,7 +2892,7 @@ class MultiHumanTrainer:
             "ssim": df_excluding_source["ssim"].mean(),
             "lpips": df_excluding_source["lpips"].mean(),
         }
-        overall_avg_path = root_save_dir / "novel_view_results.txt"
+        overall_avg_path = task_dirs["metrics"] / "novel_view_results.txt"
         with open(overall_avg_path, "w") as f:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
@@ -2723,12 +2928,11 @@ class MultiHumanTrainer:
         src_cam_id = self.source_camera_id
 
         # Prepare directories to save results
-        # - root save directory        
-        save_dir : Path = self.evaluation_dir / f"epoch_{epoch:04d}"
-        save_dir.mkdir(parents=True, exist_ok=True)
+        task_name = "pose_smplx" if pose_type == "smplx" else "pose_smpl"
+        task_dirs = self._ensure_eval_task_dirs(epoch, task_name)
 
         # Save the updated pred SMPL-X params with pose tuning applied
-        pose_tuned_smplx_params_dir = save_dir / "smplx"
+        pose_tuned_smplx_params_dir = task_dirs["inputs"] / "smplx"
         pose_tuned_smplx_params_dir.mkdir(parents=True, exist_ok=True)
         skip_frames = load_skip_frames(self.trn_data_dir)
         pred_dataset = SceneDataset(
@@ -2739,16 +2943,16 @@ class MultiHumanTrainer:
         self._save_pose_tuned_smplx_params(pred_dataset, pose_tuned_smplx_params_dir)
 
         # Convert the saved pose-tuned SMPL-X params to SMPL format
-        # (will create save_dir / "smpl" directory with the converted SMPL params)
+        # (will create task_dirs["inputs"] / "smpl" directory with converted SMPL params)
         if pose_type == "smpl":
             subprocess.run([
                 "bash",
                 "submodules/smplx/tools/run_conversion.sh",
-                str(save_dir),
+                str(task_dirs["inputs"]),
                 "smplx",
                 "smpl",
             ], check=True)
-        pose_tuned_smpl_params_dir = save_dir / "smpl"
+        pose_tuned_smpl_params_dir = task_dirs["inputs"] / "smpl"
 
         # Init datasets
         batch_size = self.cfg.batch_size
@@ -2763,8 +2967,6 @@ class MultiHumanTrainer:
         pred_fname_to_pose_params = load_pose_dir(
             pred_pose_dir, pose_type=pose_type, device=self.tuner_device
         )
-        batched_pred_pose_params, batched_pred_fnames = pose_params_dict_to_batch(pred_fname_to_pose_params, batch_size)
-
         # - cameras
         all_cameras_pred = get_all_scene_dir_cams(self.trn_data_dir, self.tuner_device)
         all_cameras_gt = get_all_scene_dir_cams(self.test_data_dir, self.tuner_device)
@@ -2780,6 +2982,11 @@ class MultiHumanTrainer:
         frame_names_all = sorted(set(pred_pose_by_key.keys()) & set(gt_pose_by_key.keys()))
         if not frame_names_all:
             raise RuntimeError("No overlapping frame names found between predicted and GT pose params.")
+        pred_pose_eval_by_key = {k: pred_pose_by_key[k] for k in frame_names_all}
+        gt_pose_eval_by_key = {k: gt_pose_by_key[k] for k in frame_names_all}
+        batched_pred_pose_params, batched_pred_fnames = pose_params_dict_to_batch(
+            pred_pose_eval_by_key, batch_size
+        )
 
         pose_align_method = str(self.cfg.pose_eval.world_alignment_method).lower()
         print(f"Pose world alignment method: {pose_align_method}")
@@ -2791,22 +2998,6 @@ class MultiHumanTrainer:
             src_camera_params_over_time=src_camera_params_over_time,
             gt_camera_params_over_time=gt_camera_params_over_time,
         )
-
-        if pose_type == "smplx":
-            pred_mesh_dir = save_dir / "posed_smplx_meshes_per_frame"
-            self._save_posed_smplx_meshes_from_params_dir(
-                pose_tuned_smplx_params_dir,
-                pred_mesh_dir,
-                root_relative=False,
-            )
-            gt_smplx_params_dir = root_dir_to_smplx_dir(self.test_data_dir)
-            gt_mesh_dir = save_dir / "gt_inputs" / "pose" / "gt_smplx_meshes_per_frame"
-            self._save_posed_smplx_meshes_from_params_dir(
-                gt_smplx_params_dir,
-                gt_mesh_dir,
-                root_relative=False,
-                frame_to_transform=gt_to_pred_transform_by_frame,
-            )
 
         # Get pose layers (per-person)
         sample_params = next(iter(pred_fname_to_pose_params.values()), None)
@@ -2859,6 +3050,65 @@ class MultiHumanTrainer:
         # - Finally, for pred and gt, create the pose_layers dict such that we have a list of layers per person
         pose_layers = {"pred": pred_layers, "gt": gt_layers}
 
+        pose_mesh_name = "posed_smplx_meshes_per_frame" if pose_type == "smplx" else "posed_smpl_meshes_per_frame"
+        pred_world_mesh_dir = task_dirs["pred"] / "world_aligned" / pose_mesh_name
+        gt_world_mesh_dir = task_dirs["gt_inputs"] / "world_aligned" / pose_mesh_name
+        pred_root_mesh_dir = task_dirs["pred"] / "root_aligned" / pose_mesh_name
+        gt_root_mesh_dir = task_dirs["gt_inputs"] / "root_aligned" / pose_mesh_name
+
+        if pose_type == "smplx":
+            self._save_posed_smplx_meshes_from_params_dir(
+                pose_tuned_smplx_params_dir,
+                pred_world_mesh_dir,
+                root_relative=False,
+            )
+            gt_smplx_params_dir = root_dir_to_smplx_dir(self.test_data_dir)
+            self._save_posed_smplx_meshes_from_params_dir(
+                gt_smplx_params_dir,
+                gt_world_mesh_dir,
+                root_relative=False,
+                frame_to_transform=gt_to_pred_transform_by_frame,
+            )
+            self._save_posed_smplx_meshes_from_params_dir(
+                pose_tuned_smplx_params_dir,
+                pred_root_mesh_dir,
+                root_relative=True,
+            )
+            self._save_posed_smplx_meshes_from_params_dir(
+                gt_smplx_params_dir,
+                gt_root_mesh_dir,
+                root_relative=True,
+                frame_to_transform=gt_to_pred_transform_by_frame,
+            )
+        else:
+            gt_smpl_params_dir = root_dir_to_smpl_dir(self.test_data_dir)
+            self._save_posed_smpl_meshes_from_params_dir(
+                pose_tuned_smpl_params_dir,
+                pred_world_mesh_dir,
+                smpl_layers=pred_layers,
+                root_relative=False,
+            )
+            self._save_posed_smpl_meshes_from_params_dir(
+                gt_smpl_params_dir,
+                gt_world_mesh_dir,
+                smpl_layers=gt_layers,
+                root_relative=False,
+                frame_to_transform=gt_to_pred_transform_by_frame,
+            )
+            self._save_posed_smpl_meshes_from_params_dir(
+                pose_tuned_smpl_params_dir,
+                pred_root_mesh_dir,
+                smpl_layers=pred_layers,
+                root_relative=True,
+            )
+            self._save_posed_smpl_meshes_from_params_dir(
+                gt_smpl_params_dir,
+                gt_root_mesh_dir,
+                smpl_layers=gt_layers,
+                root_relative=True,
+                frame_to_transform=gt_to_pred_transform_by_frame,
+            )
+
         # Evaluate in batches
         metrics_per_frame = []
         has_contact = False
@@ -2867,13 +3117,13 @@ class MultiHumanTrainer:
             # - Get corresponding gt SMPL-X params
             bsize = len(fnames)
             # -- Loop over batch to get gt SMPL-X params
-            gt_pose_params_dict = {fname: gt_fname_to_pose_params[fname] for fname in fnames}
+            gt_pose_params_dict = {fname: gt_pose_eval_by_key[fname] for fname in fnames}
             # -- Stack the returned GT pose params (union keys, fill missing with zeros)
             gt_batched_pose_params, _ = pose_params_dict_to_batch(gt_pose_params_dict, batch_size=bsize)
             gt_pose_params = gt_batched_pose_params[0]
             # -- Track which frames actually have contact annotations
             contact_mask = torch.tensor(
-                ["contact" in gt_fname_to_pose_params[fname] for fname in fnames],
+                ["contact" in gt_pose_eval_by_key[fname] for fname in fnames],
                 device=self.tuner_device,
             )
 
@@ -2961,7 +3211,7 @@ class MultiHumanTrainer:
         )
         if not has_contact:
             df = df.drop(columns=["cd_mm"])
-        csv_path = save_dir / f"{pose_type}_pose_estimation_metrics_per_frame.csv"
+        csv_path = task_dirs["metrics"] / f"{pose_type}_pose_estimation_metrics_per_frame.csv"
         df.to_csv(csv_path, index=False)
 
         # - save average metrics
@@ -2974,7 +3224,7 @@ class MultiHumanTrainer:
             cd_vals = df["cd_mm"].replace(0.0, np.nan).dropna()
             cd_mean = cd_vals.mean() if not cd_vals.empty else np.nan
             overall_avg["cd_mm"] = 0.0 if pd.isna(cd_mean) else cd_mean
-        overall_avg_path = save_dir / f"{pose_type}_pose_estimation_overall_results.txt"
+        overall_avg_path = task_dirs["metrics"] / f"{pose_type}_pose_estimation_overall_results.txt"
         with open(overall_avg_path, "w") as f:
             for k, v in overall_avg.items():
                 f.write(f"{k}: {v:.4f}\n")
@@ -3013,13 +3263,10 @@ class MultiHumanTrainer:
     @torch.no_grad()
     def eval_loop_qualitative(self, epoch):
 
-        # Prepare directories to save results
-        # - root save directory        
-        save_dir_root : Path = self.evaluation_dir / f"epoch_{epoch:04d}"
-        save_dir_root.mkdir(parents=True, exist_ok=True)
+        task_dirs = self._ensure_eval_task_dirs(epoch, "pose_smplx")
 
         # - posed 3DGS save directory (one file per frame)
-        save_dir_posed_3dgs: Path = save_dir_root / "posed_3dgs_per_frame"
+        save_dir_posed_3dgs: Path = task_dirs["viz"] / "posed_3dgs_per_frame"
         save_dir_posed_3dgs.mkdir(parents=True, exist_ok=True)
 
 
@@ -3030,10 +3277,10 @@ class MultiHumanTrainer:
         pred_loader = DataLoader(
             pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
-        save_dir_smplx: Path = save_dir_root / "smplx"
+        save_dir_smplx: Path = task_dirs["inputs"] / "smplx"
         save_dir_smplx.mkdir(parents=True, exist_ok=True)
         self._save_pose_tuned_smplx_params(pred_dataset, save_dir_smplx)
-        save_dir_posed_smplx_meshes: Path = save_dir_root / "posed_smplx_meshes_per_frame"
+        save_dir_posed_smplx_meshes: Path = task_dirs["pred"] / "posed_smplx_meshes_per_frame"
         save_dir_posed_smplx_meshes.mkdir(parents=True, exist_ok=True)
         posed_smplx_meshes_exist = any(save_dir_posed_smplx_meshes.rglob("*.obj"))
         if posed_smplx_meshes_exist:
@@ -3047,13 +3294,13 @@ class MultiHumanTrainer:
 
         # Fetch configs
         # - cameras
-        save_dir_cameras: Path = save_dir_root / "all_cameras" / f"{src_cam_id}"
+        save_dir_cameras: Path = task_dirs["viz"] / "all_cameras" / f"{src_cam_id}"
         save_dir_cameras.mkdir(parents=True, exist_ok=True)
         # - masked depth maps
-        save_dir_masked_depth: Path = save_dir_root / "masked_depth_maps"
+        save_dir_masked_depth: Path = task_dirs["viz"] / "masked_depth_maps"
         save_dir_masked_depth.mkdir(parents=True, exist_ok=True)
         # - images
-        save_dir_images: Path = save_dir_root / "images" / f"{src_cam_id}"
+        save_dir_images: Path = task_dirs["viz"] / "images" / f"{src_cam_id}"
         save_dir_images.mkdir(parents=True, exist_ok=True)
 
         # For each frame in the prediction dataset, save posed 3dgs, cameras, masked depth maps (if available), and images.
@@ -3136,6 +3383,7 @@ class MultiHumanTrainer:
 
     @torch.no_grad()
     def eval_loop(self, epoch):
+        self._record_evaluated_epoch(epoch)
 
 
         # Quantitative evaluation against provided ground truth

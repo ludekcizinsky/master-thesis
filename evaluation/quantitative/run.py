@@ -107,6 +107,16 @@ def _resolve_epoch_dir(eval_dir: Path, epoch_arg: str) -> Path | None:
     return None
 
 
+def _find_task_file_in_epoch(epoch_dir: Path, filename: str) -> Tuple[Path | None, List[Path]]:
+    candidates = sorted(epoch_dir.rglob(filename))
+    if not candidates:
+        return None, []
+    metrics_candidates = [path for path in candidates if "metrics" in path.parts]
+    preferred_candidates = metrics_candidates if metrics_candidates else candidates
+    preferred = sorted(preferred_candidates)[0]
+    return preferred, candidates
+
+
 def _collect_by_task_and_dataset(
     args: Args,
 ) -> Tuple[Dict[str, Dict[str, Dict[str, Dict[str, float]]]], List[str]]:
@@ -135,9 +145,15 @@ def _collect_by_task_and_dataset(
 
         dataset_name = _dataset_from_scene(scene_name)
         for filename, task_name in TASK_FILES:
-            task_file = epoch_dir / filename
-            if not task_file.is_file():
+            task_file, all_candidates = _find_task_file_in_epoch(epoch_dir, filename)
+            if task_file is None:
                 continue
+            if len(all_candidates) > 1:
+                candidate_str = ", ".join(str(path) for path in all_candidates)
+                warnings.append(
+                    f"Multiple '{filename}' files under {epoch_dir}; using {task_file}. "
+                    f"Candidates: {candidate_str}"
+                )
             metrics = _parse_metrics(task_file)
             if not metrics:
                 warnings.append(f"Skipping empty metrics file: {task_file}")

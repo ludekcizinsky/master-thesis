@@ -93,7 +93,8 @@ regularization:
 # ----------------------------
 nv_gen_epoch: 15 # trigger NV generation at start of epoch 16 (0-based indexing)
 trn_nv_gen:
-  camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
+  num_cameras: 7
+  start_camera_id: 100
   runtime_camera:
     strategy: static_orbit
     body_radius_m: 1.3

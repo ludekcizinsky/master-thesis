@@ -99,3 +99,28 @@ By default, submissions use `training/submit.slurm`.
 - `--slurm.job-name`: Slurm job name
 - `--slurm.slurm-script`: path to Slurm wrapper script
 - `--slurm.array-parallelism`: array concurrency limit
+
+## Novel-View Camera Config
+
+Novel-view training cameras are now configured by count, not by explicit id list.
+
+In `training/configs/train.yaml`:
+
+- `trn_nv_gen.num_cameras`: number of virtual cameras to synthesize
+- `trn_nv_gen.start_camera_id`: first virtual camera id (generated ids are contiguous)
+- `trn_nv_gen.runtime_camera.*`: strategy parameters used to place those cameras
+
+Behavior in trainer:
+
+- Source camera id is resolved from scene metadata (`preprocess/scenes/<scene>.json`, key `cam_id`).
+- Virtual ids are generated as `start_camera_id + i` for `i in [0, num_cameras)`.
+- Source camera id must not collide with generated virtual ids.
+
+Example override:
+
+```bash
+python training/run.py \
+  --scene-name-includes hi4d_pair17_dance \
+  --exp-name my_exp \
+  --overrides trn_nv_gen.num_cameras=5 trn_nv_gen.start_camera_id=200
+```
