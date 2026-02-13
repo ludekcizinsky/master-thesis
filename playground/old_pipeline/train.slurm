@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=v8_taichi
-#SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
-#SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
+#SBATCH --output=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%j.out
+#SBATCH --error=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%j.err
 #SBATCH --time=06:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           

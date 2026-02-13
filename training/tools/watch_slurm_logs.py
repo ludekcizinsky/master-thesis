@@ -12,8 +12,22 @@ from collections import deque
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_SLURM_DIR = Path("/scratch/izar/cizinsky/thesis/slurm")
+try:
+    from utils.path_config import load_runtime_paths
+except Exception:  # pragma: no cover
+    load_runtime_paths = None  # type: ignore[assignment]
+
+if load_runtime_paths is not None:
+    try:
+        DEFAULT_SLURM_DIR = load_runtime_paths(REPO_ROOT / "configs/paths.yaml").slurm_dir
+    except Exception:
+        DEFAULT_SLURM_DIR = Path("/scratch/izar/cizinsky/thesis/misc/slurm")
+else:
+    DEFAULT_SLURM_DIR = Path("/scratch/izar/cizinsky/thesis/misc/slurm")
 
 try:
     from rich.console import Console

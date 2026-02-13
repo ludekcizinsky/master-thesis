@@ -3,14 +3,14 @@
 # ----------------------------
 scene_name: ???
 exp_name: ???
-output_dir: /scratch/izar/cizinsky/thesis/results/${scene_name}
+output_dir: ${oc.env:THESIS_RESULTS_ROOT_DIR,/scratch/izar/cizinsky/thesis/results}/${scene_name}
 
 # ----------------------------
 # Scene / Data Roots
 # ----------------------------
 scene_registry_dir: /home/cizinsky/master-thesis/preprocess/scenes
-canonical_gt_scene_root_dir: /scratch/izar/cizinsky/thesis/gt_scene_data
-preprocessing_dir: /scratch/izar/cizinsky/thesis/v2_preprocessing/${scene_name}
+canonical_gt_scene_root_dir: ${oc.env:THESIS_CANONICAL_GT_ROOT_DIR,/scratch/izar/cizinsky/thesis/gt_scene_data}
+preprocessing_dir: ${oc.env:THESIS_PREPROCESSING_ROOT_DIR,/scratch/izar/cizinsky/thesis/preprocessing}/${scene_name}
 trn_scene_dir: ${preprocessing_dir}
 test_scene_dir: ${canonical_gt_scene_root_dir}/${scene_name}
 
@@ -138,13 +138,13 @@ wandb:
   tags:
     - using_v2_bas_difix
     - eval
-wandb_local_root_dir: /scratch/izar/cizinsky/thesis
+wandb_local_root_dir: ${oc.env:THESIS_WANDB_ROOT_DIR,/scratch/izar/cizinsky/thesis/misc}
 
 torch_home: /scratch/izar/cizinsky/.cache
 hf_home: /scratch/izar/cizinsky/.cache
 
 hydra:
   run:
-    dir: /scratch/izar/cizinsky/thesis/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    dir: ${oc.env:THESIS_HYDRA_ROOT_DIR,/scratch/izar/cizinsky/thesis/misc/hydra}/${now:%Y-%m-%d}_${now:%H-%M-%S}
   job:
     chdir: False

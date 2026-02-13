@@ -15,7 +15,7 @@ cd /home/cizinsky/master-thesis
 # bash submodules/prompthmr/run_inference.sh $estimated_scene_dir
 # python preprocess/vis/check_scene_in_3d.py --scene-dir $estimated_scene_dir --src-cam-id 4 --frame-idx-range 0 10
 
-# estimated_scene_dir=/scratch/izar/cizinsky/thesis/v2_preprocessing/wild_ilia_malinin
+# estimated_scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/wild_ilia_malinin
 # python preprocess/vis/check_scene_in_3d.py --scene-dir $estimated_scene_dir --src-cam-id 0 --frame-idx-range 40 41 --vis-3dgs
 
 eval_scene_dir=/scratch/izar/cizinsky/thesis/results/hi4d_pair15_fight/evaluation/v975_A0b_baseline_combo_all_scenes_eval/epoch_0030

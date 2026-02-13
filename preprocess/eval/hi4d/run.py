@@ -16,6 +16,11 @@ import tyro
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
@@ -36,8 +41,9 @@ class SlurmConfig:
 @dataclass
 class Config:
     repo_dir: Path = REPO_ROOT
+    paths_config: Path = Path("configs/paths.yaml")
     scenes_dir: Optional[Path] = Path("preprocess/scenes")
-    output_root_dir: Path = Path("/scratch/izar/cizinsky/thesis/gt_scene_data")
+    output_root_dir: Optional[Path] = None
     smpl2smplx_script: Path = Path("submodules/smplx/tools/run_conversion.sh")
     ensure_raw_data_script: Path = Path("preprocess/eval/hi4d/helpers/ensure_raw_hi4d_data.py")
     hf_repo_id: str = "ludekcizinsky/hi4d"
@@ -192,6 +198,8 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
     slurm_script = _resolve_repo_path(cfg.repo_dir, cfg.slurm.slurm_script)
     if not slurm_script.exists():
         raise FileNotFoundError(f"Slurm script not found: {slurm_script}")
+    runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+    ensure_runtime_dirs(runtime_paths)
 
     _print_submission_summary(cfg, scenes, slurm_script, array_spec)
     if not _confirm_submit():
@@ -202,6 +210,10 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
         "sbatch",
         "--job-name",
         cfg.slurm.job_name,
+        "--output",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.out"),
+        "--error",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.err"),
         "--array",
         array_spec,
         "--export",
@@ -655,6 +667,10 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
 
 def main() -> None:
     cfg = tyro.cli(Config)
+    if cfg.output_root_dir is None:
+        runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+        cfg.output_root_dir = runtime_paths.canonical_gt_root_dir
+    assert cfg.output_root_dir is not None
     scenes = _filter_scenes(cfg, _load_scenes(cfg))
 
     if cfg.submit:

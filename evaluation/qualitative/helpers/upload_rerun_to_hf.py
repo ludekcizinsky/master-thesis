@@ -14,6 +14,12 @@ from rich.panel import Panel
 from rich.table import Table
 import tyro
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
+
 
 @dataclass
 class CandidateFile:
@@ -27,10 +33,11 @@ class CandidateFile:
 @dataclass
 class Args:
     exp_name: str
+    paths_config: Path = Path("configs/paths.yaml")
     repo_id: str | None = "ludekcizinsky/rerun-exp-eval"
     repo_type: str = "dataset"  # model, dataset, space
     branch: str = "main"
-    results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
+    results_root: Path | None = None
     scene_name_includes: str | None = None
     selection: str = "eval_latest"  # eval_latest, eval_all
     rrd_glob: List[str] = field(default_factory=list)
@@ -347,6 +354,10 @@ def _upload(args: Args, candidates: List[CandidateFile], readmes_by_scene: Dict[
 def main() -> None:
     args = tyro.cli(Args)
     console = Console()
+    runtime_paths = load_runtime_paths(REPO_ROOT / args.paths_config)
+    ensure_runtime_dirs(runtime_paths)
+    if args.results_root is None:
+        args.results_root = runtime_paths.results_root_dir
 
     if args.repo_id is None:
         args.repo_id = os.environ.get("HF_RERUN_REPO_ID")

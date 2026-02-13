@@ -1,0 +1,7 @@
+misc_root_dir: /scratch/izar/cizinsky/thesis/misc
+slurm_dir: ${misc_root_dir}/slurm
+wandb_root_dir: ${misc_root_dir}
+hydra_root_dir: ${misc_root_dir}/hydra
+results_root_dir: /scratch/izar/cizinsky/thesis/results
+preprocessing_root_dir: /scratch/izar/cizinsky/thesis/preprocessing
+canonical_gt_root_dir: /scratch/izar/cizinsky/thesis/gt_scene_data

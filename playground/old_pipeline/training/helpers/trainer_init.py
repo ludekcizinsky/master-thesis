@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def init_logging(cfg):     
-    wandb_path = Path("/scratch/izar/cizinsky/thesis/")
+    wandb_path = Path("/scratch/izar/cizinsky/thesis/misc/wandb")
     os.makedirs(wandb_path, exist_ok=True)
     wandb.init(
         project=cfg.logger.project,
@@ -25,4 +25,3 @@ def init_logging(cfg):
         print("--- FYI: Running in debug mode, wandb logging is disabled.")
     else:
         print(f"--- FYI: Logging to wandb project {cfg.logger.project}, entity {cfg.logger.entity}, group {cfg.group_name}.")
-

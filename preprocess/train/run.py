@@ -12,6 +12,10 @@ import tyro
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
 
 
 @dataclass
@@ -32,7 +36,8 @@ class SlurmConfig:
 @dataclass
 class Config:
     repo_dir: Path = REPO_ROOT
-    preprocess_dir: Path = Path("/scratch/izar/cizinsky/thesis/v2_preprocessing")
+    paths_config: Path = Path("configs/paths.yaml")
+    preprocess_dir: Path | None = None
     infer_scene_script: Path = Path("preprocess/train/helpers/infer_initial_scene.py")
     scenes_dir: Optional[Path] = Path("preprocess/scenes")
     scenes: List[Scene] = field(default_factory=list)
@@ -114,6 +119,8 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
     slurm_script = _resolve_repo_path(cfg.repo_dir, cfg.slurm.slurm_script)
     if not slurm_script.exists():
         raise FileNotFoundError(f"Slurm script not found: {slurm_script}")
+    runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+    ensure_runtime_dirs(runtime_paths)
 
     _print_submission_summary(cfg, scenes, slurm_script, array_spec)
     if not _confirm_submit():
@@ -124,6 +131,10 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
         "sbatch",
         "--job-name",
         cfg.slurm.job_name,
+        "--output",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.out"),
+        "--error",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.err"),
         "--array",
         array_spec,
         "--export",
@@ -220,6 +231,10 @@ def _confirm_submit() -> bool:
 
 def main() -> None:
     cfg = tyro.cli(Config)
+    if cfg.preprocess_dir is None:
+        runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+        ensure_runtime_dirs(runtime_paths)
+        cfg.preprocess_dir = runtime_paths.preprocessing_root_dir
     scenes = _filter_scenes(cfg, _load_scenes(cfg))
 
     if cfg.submit:

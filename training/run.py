@@ -12,6 +12,10 @@ import tyro
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
 
 
 @dataclass
@@ -32,6 +36,7 @@ class SlurmConfig:
 class Config:
     repo_dir: Path = REPO_ROOT
     train_script: Path = Path("training/simple_multi_human_trainer.py")
+    paths_config: Path = Path("configs/paths.yaml")
     scenes_dir: Optional[Path] = Path("preprocess/scenes")
     scenes: List[Scene] = field(default_factory=list)
     exp_name: str = "debug_run"
@@ -170,6 +175,9 @@ def _forwarded_args(argv: Sequence[str]) -> List[str]:
 
 def _run_scene(cfg: Config, scene: Scene) -> None:
     script_path = _resolve_repo_path(cfg.repo_dir, cfg.train_script)
+    runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+    ensure_runtime_dirs(runtime_paths)
+
     cmd = [
         "python",
         str(script_path),
@@ -180,7 +188,13 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
     if cfg.dry_run:
         print(" ".join(cmd))
         return
-    subprocess.run(cmd, check=True, cwd=str(cfg.repo_dir))
+    env = os.environ.copy()
+    env.setdefault("THESIS_WANDB_ROOT_DIR", str(runtime_paths.wandb_root_dir))
+    env.setdefault("THESIS_HYDRA_ROOT_DIR", str(runtime_paths.hydra_root_dir))
+    env.setdefault("THESIS_RESULTS_ROOT_DIR", str(runtime_paths.results_root_dir))
+    env.setdefault("THESIS_PREPROCESSING_ROOT_DIR", str(runtime_paths.preprocessing_root_dir))
+    env.setdefault("THESIS_CANONICAL_GT_ROOT_DIR", str(runtime_paths.canonical_gt_root_dir))
+    subprocess.run(cmd, check=True, cwd=str(cfg.repo_dir), env=env)
 
 
 def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
@@ -193,6 +207,8 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
     slurm_script = _resolve_repo_path(cfg.repo_dir, cfg.slurm.slurm_script)
     if not slurm_script.exists():
         raise FileNotFoundError(f"Slurm script not found: {slurm_script}")
+    runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
+    ensure_runtime_dirs(runtime_paths)
 
     _print_submission_summary(cfg, scenes, slurm_script, array_spec)
     if not _confirm_submit():
@@ -205,10 +221,23 @@ def _submit_array(cfg: Config, scenes: Sequence[Scene]) -> None:
         cfg.slurm.job_name,
         "--time",
         cfg.slurm.time,
+        "--output",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.out"),
+        "--error",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.err"),
         "--array",
         array_spec,
         "--export",
-        "ALL",
+        ",".join(
+            [
+                "ALL",
+                f"THESIS_WANDB_ROOT_DIR={runtime_paths.wandb_root_dir}",
+                f"THESIS_HYDRA_ROOT_DIR={runtime_paths.hydra_root_dir}",
+                f"THESIS_RESULTS_ROOT_DIR={runtime_paths.results_root_dir}",
+                f"THESIS_PREPROCESSING_ROOT_DIR={runtime_paths.preprocessing_root_dir}",
+                f"THESIS_CANONICAL_GT_ROOT_DIR={runtime_paths.canonical_gt_root_dir}",
+            ]
+        ),
         str(slurm_script),
     ]
     cmd.extend(_forwarded_args(sys.argv[1:]))

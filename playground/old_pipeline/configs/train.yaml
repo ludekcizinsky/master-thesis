@@ -134,6 +134,6 @@ logger:
 # --- Hydra settings
 hydra:
   run:
-    dir: /scratch/izar/cizinsky/thesis/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    dir: /scratch/izar/cizinsky/thesis/misc/hydra/${now:%Y-%m-%d}_${now:%H-%M-%S}
   job:
     chdir: False

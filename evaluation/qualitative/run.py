@@ -11,6 +11,12 @@ from rich.console import Console
 from rich.table import Table
 import tyro
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
+
 
 @dataclass
 class SlurmConfig:
@@ -24,7 +30,8 @@ class SlurmConfig:
 class Args:
     exp_dir: Path | None = None
     exp_name: str | None = None
-    results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
+    paths_config: Path = Path("configs/paths.yaml")
+    results_root: Path | None = None
     scene_name_includes: str | None = None
 
     tasks: str = "nvs"  # nvs, pose, trn_nv_generation
@@ -148,12 +155,14 @@ def _submit_array(args: Args, scene_exp_dirs: List[Path], console: Console) -> N
             "Check --exp-name/--results-root/--scene-name-includes."
         )
 
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = REPO_ROOT
     slurm_script = args.slurm.slurm_script
     if not slurm_script.is_absolute():
         slurm_script = repo_root / slurm_script
     if not slurm_script.exists():
         raise FileNotFoundError(f"Slurm script not found: {slurm_script}")
+    runtime_paths = load_runtime_paths(repo_root / args.paths_config)
+    ensure_runtime_dirs(runtime_paths)
 
     array_spec = f"0-{len(scene_exp_dirs) - 1}"
     if args.slurm.array_parallelism is not None:
@@ -182,6 +191,10 @@ def _submit_array(args: Args, scene_exp_dirs: List[Path], console: Console) -> N
         args.slurm.job_name,
         "--time",
         args.slurm.time,
+        "--output",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.out"),
+        "--error",
+        str(runtime_paths.slurm_dir / "%x.%A_%a.err"),
         "--array",
         array_spec,
         "--export",
@@ -303,6 +316,12 @@ def _run_for_exp_dir(args: Args, tasks: List[str], exp_dir: Path, console: Conso
 def main() -> None:
     args = tyro.cli(Args)
     console = Console()
+    runtime_paths = load_runtime_paths(REPO_ROOT / args.paths_config)
+    ensure_runtime_dirs(runtime_paths)
+    if args.results_root is None:
+        args.results_root = runtime_paths.results_root_dir
+    if args.upload_results_root is None:
+        args.upload_results_root = runtime_paths.results_root_dir
     tasks = _parse_tasks(args.tasks)
     scene_exp_dirs = _resolve_scene_exp_dirs(args)
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=v7_eval
-#SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%j.out
-#SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%j.err
+#SBATCH --output=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%j.out
+#SBATCH --error=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%j.err
 #SBATCH --time=01:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8           

@@ -4,11 +4,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 import re
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 import tyro
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.path_config import ensure_runtime_dirs, load_runtime_paths
 
 
 TASK_FILES: List[Tuple[str, str]] = [
@@ -21,7 +28,8 @@ TASK_FILES: List[Tuple[str, str]] = [
 @dataclass
 class Args:
     exp_name: str
-    results_root: Path = Path("/scratch/izar/cizinsky/thesis/results")
+    paths_config: Path = Path("configs/paths.yaml")
+    results_root: Path | None = None
     docs_root: Path = Path("/home/cizinsky/master-thesis/docs/results")
     epoch: str = "all"
     verbose: bool = True
@@ -249,6 +257,10 @@ def _output_rel_name_for_epoch(epoch_arg: str) -> str:
 def main() -> None:
     console = Console()
     args = tyro.cli(Args)
+    runtime_paths = load_runtime_paths(REPO_ROOT / args.paths_config)
+    ensure_runtime_dirs(runtime_paths)
+    if args.results_root is None:
+        args.results_root = runtime_paths.results_root_dir
     sum_folder = args.docs_root / args.exp_name
     output_dir = sum_folder / "quant_results"
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=train_scene
-#SBATCH --output=/scratch/izar/cizinsky/thesis/slurm/%x.%A_%a.out
-#SBATCH --error=/scratch/izar/cizinsky/thesis/slurm/%x.%A_%a.err
+#SBATCH --output=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%A_%a.out
+#SBATCH --error=/scratch/izar/cizinsky/thesis/misc/slurm/%x.%A_%a.err
 #SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

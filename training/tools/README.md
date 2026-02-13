@@ -11,7 +11,7 @@ It can:
 
 - list running jobs from `squeue -u <user>` and let you pick one
 - accept a direct job id via `--jobid`
-- resolve logs under `/scratch/izar/cizinsky/thesis/slurm`
+- resolve logs under `/scratch/izar/cizinsky/thesis/misc/slurm` (from `configs/paths.yaml`)
 - handle array jobs (`<jobid>_<taskid>`)
 - render job selection and startup info with `rich` (falls back to plain text if unavailable)
 
