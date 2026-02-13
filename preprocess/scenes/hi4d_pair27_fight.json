@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair27_fight",
+  "cam_id": 16,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair27/fight27",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair27/fight27/images/16",
+  "ref_frame_idx": 0
+}

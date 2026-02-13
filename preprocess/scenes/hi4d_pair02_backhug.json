@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair02_backhug",
+  "cam_id": 64,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair02/backhug02",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair02/backhug02/images/64",
+  "ref_frame_idx": 0
+}

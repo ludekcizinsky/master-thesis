@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair22_talk",
+  "cam_id": 4,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair22/talk22",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair22/talk22/images/4",
+  "ref_frame_idx": 0
+}

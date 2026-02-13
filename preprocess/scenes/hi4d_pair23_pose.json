@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair23_pose",
+  "cam_id": 88,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair23/pose23",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair23/pose23/images/88",
+  "ref_frame_idx": 0
+}

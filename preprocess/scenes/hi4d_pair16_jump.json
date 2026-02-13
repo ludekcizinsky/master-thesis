@@ -1,8 +1,7 @@
 {
-  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16/images/4",
   "seq_name": "hi4d_pair16_jump",
   "cam_id": 4,
-  "ref_frame_idx": 0,
   "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16",
-  "gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16"
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16/images/4",
+  "ref_frame_idx": 0
 }

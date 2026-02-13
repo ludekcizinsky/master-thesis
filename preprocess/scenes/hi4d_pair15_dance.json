@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair15_dance",
+  "cam_id": 52,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/dance15",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/dance15/images/52",
+  "ref_frame_idx": 0
+}

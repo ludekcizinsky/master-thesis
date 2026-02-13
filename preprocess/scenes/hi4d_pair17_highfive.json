@@ -1,0 +1,7 @@
+{
+  "seq_name": "hi4d_pair17_highfive",
+  "cam_id": 28,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair17/highfive17",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair17/highfive17/images/28",
+  "ref_frame_idx": 0
+}

@@ -1,8 +1,7 @@
 {
-  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/fight15/images/4",
-  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/fight15",
-  "gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/fight15",
   "seq_name": "hi4d_pair15_fight",
-  "cam_id": 4,
+  "cam_id": 52,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/fight15",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair15/fight15/images/52",
   "ref_frame_idx": 0
 }

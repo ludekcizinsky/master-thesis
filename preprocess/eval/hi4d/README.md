@@ -15,10 +15,11 @@ For each selected scene:
 
 1. Reads scene metadata from `preprocess/scenes/*.json`.
 2. Ensures raw GT is available:
-   - downloads scene archive from Hugging Face if needed
-   - extracts archive if target scene dir is empty
-   - handles special `pair19` post-extract moves (`piggyback19`, `highfive19`)
-3. Loads raw GT from `raw_gt_dir_path` (fallback: `gt_dir_path`).
+   - discovers all matching pair archives from Hugging Face (`pairXX*.tar.gz`)
+   - downloads missing archives
+   - extracts archives into the raw root directory
+   - resolves non-standard extracted layouts by linking to expected `raw_gt_dir_path`
+3. Loads raw GT from `raw_gt_dir_path`.
 4. Builds a shared frame set from the intersection of:
    - `images/<cam_id>`
    - `seg/img_seg_mask/<cam_id>/all`
@@ -40,7 +41,9 @@ Each scene JSON in `preprocess/scenes/` should define:
 
 - `seq_name`
 - `cam_id` (reference/source camera)
-- `raw_gt_dir_path` (preferred) or `gt_dir_path`
+- `raw_gt_dir_path` (required)
+- `video_path` (used by train preprocessing)
+- `ref_frame_idx` (typically `0`)
 
 Example:
 
@@ -48,9 +51,41 @@ Example:
 {
   "seq_name": "hi4d_pair16_jump",
   "cam_id": 4,
-  "raw_gt_dir_path": "/scratch/izar/cizinsky/ait_datasets/full/hi4d/pair16/pair16/jump16"
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16/images/4",
+  "ref_frame_idx": 0
 }
 ```
+
+## Scene JSON Helper
+
+Use `preprocess/eval/hi4d/helpers/scene_to_json.py` to generate a scene JSON from a raw scene directory.
+
+The helper:
+
+- infers `seq_name` as `hi4d_<pair>_<action>` from directory names
+- reads `cam_id` from `meta.npz` key `mono_cam`
+- sets `raw_gt_dir_path` to the provided scene dir
+- sets `video_path` to `<raw_gt_dir_path>/images/<cam_id>`
+- sets `ref_frame_idx` (default `0`)
+
+Example:
+
+```bash
+python preprocess/eval/hi4d/helpers/scene_to_json.py \
+  --scene-dir-path /scratch/izar/cizinsky/raw_datasets/hi4d/pair00/yoga00
+```
+
+This writes:
+
+`preprocess/scenes/hi4d_pair00_yoga.json`
+
+Useful flags:
+
+- `--dry-run`
+- `--overwrite false`
+- `--ref-frame-idx <int>`
+- `--scenes-output-dir <path>`
 
 ## Usage
 
@@ -84,7 +119,7 @@ Submit one specific scene to Slurm:
 python preprocess/eval/hi4d/run.py --submit --seq-name-includes hi4d_pair16_jump
 ```
 
-Update `preprocess/scenes/<scene>.json` to point `gt_dir_path` to canonical output:
+Normalize scene registry entries (refresh `raw_gt_dir_path`, remove stale `gt_dir_path`):
 
 ```bash
 python preprocess/eval/hi4d/run.py --run-all --update-scene-registry

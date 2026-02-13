@@ -61,12 +61,12 @@ def _resolve_repo_path(repo_dir: Path, path: Path) -> Path:
 
 
 def _parse_scene_data(data: dict, path: Path) -> Optional[Scene]:
-    required = ["seq_name", "cam_id"]
+    required = ["seq_name", "cam_id", "raw_gt_dir_path"]
     for key in required:
         if key not in data:
             raise ValueError(f"Missing '{key}' in {path}.")
 
-    raw_gt_dir_path = data.get("raw_gt_dir_path", data.get("gt_dir_path"))
+    raw_gt_dir_path = data["raw_gt_dir_path"]
     if raw_gt_dir_path is None or str(raw_gt_dir_path).strip() == "":
         return None
 
@@ -535,7 +535,7 @@ def _maybe_update_scene_registry(cfg: Config, scene: Scene, dst_scene_dir: Path)
     with json_path.open() as f:
         data = json.load(f)
     data["raw_gt_dir_path"] = scene.raw_gt_dir_path
-    data["gt_dir_path"] = str(dst_scene_dir)
+    data.pop("gt_dir_path", None)
     with json_path.open("w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
