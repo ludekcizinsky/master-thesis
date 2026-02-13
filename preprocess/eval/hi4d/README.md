@@ -147,6 +147,7 @@ Canonical output for scene `hi4d_pair16_jump`:
 ├── all_cameras/<cam_id>/*.npz
 ├── smpl/*.npz
 ├── smplx/*.npz
+├── misc/preprocess_info.txt      # run status + timing + frame count (+ traceback on failure)
 ├── meta.npz                      # optional
 └── frame_map.json
 ```

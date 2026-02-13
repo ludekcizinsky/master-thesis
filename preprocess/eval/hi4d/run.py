@@ -5,6 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set
@@ -542,33 +544,113 @@ def _maybe_update_scene_registry(cfg: Config, scene: Scene, dst_scene_dir: Path)
     print(f"Updated scene registry: {json_path}")
 
 
+def _infer_total_frames(scene: Scene, dst_scene_dir: Path) -> int:
+    frame_map_path = dst_scene_dir / "frame_map.json"
+    if frame_map_path.exists():
+        try:
+            with frame_map_path.open("r", encoding="utf-8") as f:
+                frame_map = json.load(f)
+            if isinstance(frame_map, dict) and "num_frames" in frame_map:
+                return int(frame_map["num_frames"])
+        except Exception:
+            pass
+
+    canonical_images = _numeric_stem_to_file(
+        dst_scene_dir / "images" / str(scene.cam_id),
+        IMAGE_SUFFIXES,
+    )
+    if canonical_images:
+        return len(canonical_images)
+
+    raw_images = _numeric_stem_to_file(
+        Path(scene.raw_gt_dir_path) / "images" / str(scene.cam_id),
+        IMAGE_SUFFIXES,
+    )
+    return len(raw_images)
+
+
+def _write_preprocess_info(
+    *,
+    scene: Scene,
+    dst_scene_dir: Path,
+    success: bool,
+    elapsed_seconds: float,
+    total_frames: int,
+    error_text: Optional[str],
+) -> None:
+    misc_dir = dst_scene_dir / "misc"
+    misc_dir.mkdir(parents=True, exist_ok=True)
+    info_path = misc_dir / "preprocess_info.txt"
+
+    lines: List[str] = []
+    lines.append(f"scene_name: {scene.seq_name}")
+    lines.append(f"raw_gt_dir_path: {scene.raw_gt_dir_path}")
+    lines.append(f"output_scene_dir: {dst_scene_dir}")
+    lines.append(f"reference_camera_id: {scene.cam_id}")
+    lines.append(f"status: {'success' if success else 'failed'}")
+    lines.append(f"elapsed_seconds: {elapsed_seconds:.3f}")
+    lines.append(f"total_frames: {total_frames}")
+    if error_text is not None:
+        lines.append("")
+        lines.append("error:")
+        lines.append(error_text.rstrip())
+    lines.append("")
+
+    with info_path.open("w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
 def _run_scene(cfg: Config, scene: Scene) -> None:
     dst_scene_dir = cfg.output_root_dir / scene.seq_name
     print(f"Materializing {scene.seq_name}")
     print(f"  raw_gt_dir_path={scene.raw_gt_dir_path}")
     print(f"  output_scene_dir={dst_scene_dir}")
-    if cfg.ensure_raw_data:
-        ensure_script = _resolve_repo_path(cfg.repo_dir, cfg.ensure_raw_data_script)
-        if not ensure_script.exists():
-            raise FileNotFoundError(f"Raw data ensure script not found: {ensure_script}")
-        ensure_cmd = [
-            "python",
-            str(ensure_script),
-            "--raw-scene-dir",
-            str(scene.raw_gt_dir_path),
-            "--seq-name",
-            scene.seq_name,
-            "--hf-repo-id",
-            cfg.hf_repo_id,
-        ]
+    started_at = time.perf_counter()
+    success = False
+    error_text: Optional[str] = None
+    total_frames = 0
+    try:
+        if cfg.ensure_raw_data:
+            ensure_script = _resolve_repo_path(cfg.repo_dir, cfg.ensure_raw_data_script)
+            if not ensure_script.exists():
+                raise FileNotFoundError(f"Raw data ensure script not found: {ensure_script}")
+            ensure_cmd = [
+                "python",
+                str(ensure_script),
+                "--raw-scene-dir",
+                str(scene.raw_gt_dir_path),
+                "--seq-name",
+                scene.seq_name,
+                "--hf-repo-id",
+                cfg.hf_repo_id,
+            ]
+            if cfg.dry_run:
+                ensure_cmd.append("--dry-run")
+            subprocess.run(ensure_cmd, check=True, cwd=str(cfg.repo_dir))
         if cfg.dry_run:
-            ensure_cmd.append("--dry-run")
-        subprocess.run(ensure_cmd, check=True, cwd=str(cfg.repo_dir))
-    if cfg.dry_run:
-        return
-    materialized_scene_dir = _materialize_scene(cfg, scene)
-    _maybe_generate_smplx_from_smpl(cfg, materialized_scene_dir)
-    _maybe_update_scene_registry(cfg, scene, materialized_scene_dir)
+            return
+        materialized_scene_dir = _materialize_scene(cfg, scene)
+        _maybe_generate_smplx_from_smpl(cfg, materialized_scene_dir)
+        _maybe_update_scene_registry(cfg, scene, materialized_scene_dir)
+        success = True
+    except Exception:
+        error_text = traceback.format_exc()
+        raise
+    finally:
+        if not cfg.dry_run:
+            elapsed = time.perf_counter() - started_at
+            try:
+                total_frames = _infer_total_frames(scene, dst_scene_dir)
+            except Exception:
+                total_frames = 0
+            _write_preprocess_info(
+                scene=scene,
+                dst_scene_dir=dst_scene_dir,
+                success=success,
+                elapsed_seconds=elapsed,
+                total_frames=total_frames,
+                error_text=error_text,
+            )
 
 
 def main() -> None:

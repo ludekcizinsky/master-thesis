@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable, Dict, List, Optional, Tuple
@@ -32,7 +33,6 @@ from preprocess.vis.helpers.cano_3dgs_to_posed import get_posed_3dgs
 @dataclass
 class Config:
     scene_dir: Annotated[Path, tyro.conf.arg(aliases=["--scenes-dir"])]
-    src_cam_id: int = 0
     device: str = "cuda"
     model_folder: Path = Path("/home/cizinsky/body_models")
     smpl_model_ext: str = "pkl"
@@ -118,6 +118,28 @@ def _load_scene_genders(scene_dir: Path) -> Optional[List[str]]:
             g = g.decode("utf-8", errors="ignore")
         normalized.append(_normalize_gender(str(g)))
     return normalized
+
+
+def _load_src_cam_id_from_scene_json(scene_dir: Path) -> int:
+    scene_name = scene_dir.name
+    scene_json_path = REPO_ROOT / "preprocess" / "scenes" / f"{scene_name}.json"
+    if not scene_json_path.is_file():
+        raise FileNotFoundError(
+            f"Scene metadata JSON not found for '{scene_name}': {scene_json_path}"
+        )
+
+    with scene_json_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if "cam_id" not in data:
+        raise KeyError(f"Missing 'cam_id' in {scene_json_path}")
+
+    try:
+        return int(data["cam_id"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid cam_id in {scene_json_path}: {data.get('cam_id')!r}"
+        ) from exc
 
 
 def _pad_or_truncate(vec: torch.Tensor, target_dim: int) -> torch.Tensor:
@@ -964,6 +986,8 @@ def main() -> None:
     cfg = tyro.cli(Config)
     device = torch.device(cfg.device if cfg.device == "cpu" or torch.cuda.is_available() else "cpu")
     seq_name = cfg.scene_dir.name
+    src_cam_id = _load_src_cam_id_from_scene_json(cfg.scene_dir)
+    print(f"[info] Source camera inferred from preprocess/scenes/{seq_name}.json: {src_cam_id}")
 
     # Resolve modality directories.
     smpl_dir = cfg.scene_dir / "smpl"
@@ -1031,7 +1055,7 @@ def main() -> None:
 
     mask_cam_id: Optional[str] = None
     if image_camera_ids:
-        src_id = str(cfg.src_cam_id)
+        src_id = str(src_cam_id)
         mask_cam_id = src_id if src_id in image_camera_ids else image_camera_ids[0]
 
     overlay_cam_id: Optional[str] = None
@@ -1531,7 +1555,7 @@ def main() -> None:
                 w2c[:3, :4] = extr.astype(np.float32)
                 c2w = np.linalg.inv(w2c)
                 fov, aspect = _fov_aspect_from_intrinsics(intr, camera_image_hw.get(cam_id))
-                is_src = cam_id == str(cfg.src_cam_id)
+                is_src = cam_id == str(src_cam_id)
                 color = (30, 144, 255) if is_src else (255, 140, 0)
                 server.scene.add_camera_frustum(
                     f"/scene/cameras/f_{frame_id}/{cam_id}",
