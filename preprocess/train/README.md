@@ -71,3 +71,6 @@ These extra args are forwarded to `sbatch`.
 - The scene list is loaded from `preprocess/scenes/*.json` if present.
 - If the `scenes/` directory is empty or missing, `run.py` falls back to its internal defaults.
 - Filtering uses substring matching on `seq_name`.
+- After each scene run, status is written to:
+  `<preprocessing_root>/<seq_name>/misc/preprocess_info.txt`
+  (status, elapsed time, total frames, and traceback on failure).

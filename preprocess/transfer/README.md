@@ -41,6 +41,9 @@ For `upload` and `sync`, the plan includes per-scene file counts and sizes,
 plus total files and total upload size.
 By default, uploads use `upload_large_folder` for better resilience on large scenes.
 You can disable this with `--no-use-large-upload`.
+By default, `misc/` is excluded from HF `upload`/`sync` (`--exclude-misc`).
+Use `--no-exclude-misc` if you explicitly want to transfer debug artifacts.
+Local data is unchanged; this only affects what is transferred to HF.
 When `upload_large_folder` is used, worker count defaults to:
 `min(max(4, nproc // 2), 16)`.
 Override with `--num-upload-workers <int>`.

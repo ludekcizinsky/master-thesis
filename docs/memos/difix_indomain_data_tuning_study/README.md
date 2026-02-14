@@ -7,6 +7,18 @@ Each version below should document:
 3. key decisions,
 4. expected outputs.
 
+## Fixed Scene Policy (Important)
+
+These scenes are reserved for 3DGS tuning/evaluation and must be excluded from DiFix tuning data:
+1. `hi4d_pair15_fight`
+2. `hi4d_pair16_jump`
+3. `hi4d_pair17_dance`
+4. `hi4d_pair19_piggyback`
+
+Interpretation:
+1. we still preprocess/materialize them (needed by the trainer pipeline),
+2. but we do **not** use them as DiFix train samples.
+
 ## V0 Plan (Ultra-Fast Sanity Check)
 
 Hypothesis:
@@ -18,22 +30,32 @@ Run the fastest possible training/eval loop to validate:
 2. DiFix tuning integration,
 3. downstream NVS evaluation wiring.
 
-### Train Split (V0)
-Use only 2 scenes (non-eval pairs):
+### DiFix Train Split (V0)
+Use only 2 scenes (non-reserved pairs):
 1. `hi4d_pair00_dance`
 2. `hi4d_pair01_talk`
 
-### Test Split (V0)
-Keep fixed evaluation scenes:
+### DiFix Internal Eval Split (V0)
+Use one small held-out scene from a different pair:
+1. `hi4d_pair02_dance`
+
+### Downstream 3DGS Eval Split (Fixed)
+Keep the fixed reserved evaluation scenes:
 1. `hi4d_pair15_fight`
 2. `hi4d_pair16_jump`
 3. `hi4d_pair17_dance`
 4. `hi4d_pair19_piggyback`
 
 ### Why this split
-1. no leakage with eval scenes,
+1. no leakage with reserved downstream eval scenes,
 2. minimal time to first result,
-3. includes two different motion profiles (`dance` vs `talk`).
+3. includes two different motion profiles for tuning (`dance` vs `talk`),
+4. has a tiny but separate DiFix internal eval scene (`pair02`) for quick sanity checks.
+
+### Scenes to Preprocess First (Pragmatic Order)
+1. DiFix tuning: `hi4d_pair00_dance`, `hi4d_pair01_talk`
+2. DiFix internal eval: `hi4d_pair02_dance`
+3. Downstream fixed eval: `hi4d_pair15_fight`, `hi4d_pair16_jump`, `hi4d_pair17_dance`, `hi4d_pair19_piggyback`
 
 ### Expected Output
 1. successful generation of DiFix training samples (`image`, `target_image`, `ref_image`),
@@ -75,7 +97,7 @@ JSON entry format:
 Use a strict split to avoid leakage:
 1. Train split: HI4D train subset scenes.
 2. Test split: HI4D test subset scenes (no scene overlap with train).
-3. Current evaluation scenes:
+3. Reserved downstream evaluation scenes (always excluded from DiFix train):
    - `hi4d_pair15_fight`
    - `hi4d_pair16_jump`
    - `hi4d_pair17_dance`

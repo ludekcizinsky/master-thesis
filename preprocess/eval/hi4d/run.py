@@ -9,16 +9,18 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import tyro
+from PIL import Image
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from preprocess.identity_alignment import IdentityMatchResult, align_identities_from_masks
 from utils.path_config import ensure_runtime_dirs, load_runtime_paths
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
@@ -29,6 +31,7 @@ class Scene:
     seq_name: str
     cam_id: int
     raw_gt_dir_path: str
+    identity_manual_preproc_to_gt: Optional[List[int]] = None
 
 
 @dataclass
@@ -36,6 +39,19 @@ class SlurmConfig:
     job_name: str = "preprocess_eval_hi4d"
     slurm_script: Path = Path("preprocess/eval/hi4d/submit.slurm")
     array_parallelism: Optional[int] = None
+
+
+@dataclass
+class IdentityAlignmentDebugContext:
+    preproc_cam_id: int
+    gt_cam_id: int
+    preproc_mask_root: Path
+    gt_mask_root: Path
+    preproc_track_ids: List[int]
+    gt_track_ids: List[int]
+    frame_pairs: List[Tuple[int, int]]
+    preproc_track_maps: Dict[int, Dict[int, Path]]
+    gt_track_maps: Dict[int, Dict[int, Path]]
 
 
 @dataclass
@@ -48,6 +64,13 @@ class Config:
     ensure_raw_data_script: Path = Path("preprocess/eval/hi4d/helpers/ensure_raw_hi4d_data.py")
     hf_repo_id: str = "ludekcizinsky/hi4d"
     ensure_raw_data: bool = True
+    require_preprocessed_scene_dir: bool = True
+    preprocessing_root_dir: Optional[Path] = None
+    identity_alignment_enabled: bool = True
+    identity_alignment_min_confidence: float = 0.5
+    identity_alignment_max_frames: int = 50
+    identity_alignment_frame_stride: int = 1
+    identity_alignment_only: bool = False
     scenes: List[Scene] = field(default_factory=list)
     seq_name_includes: Optional[str] = None
     seq_name_prefix: str = "hi4d_"
@@ -78,10 +101,25 @@ def _parse_scene_data(data: dict, path: Path) -> Optional[Scene]:
     if raw_gt_dir_path is None or str(raw_gt_dir_path).strip() == "":
         return None
 
+    identity_cfg = data.get("identity_alignment", {})
+    if identity_cfg is None:
+        identity_cfg = {}
+    if not isinstance(identity_cfg, dict):
+        raise ValueError(
+            f"Expected 'identity_alignment' to be an object in {path}, got {type(identity_cfg).__name__}."
+        )
+    manual_map = identity_cfg.get("manual_preproc_to_gt")
+    if manual_map is not None:
+        if not isinstance(manual_map, list) or not all(isinstance(v, int) for v in manual_map):
+            raise ValueError(
+                f"'identity_alignment.manual_preproc_to_gt' must be a list[int] in {path}."
+            )
+
     return Scene(
         seq_name=str(data["seq_name"]),
         cam_id=int(data["cam_id"]),
         raw_gt_dir_path=str(raw_gt_dir_path),
+        identity_manual_preproc_to_gt=manual_map,
     )
 
 
@@ -161,6 +199,13 @@ def _print_submission_summary(
     print(f"  Job name: {cfg.slurm.job_name}")
     print(f"  Array: {array_spec} ({len(scenes)} scenes)")
     print(f"  Output root: {cfg.output_root_dir}")
+    print(f"  Preprocessing root: {cfg.preprocessing_root_dir}")
+    print(f"  Require preprocessing scene: {cfg.require_preprocessed_scene_dir}")
+    print(f"  Identity alignment enabled: {cfg.identity_alignment_enabled}")
+    print(f"  Identity alignment only: {cfg.identity_alignment_only}")
+    if cfg.identity_alignment_enabled:
+        print(f"  Identity min confidence: {cfg.identity_alignment_min_confidence}")
+        print(f"  Identity frame stride/max: {cfg.identity_alignment_frame_stride}/{cfg.identity_alignment_max_frames}")
     if cfg.seq_name_prefix:
         print(f"  Prefix filter: '{cfg.seq_name_prefix}'")
     if cfg.seq_name_includes:
@@ -364,7 +409,410 @@ def _copy_frames_with_map(
     return copied
 
 
-def _materialize_scene(cfg: Config, scene: Scene) -> Path:
+def _resolve_preprocessed_scene_dir(cfg: Config, scene: Scene) -> Path:
+    if cfg.preprocessing_root_dir is None:
+        raise ValueError(
+            "Missing preprocessing_root_dir. Set cfg.preprocessing_root_dir before running."
+        )
+    return cfg.preprocessing_root_dir / scene.seq_name
+
+
+def _collect_numeric_track_ids(mask_root: Path) -> List[int]:
+    if not mask_root.exists():
+        raise FileNotFoundError(f"Missing mask root: {mask_root}")
+    track_ids = sorted(
+        int(p.name)
+        for p in mask_root.iterdir()
+        if p.is_dir() and p.name.isdigit()
+    )
+    if len(track_ids) == 0:
+        raise RuntimeError(f"No numeric person track ids found in {mask_root}")
+    return track_ids
+
+
+def _collect_cam_ids_under_mask_root(mask_root: Path) -> List[int]:
+    if not mask_root.exists():
+        return []
+    return sorted(
+        int(p.name)
+        for p in mask_root.iterdir()
+        if p.is_dir() and p.name.isdigit()
+    )
+
+
+def _resolve_preproc_cam_id(preproc_scene_dir: Path, gt_cam_id: int) -> int:
+    preproc_mask_root = preproc_scene_dir / "seg" / "img_seg_mask"
+    cam_ids = _collect_cam_ids_under_mask_root(preproc_mask_root)
+    if len(cam_ids) == 0:
+        raise RuntimeError(f"No camera masks found in preprocessing scene dir: {preproc_mask_root}")
+    if gt_cam_id not in cam_ids:
+        raise RuntimeError(
+            "Preprocessing/GT camera mismatch for identity alignment. "
+            f"Expected preprocessing masks for cam_id={gt_cam_id}, "
+            f"but available preprocessing cam ids are {cam_ids} in {preproc_mask_root}."
+        )
+    return gt_cam_id
+
+
+def _numeric_stem_to_any_file(path_dir: Path) -> Dict[int, Path]:
+    if not path_dir.exists():
+        return {}
+    out: Dict[int, Path] = {}
+    for p in sorted(path_dir.iterdir()):
+        if not p.is_file():
+            continue
+        if not p.stem.isdigit():
+            continue
+        out[int(p.stem)] = p
+    return out
+
+
+def _load_binary_mask(path: Path) -> np.ndarray:
+    with Image.open(path) as img:
+        arr = np.array(img.convert("L"))
+    return arr > 0
+
+
+def _sample_aligned_frame_pairs_for_identity_alignment(
+    *,
+    preproc_mask_root: Path,
+    preproc_track_ids: Sequence[int],
+    gt_mask_root: Path,
+    gt_track_ids: Sequence[int],
+    frame_stride: int,
+    max_frames: int,
+) -> List[Tuple[int, int]]:
+    preproc_all = _numeric_stem_to_any_file(preproc_mask_root / "all")
+    gt_all = _numeric_stem_to_any_file(gt_mask_root / "all")
+    preproc_all_ids = sorted(preproc_all.keys())
+    gt_all_ids = sorted(gt_all.keys())
+    if len(preproc_all_ids) == 0 or len(gt_all_ids) == 0:
+        raise RuntimeError(
+            "Missing frame ids in 'all' masks for identity alignment. "
+            f"preproc_count={len(preproc_all_ids)}, gt_count={len(gt_all_ids)}."
+        )
+
+    # Keep only frames where every compared track exists in each source.
+    preproc_track_maps = {
+        int(tid): _numeric_stem_to_any_file(preproc_mask_root / str(tid)) for tid in preproc_track_ids
+    }
+    gt_track_maps = {
+        int(tid): _numeric_stem_to_any_file(gt_mask_root / str(tid)) for tid in gt_track_ids
+    }
+
+    valid_preproc_ids: List[int] = []
+    for fid in preproc_all_ids:
+        if all(fid in preproc_track_maps[int(tid)] for tid in preproc_track_ids):
+            valid_preproc_ids.append(fid)
+
+    valid_gt_ids: List[int] = []
+    for fid in gt_all_ids:
+        if all(fid in gt_track_maps[int(tid)] for tid in gt_track_ids):
+            valid_gt_ids.append(fid)
+
+    if len(valid_preproc_ids) == 0 or len(valid_gt_ids) == 0:
+        raise RuntimeError(
+            "No valid frames found for identity alignment after requiring per-track mask availability. "
+            f"valid_preproc={len(valid_preproc_ids)}, valid_gt={len(valid_gt_ids)}."
+        )
+
+    # Temporal alignment by order: k-th valid preproc frame with k-th valid GT frame.
+    n_pairs = min(len(valid_preproc_ids), len(valid_gt_ids))
+    aligned_pairs = list(zip(valid_preproc_ids[:n_pairs], valid_gt_ids[:n_pairs]))
+
+    frame_stride = max(1, int(frame_stride))
+    aligned_pairs = aligned_pairs[::frame_stride]
+    if max_frames > 0:
+        aligned_pairs = aligned_pairs[:max_frames]
+    if len(aligned_pairs) == 0:
+        raise RuntimeError("Identity alignment frame sampling produced zero aligned frame pairs.")
+    return aligned_pairs
+
+
+def _compute_person_id_alignment(
+    *,
+    cfg: Config,
+    scene: Scene,
+    src_scene_dir: Path,
+    preproc_scene_dir: Path,
+) -> Tuple[IdentityMatchResult, IdentityAlignmentDebugContext]:
+    preproc_cam_id = _resolve_preproc_cam_id(preproc_scene_dir, scene.cam_id)
+    print(
+        "Identity alignment camera selection: "
+        f"preproc_cam_id={preproc_cam_id}, gt_cam_id={scene.cam_id}"
+    )
+    preproc_mask_root = preproc_scene_dir / "seg" / "img_seg_mask" / str(preproc_cam_id)
+    gt_mask_root = src_scene_dir / "seg" / "img_seg_mask" / str(scene.cam_id)
+    preproc_track_ids = _collect_numeric_track_ids(preproc_mask_root)
+    gt_track_ids = _collect_numeric_track_ids(gt_mask_root)
+    if len(preproc_track_ids) != len(gt_track_ids):
+        raise RuntimeError(
+            "Preprocessing and GT person counts differ. "
+            f"preproc={len(preproc_track_ids)} ({preproc_track_ids}), "
+            f"gt={len(gt_track_ids)} ({gt_track_ids})."
+        )
+
+    frame_pairs = _sample_aligned_frame_pairs_for_identity_alignment(
+        preproc_mask_root=preproc_mask_root,
+        preproc_track_ids=preproc_track_ids,
+        gt_mask_root=gt_mask_root,
+        gt_track_ids=gt_track_ids,
+        frame_stride=cfg.identity_alignment_frame_stride,
+        max_frames=cfg.identity_alignment_max_frames,
+    )
+    print(
+        "Identity alignment temporal pairing: "
+        f"n_pairs={len(frame_pairs)}, "
+        f"first=(preproc:{frame_pairs[0][0]:06d}, gt:{frame_pairs[0][1]:06d}), "
+        f"last=(preproc:{frame_pairs[-1][0]:06d}, gt:{frame_pairs[-1][1]:06d})"
+    )
+    frame_tokens = [str(idx) for idx in range(len(frame_pairs))]
+
+    preproc_track_maps = {
+        int(tid): _numeric_stem_to_any_file(preproc_mask_root / str(tid)) for tid in preproc_track_ids
+    }
+    gt_track_maps = {
+        int(tid): _numeric_stem_to_any_file(gt_mask_root / str(tid)) for tid in gt_track_ids
+    }
+
+    def _get_preproc_mask(person_id: int, frame_name: str) -> np.ndarray:
+        pair_idx = int(frame_name)
+        preproc_frame_id, _ = frame_pairs[pair_idx]
+        return _load_binary_mask(preproc_track_maps[person_id][preproc_frame_id])
+
+    def _get_gt_mask(person_id: int, frame_name: str) -> np.ndarray:
+        pair_idx = int(frame_name)
+        _, gt_frame_id = frame_pairs[pair_idx]
+        return _load_binary_mask(gt_track_maps[person_id][gt_frame_id])
+
+    result = align_identities_from_masks(
+        preproc_person_ids=preproc_track_ids,
+        gt_person_ids=gt_track_ids,
+        frame_names=frame_tokens,
+        get_preproc_mask=_get_preproc_mask,
+        get_gt_mask=_get_gt_mask,
+        min_confidence=float(cfg.identity_alignment_min_confidence),
+        manual_preproc_to_gt=scene.identity_manual_preproc_to_gt,
+        raise_on_low_confidence=False,
+    )
+    debug_context = IdentityAlignmentDebugContext(
+        preproc_cam_id=preproc_cam_id,
+        gt_cam_id=scene.cam_id,
+        preproc_mask_root=preproc_mask_root,
+        gt_mask_root=gt_mask_root,
+        preproc_track_ids=[int(v) for v in preproc_track_ids],
+        gt_track_ids=[int(v) for v in gt_track_ids],
+        frame_pairs=frame_pairs,
+        preproc_track_maps=preproc_track_maps,
+        gt_track_maps=gt_track_maps,
+    )
+    return result, debug_context
+
+
+def _compute_mask_iou(path_a: Path, path_b: Path) -> float:
+    a = _load_binary_mask(path_a)
+    b = _load_binary_mask(path_b)
+    union = np.logical_or(a, b).sum()
+    if union == 0:
+        return 1.0
+    inter = np.logical_and(a, b).sum()
+    return float(inter) / float(union)
+
+
+def _write_identity_alignment_debug(
+    *,
+    scene: Scene,
+    misc_dir: Path,
+    result: IdentityMatchResult,
+    debug_context: IdentityAlignmentDebugContext,
+) -> Path:
+    misc_dir.mkdir(parents=True, exist_ok=True)
+    debug_root = misc_dir / "identity_alignment_debug"
+    if debug_root.exists():
+        shutil.rmtree(debug_root)
+    debug_root.mkdir(parents=True, exist_ok=True)
+
+    pair_debug: List[Dict[str, Any]] = []
+    for row_idx, matched_gt_id in enumerate(result.preproc_to_gt):
+        preproc_pid = int(result.preproc_person_ids[row_idx])
+        iou_records: List[Tuple[int, int, float, Path, Path]] = []
+        for preproc_frame_id, gt_frame_id in debug_context.frame_pairs:
+            preproc_mask_path = debug_context.preproc_track_maps[preproc_pid][preproc_frame_id]
+            gt_mask_path = debug_context.gt_track_maps[int(matched_gt_id)][gt_frame_id]
+            iou = _compute_mask_iou(preproc_mask_path, gt_mask_path)
+            iou_records.append((preproc_frame_id, gt_frame_id, iou, preproc_mask_path, gt_mask_path))
+
+        iou_records.sort(key=lambda x: x[2])
+        worst = iou_records[0]
+        best = iou_records[-1]
+
+        pair_dir = debug_root / f"preproc_{preproc_pid}_to_gt_{matched_gt_id}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+
+        worst_preproc_copy = pair_dir / f"worst_preproc_{worst[0]:06d}_gt_{worst[1]:06d}.png"
+        worst_gt_copy = pair_dir / f"worst_gt_{worst[1]:06d}_preproc_{worst[0]:06d}.png"
+        best_preproc_copy = pair_dir / f"best_preproc_{best[0]:06d}_gt_{best[1]:06d}.png"
+        best_gt_copy = pair_dir / f"best_gt_{best[1]:06d}_preproc_{best[0]:06d}.png"
+        shutil.copy2(worst[3], worst_preproc_copy)
+        shutil.copy2(worst[4], worst_gt_copy)
+        shutil.copy2(best[3], best_preproc_copy)
+        shutil.copy2(best[4], best_gt_copy)
+
+        pair_debug.append(
+            {
+                "preproc_person_id": preproc_pid,
+                "matched_gt_person_id": int(matched_gt_id),
+                "pair_confidence": float(result.pair_confidences[row_idx]),
+                "worst_match": {
+                    "preproc_frame_name": f"{worst[0]:06d}",
+                    "gt_frame_name": f"{worst[1]:06d}",
+                    "iou": float(worst[2]),
+                    "preproc_mask_path": str(worst[3]),
+                    "gt_mask_path": str(worst[4]),
+                    "debug_preproc_mask_copy": str(worst_preproc_copy),
+                    "debug_gt_mask_copy": str(worst_gt_copy),
+                },
+                "best_match": {
+                    "preproc_frame_name": f"{best[0]:06d}",
+                    "gt_frame_name": f"{best[1]:06d}",
+                    "iou": float(best[2]),
+                    "preproc_mask_path": str(best[3]),
+                    "gt_mask_path": str(best[4]),
+                    "debug_preproc_mask_copy": str(best_preproc_copy),
+                    "debug_gt_mask_copy": str(best_gt_copy),
+                },
+            }
+        )
+
+    out_path = misc_dir / "identity_alignment_debug.json"
+    payload = {
+        "scene_name": scene.seq_name,
+        "preproc_cam_id": debug_context.preproc_cam_id,
+        "gt_cam_id": debug_context.gt_cam_id,
+        "method": result.method,
+        "preproc_person_ids": result.preproc_person_ids,
+        "gt_person_ids": result.gt_person_ids,
+        "preproc_to_gt": result.preproc_to_gt,
+        "pair_confidences": result.pair_confidences,
+        "confidence_min": result.confidence_min,
+        "confidence_mean": result.confidence_mean,
+        "n_frames_used": result.n_frames_used,
+        "frame_pairs": [
+            {"preproc_frame_name": f"{pre_id:06d}", "gt_frame_name": f"{gt_id:06d}"}
+            for pre_id, gt_id in debug_context.frame_pairs
+        ],
+        "similarity_matrix": result.similarity_matrix,
+        "pair_debug": pair_debug,
+    }
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    return out_path
+
+
+def _copy_smpl_with_person_map(
+    smpl_map: Dict[int, Path],
+    frame_old_to_new: Dict[int, int],
+    dst_dir: Path,
+    num_digits: int,
+    preproc_to_gt: Optional[Sequence[int]],
+) -> int:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    person_keys = {
+        "betas",
+        "root_pose",
+        "global_orient",
+        "body_pose",
+        "trans",
+        "transl",
+        "jaw_pose",
+        "leye_pose",
+        "reye_pose",
+        "lhand_pose",
+        "rhand_pose",
+        "expr",
+        "expression",
+        "contact",
+    }
+    person_index = None if preproc_to_gt is None else np.asarray(preproc_to_gt, dtype=np.int64)
+    for old_id, new_id in frame_old_to_new.items():
+        src = smpl_map.get(old_id)
+        if src is None:
+            continue
+        with np.load(src, allow_pickle=True) as data:
+            payload: Dict[str, Any] = {}
+            for key in data.files:
+                value = data[key]
+                if (
+                    person_index is not None
+                    and key in person_keys
+                    and isinstance(value, np.ndarray)
+                    and value.ndim >= 1
+                    and value.shape[0] == person_index.shape[0]
+                ):
+                    payload[key] = value[person_index]
+                else:
+                    payload[key] = value
+        dst = dst_dir / f"{new_id:0{num_digits}d}.npz"
+        np.savez(dst, **payload)
+        copied += 1
+    return copied
+
+
+def _copy_meta_with_person_map(
+    src_meta_path: Path,
+    dst_meta_path: Path,
+    preproc_to_gt: Optional[Sequence[int]],
+) -> None:
+    if preproc_to_gt is None:
+        shutil.copy2(src_meta_path, dst_meta_path)
+        return
+    person_index = np.asarray(preproc_to_gt, dtype=np.int64)
+    person_meta_keys = {"genders", "gender", "person_ids", "person_id"}
+    with np.load(src_meta_path, allow_pickle=True) as data:
+        payload: Dict[str, Any] = {}
+        for key in data.files:
+            value = data[key]
+            if (
+                key in person_meta_keys
+                and isinstance(value, np.ndarray)
+                and value.ndim >= 1
+                and value.shape[0] == person_index.shape[0]
+            ):
+                payload[key] = value[person_index]
+            else:
+                payload[key] = value
+    np.savez(dst_meta_path, **payload)
+
+
+def _write_person_id_map(dst_scene_dir: Path, result: IdentityMatchResult) -> None:
+    misc_dir = dst_scene_dir / "misc"
+    misc_dir.mkdir(parents=True, exist_ok=True)
+    out_path = misc_dir / "person_id_map.json"
+    payload = {
+        "preproc_person_ids": result.preproc_person_ids,
+        "gt_person_ids": result.gt_person_ids,
+        "preproc_to_gt": result.preproc_to_gt,
+        "gt_to_preproc": result.gt_to_preproc,
+        "pair_confidences": result.pair_confidences,
+        "confidence_min": result.confidence_min,
+        "confidence_mean": result.confidence_mean,
+        "n_frames_used": result.n_frames_used,
+        "used_manual_override": result.used_manual_override,
+        "method": result.method,
+        "similarity_matrix": result.similarity_matrix,
+    }
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+
+
+def _materialize_scene(
+    cfg: Config,
+    scene: Scene,
+    preproc_to_gt: Optional[Sequence[int]] = None,
+) -> Path:
     src_scene_dir = Path(scene.raw_gt_dir_path)
     if not src_scene_dir.exists():
         raise FileNotFoundError(f"Raw GT scene root does not exist: {src_scene_dir}")
@@ -423,18 +871,58 @@ def _materialize_scene(cfg: Config, scene: Scene) -> Path:
         track_dirs = sorted([p for p in src_mask_root.iterdir() if p.is_dir()])
         if not track_dirs:
             raise RuntimeError(f"No segmentation track dirs in {src_mask_root}")
-        for track_dir in track_dirs:
-            src_track_map = _numeric_stem_to_file(track_dir, {".png", ".jpg", ".jpeg"})
-            copied_masks = _copy_frames_with_map(
-                src_track_map,
-                frame_old_to_new,
-                dst_scene_dir / "seg" / "img_seg_mask" / str(cam_id) / track_dir.name,
-                cfg.frame_name_num_digits,
-            )
-            if copied_masks != len(frame_old_to_new):
-                raise RuntimeError(
-                    f"Copied {copied_masks}/{len(frame_old_to_new)} masks for cam {cam_id} track '{track_dir.name}'."
+        if preproc_to_gt is None:
+            for track_dir in track_dirs:
+                src_track_map = _numeric_stem_to_file(track_dir, {".png", ".jpg", ".jpeg"})
+                copied_masks = _copy_frames_with_map(
+                    src_track_map,
+                    frame_old_to_new,
+                    dst_scene_dir / "seg" / "img_seg_mask" / str(cam_id) / track_dir.name,
+                    cfg.frame_name_num_digits,
                 )
+                if copied_masks != len(frame_old_to_new):
+                    raise RuntimeError(
+                        f"Copied {copied_masks}/{len(frame_old_to_new)} masks for cam {cam_id} track '{track_dir.name}'."
+                    )
+        else:
+            numeric_track_dirs = {
+                int(p.name): p for p in track_dirs if p.name.isdigit()
+            }
+            if set(numeric_track_dirs.keys()) != set(int(v) for v in preproc_to_gt):
+                raise RuntimeError(
+                    f"GT numeric track ids in {src_mask_root} do not match identity mapping. "
+                    f"tracks={sorted(numeric_track_dirs.keys())}, mapping={list(preproc_to_gt)}"
+                )
+
+            all_track_dir = src_mask_root / "all"
+            if all_track_dir.exists():
+                all_map = _numeric_stem_to_file(all_track_dir, {".png", ".jpg", ".jpeg"})
+                copied_all = _copy_frames_with_map(
+                    all_map,
+                    frame_old_to_new,
+                    dst_scene_dir / "seg" / "img_seg_mask" / str(cam_id) / "all",
+                    cfg.frame_name_num_digits,
+                )
+                if copied_all != len(frame_old_to_new):
+                    raise RuntimeError(
+                        f"Copied {copied_all}/{len(frame_old_to_new)} masks for cam {cam_id} track 'all'."
+                    )
+
+            for preproc_pid, gt_pid in enumerate(preproc_to_gt):
+                src_track_map = _numeric_stem_to_file(
+                    numeric_track_dirs[int(gt_pid)], {".png", ".jpg", ".jpeg"}
+                )
+                copied_masks = _copy_frames_with_map(
+                    src_track_map,
+                    frame_old_to_new,
+                    dst_scene_dir / "seg" / "img_seg_mask" / str(cam_id) / str(preproc_pid),
+                    cfg.frame_name_num_digits,
+                )
+                if copied_masks != len(frame_old_to_new):
+                    raise RuntimeError(
+                        f"Copied {copied_masks}/{len(frame_old_to_new)} masks for cam {cam_id} "
+                        f"track '{preproc_pid}' (from GT '{gt_pid}')."
+                    )
 
         dst_cam_dir = dst_scene_dir / "all_cameras" / str(cam_id)
         src_cam_map = _numeric_stem_to_file(src_scene_dir / "all_cameras" / str(cam_id), {".npz"})
@@ -473,18 +961,23 @@ def _materialize_scene(cfg: Config, scene: Scene) -> Path:
                 )
 
     # Copy root-level SMPL params. SMPL-X is generated afterwards from these canonical SMPL files.
-    copied_smpl = _copy_frames_with_map(
+    copied_smpl = _copy_smpl_with_person_map(
         smpl_map,
         frame_old_to_new,
         dst_scene_dir / "smpl",
         cfg.frame_name_num_digits,
+        preproc_to_gt=preproc_to_gt,
     )
     if copied_smpl != len(frame_old_to_new):
         raise RuntimeError(f"Copied {copied_smpl}/{len(frame_old_to_new)} SMPL files.")
 
     # Optional metadata.
     if cfg.include_meta and (src_scene_dir / "meta.npz").exists():
-        shutil.copy2(src_scene_dir / "meta.npz", dst_scene_dir / "meta.npz")
+        _copy_meta_with_person_map(
+            src_scene_dir / "meta.npz",
+            dst_scene_dir / "meta.npz",
+            preproc_to_gt=preproc_to_gt,
+        )
 
     # Keep traceability between canonical names and raw ids.
     frame_map = {
@@ -614,8 +1107,14 @@ def _write_preprocess_info(
 
 def _run_scene(cfg: Config, scene: Scene) -> None:
     dst_scene_dir = cfg.output_root_dir / scene.seq_name
+    preproc_scene_dir = _resolve_preprocessed_scene_dir(cfg, scene)
+    if cfg.require_preprocessed_scene_dir and not preproc_scene_dir.exists():
+        raise FileNotFoundError(
+            f"Missing preprocessing scene directory for '{scene.seq_name}': {preproc_scene_dir}"
+        )
     print(f"Materializing {scene.seq_name}")
     print(f"  raw_gt_dir_path={scene.raw_gt_dir_path}")
+    print(f"  preprocessing_scene_dir={preproc_scene_dir}")
     print(f"  output_scene_dir={dst_scene_dir}")
     started_at = time.perf_counter()
     success = False
@@ -641,7 +1140,54 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
             subprocess.run(ensure_cmd, check=True, cwd=str(cfg.repo_dir))
         if cfg.dry_run:
             return
-        materialized_scene_dir = _materialize_scene(cfg, scene)
+        identity_result: Optional[IdentityMatchResult] = None
+        identity_debug_context: Optional[IdentityAlignmentDebugContext] = None
+        if cfg.identity_alignment_enabled:
+            src_scene_dir = Path(scene.raw_gt_dir_path)
+            identity_result, identity_debug_context = _compute_person_id_alignment(
+                cfg=cfg,
+                scene=scene,
+                src_scene_dir=src_scene_dir,
+                preproc_scene_dir=preproc_scene_dir,
+            )
+            if (
+                not identity_result.used_manual_override
+                and identity_result.confidence_min < float(cfg.identity_alignment_min_confidence)
+            ):
+                debug_path = _write_identity_alignment_debug(
+                    scene=scene,
+                    misc_dir=dst_scene_dir / "misc",
+                    result=identity_result,
+                    debug_context=identity_debug_context,
+                )
+                raise RuntimeError(
+                    "Automatic identity matching confidence below threshold. "
+                    f"confidence_min={identity_result.confidence_min:.4f} < "
+                    f"min_confidence={float(cfg.identity_alignment_min_confidence):.4f}. "
+                    f"Suggested manual_preproc_to_gt={identity_result.preproc_to_gt}. "
+                    f"Debug saved to {debug_path}."
+                )
+            print(
+                "Identity alignment resolved: "
+                f"preproc_to_gt={identity_result.preproc_to_gt}, "
+                f"confidence_min={identity_result.confidence_min:.4f}, "
+                f"method={identity_result.method}"
+            )
+
+        materialized_scene_dir = _materialize_scene(
+            cfg,
+            scene,
+            preproc_to_gt=identity_result.preproc_to_gt if identity_result is not None else None,
+        )
+        if identity_result is not None:
+            _write_person_id_map(materialized_scene_dir, identity_result)
+            if identity_debug_context is not None:
+                _write_identity_alignment_debug(
+                    scene=scene,
+                    misc_dir=materialized_scene_dir / "misc",
+                    result=identity_result,
+                    debug_context=identity_debug_context,
+                )
         _maybe_generate_smplx_from_smpl(cfg, materialized_scene_dir)
         _maybe_update_scene_registry(cfg, scene, materialized_scene_dir)
         success = True
@@ -665,11 +1211,86 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
             )
 
 
+def _run_scene_identity_alignment_check(cfg: Config, scene: Scene) -> None:
+    preproc_scene_dir = _resolve_preprocessed_scene_dir(cfg, scene)
+    if cfg.require_preprocessed_scene_dir and not preproc_scene_dir.exists():
+        raise FileNotFoundError(
+            f"Missing preprocessing scene directory for '{scene.seq_name}': {preproc_scene_dir}"
+        )
+
+    print(f"Identity check: {scene.seq_name}")
+    print(f"  raw_gt_dir_path={scene.raw_gt_dir_path}")
+    print(f"  preprocessing_scene_dir={preproc_scene_dir}")
+
+    if cfg.ensure_raw_data:
+        ensure_script = _resolve_repo_path(cfg.repo_dir, cfg.ensure_raw_data_script)
+        if not ensure_script.exists():
+            raise FileNotFoundError(f"Raw data ensure script not found: {ensure_script}")
+        ensure_cmd = [
+            "python",
+            str(ensure_script),
+            "--raw-scene-dir",
+            str(scene.raw_gt_dir_path),
+            "--seq-name",
+            scene.seq_name,
+            "--hf-repo-id",
+            cfg.hf_repo_id,
+        ]
+        if cfg.dry_run:
+            ensure_cmd.append("--dry-run")
+        subprocess.run(ensure_cmd, check=True, cwd=str(cfg.repo_dir))
+    if cfg.dry_run:
+        return
+
+    if not cfg.identity_alignment_enabled:
+        raise ValueError(
+            "identity_alignment_only requires identity_alignment_enabled=true."
+        )
+
+    result, debug_context = _compute_person_id_alignment(
+        cfg=cfg,
+        scene=scene,
+        src_scene_dir=Path(scene.raw_gt_dir_path),
+        preproc_scene_dir=preproc_scene_dir,
+    )
+    debug_path = _write_identity_alignment_debug(
+        scene=scene,
+        misc_dir=(cfg.output_root_dir / scene.seq_name / "misc"),
+        result=result,
+        debug_context=debug_context,
+    )
+    if (
+        not result.used_manual_override
+        and result.confidence_min < float(cfg.identity_alignment_min_confidence)
+    ):
+        raise RuntimeError(
+            "Automatic identity matching confidence below threshold. "
+            f"confidence_min={result.confidence_min:.4f} < "
+            f"min_confidence={float(cfg.identity_alignment_min_confidence):.4f}. "
+            f"Suggested manual_preproc_to_gt={result.preproc_to_gt}. "
+            f"Debug saved to {debug_path}."
+        )
+    print(
+        "Identity alignment check passed: "
+        f"preproc_to_gt={result.preproc_to_gt}, "
+        f"confidence_min={result.confidence_min:.4f}, "
+        f"confidence_mean={result.confidence_mean:.4f}, "
+        f"n_frames_used={result.n_frames_used}, "
+        f"method={result.method}, "
+        f"debug={debug_path}"
+    )
+    print("Similarity matrix (rows=preproc ids, cols=gt ids):")
+    for row in result.similarity_matrix:
+        print("  " + " ".join(f"{v:.4f}" for v in row))
+
+
 def main() -> None:
     cfg = tyro.cli(Config)
+    runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
     if cfg.output_root_dir is None:
-        runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
         cfg.output_root_dir = runtime_paths.canonical_gt_root_dir
+    if cfg.preprocessing_root_dir is None:
+        cfg.preprocessing_root_dir = runtime_paths.preprocessing_root_dir
     assert cfg.output_root_dir is not None
     scenes = _filter_scenes(cfg, _load_scenes(cfg))
 
@@ -678,14 +1299,15 @@ def main() -> None:
         return
 
     scene_index = _resolve_scene_index()
+    run_one_scene = _run_scene_identity_alignment_check if cfg.identity_alignment_only else _run_scene
     if cfg.run_all:
         for scene in scenes:
-            _run_scene(cfg, scene)
+            run_one_scene(cfg, scene)
         return
 
     if scene_index is None:
         if len(scenes) == 1:
-            _run_scene(cfg, scenes[0])
+            run_one_scene(cfg, scenes[0])
             return
         if not scenes:
             print("No scenes matched the filter.")
@@ -695,7 +1317,7 @@ def main() -> None:
 
     if scene_index < 0 or scene_index >= len(scenes):
         raise IndexError(f"Scene index {scene_index} out of range (0..{len(scenes)-1}).")
-    _run_scene(cfg, scenes[scene_index])
+    run_one_scene(cfg, scenes[scene_index])
 
 
 if __name__ == "__main__":

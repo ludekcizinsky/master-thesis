@@ -34,6 +34,15 @@ For each selected scene:
    - `meta.npz` (if present)
 7. Runs SMPL -> SMPL-X conversion in the canonical scene dir.
 8. Writes `frame_map.json` with `old_to_new` and `new_to_old` frame mappings.
+9. Aligns GT person identity order to preprocessing identity order (if enabled):
+   - requires corresponding preprocessing scene dir under `${preprocessing_root_dir}/${seq_name}`
+   - computes `preproc_to_gt` mapping from segmentation mask IoU
+   - aligns frames temporally by order (k-th valid preproc frame ↔ k-th valid GT frame), not by identical raw frame name
+   - fails if confidence is below threshold unless manual override is provided
+   - reorders person-indexed GT modalities (seg tracks, SMPL params, selected meta keys)
+   - writes `misc/person_id_map.json` with mapping + confidences
+   - writes `misc/identity_alignment_debug.json` + `misc/identity_alignment_debug/`:
+     lowest/highest IoU frame examples per matched identity pair
 
 ## Scene JSON requirements
 
@@ -54,6 +63,21 @@ Example:
   "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16",
   "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16/images/4",
   "ref_frame_idx": 0
+}
+```
+
+Optional manual override (used only when auto-matching is ambiguous):
+
+```json
+{
+  "seq_name": "hi4d_pair16_jump",
+  "cam_id": 4,
+  "raw_gt_dir_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16",
+  "video_path": "/scratch/izar/cizinsky/raw_datasets/hi4d/pair16/jump16/images/4",
+  "ref_frame_idx": 0,
+  "identity_alignment": {
+    "manual_preproc_to_gt": [1, 0]
+  }
 }
 ```
 
@@ -95,6 +119,14 @@ Run one scene locally:
 python preprocess/eval/hi4d/run.py --seq-name-includes hi4d_pair16_jump
 ```
 
+Run identity-alignment check only (no GT materialization):
+
+```bash
+python preprocess/eval/hi4d/run.py \
+  --seq-name-includes hi4d_pair16_jump \
+  --identity-alignment-only
+```
+
 Dry-run one scene:
 
 ```bash
@@ -129,6 +161,13 @@ python preprocess/eval/hi4d/run.py --run-all --update-scene-registry
 
 - `output_root_dir`: canonical GT root (default `/scratch/izar/cizinsky/thesis/gt_scene_data`)
 - `ensure_raw_data`: auto-download/extract raw scene before materialization
+- `require_preprocessed_scene_dir`: require `${preprocessing_root_dir}/${seq_name}` to exist before materialization
+- `preprocessing_root_dir`: root for preprocessed training scenes (default from `configs/paths.yaml`)
+- `identity_alignment_enabled`: enable automatic person-id alignment to preprocessing order
+- `identity_alignment_min_confidence`: minimum confidence for automatic mapping
+- `identity_alignment_max_frames`: max number of frames used for matching
+- `identity_alignment_frame_stride`: frame subsampling stride for matching
+- `identity_alignment_only`: run alignment diagnostics only (no canonical GT write)
 - `ensure_raw_data_script`: helper invoked by `run.py`
 - `hf_repo_id`: default `ludekcizinsky/hi4d`
 - `seq_name_prefix`: default `hi4d_`
@@ -147,6 +186,9 @@ Canonical output for scene `hi4d_pair16_jump`:
 ├── all_cameras/<cam_id>/*.npz
 ├── smpl/*.npz
 ├── smplx/*.npz
+├── misc/person_id_map.json      # preproc↔gt identity mapping + confidence
+├── misc/identity_alignment_debug.json
+├── misc/identity_alignment_debug/   # best/worst mask examples per matched pair
 ├── misc/preprocess_info.txt      # run status + timing + frame count (+ traceback on failure)
 ├── meta.npz                      # optional
 └── frame_map.json

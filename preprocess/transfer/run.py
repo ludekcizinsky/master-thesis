@@ -61,6 +61,7 @@ class Args:
     use_large_upload: bool = True
     num_upload_workers: int | None = None
     hf_progress_bars: bool = False
+    exclude_misc: bool = True
     schedule: bool = False
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
 
@@ -193,6 +194,7 @@ def _print_plan(
     if args.use_large_upload:
         table.add_row("Upload Workers", str(_resolve_num_upload_workers(args.num_upload_workers)))
     table.add_row("HF Progress Bars", str(args.hf_progress_bars))
+    table.add_row("Exclude misc/", str(args.exclude_misc))
     if scene_stats is not None:
         table.add_row("Total Files", str(total_files))
         table.add_row("Total Size", _format_size(total_bytes))
@@ -287,6 +289,10 @@ def _submit_array(
         script_args.append("--hf-progress-bars")
     else:
         script_args.append("--no-hf-progress-bars")
+    if args.exclude_misc:
+        script_args.append("--exclude-misc")
+    else:
+        script_args.append("--no-exclude-misc")
     if args.dry_run:
         script_args.append("--dry-run")
 
@@ -338,6 +344,9 @@ def _upload_scene(
         raise FileNotFoundError(f"Scene directory not found: {scene_dir}")
     if args.dry_run:
         return
+    ignore_patterns: list[str] | None = None
+    if args.exclude_misc:
+        ignore_patterns = [f"{scene_name}/misc/**", f"{scene_name}/misc/*"]
     if args.use_large_upload:
         api.upload_large_folder(
             folder_path=str(local_root),
@@ -345,10 +354,15 @@ def _upload_scene(
             repo_type=args.repo_type,
             revision=args.branch,
             allow_patterns=[f"{scene_name}/**", f"{scene_name}/*"],
+            ignore_patterns=ignore_patterns,
             num_workers=_resolve_num_upload_workers(args.num_upload_workers),
             print_report=False,
         )
     else:
+        folder_ignore_patterns: list[str] | None = None
+        if args.exclude_misc:
+            # Patterns for upload_folder are relative to folder_path (=scene_dir).
+            folder_ignore_patterns = ["misc/**", "misc/*"]
         api.upload_folder(
             folder_path=str(scene_dir),
             path_in_repo=scene_name,
@@ -356,6 +370,7 @@ def _upload_scene(
             repo_type=args.repo_type,
             revision=args.branch,
             commit_message=f"[{args.data_kind}] upload scene {scene_name}",
+            ignore_patterns=folder_ignore_patterns,
         )
 
 
@@ -372,6 +387,11 @@ def _sync_scene_prune_remote_extras(
         str(path.relative_to(scene_dir)).replace(os.sep, "/")
         for path in scene_dir.rglob("*")
         if path.is_file()
+        and not (
+            args.exclude_misc
+            and len(path.relative_to(scene_dir).parts) > 0
+            and path.relative_to(scene_dir).parts[0] == "misc"
+        )
     }
     remote_rel_files = {
         file_path[len(scene_name) + 1 :]
@@ -423,7 +443,12 @@ def _format_size(num_bytes: int) -> str:
     return f"{value:.2f} {units[idx]}"
 
 
-def _collect_scene_stats(local_root: Path, scene_names: list[str]) -> dict[str, tuple[int, int]]:
+def _collect_scene_stats(
+    local_root: Path,
+    scene_names: list[str],
+    *,
+    exclude_misc: bool,
+) -> dict[str, tuple[int, int]]:
     stats: dict[str, tuple[int, int]] = {}
     for scene_name in scene_names:
         scene_dir = local_root / scene_name
@@ -432,7 +457,11 @@ def _collect_scene_stats(local_root: Path, scene_names: list[str]) -> dict[str, 
         n_files = 0
         n_bytes = 0
         for path in scene_dir.rglob("*"):
-            if path.is_file():
+            rel = path.relative_to(scene_dir)
+            if (
+                path.is_file()
+                and not (exclude_misc and len(rel.parts) > 0 and rel.parts[0] == "misc")
+            ):
                 n_files += 1
                 n_bytes += path.stat().st_size
         stats[scene_name] = (n_files, n_bytes)
@@ -506,7 +535,11 @@ def main() -> None:
 
     scene_stats = None
     if args.action in {"upload", "sync"}:
-        scene_stats = _collect_scene_stats(local_root, selected_scene_names)
+        scene_stats = _collect_scene_stats(
+            local_root,
+            selected_scene_names,
+            exclude_misc=args.exclude_misc,
+        )
 
     _print_plan(
         console=console,

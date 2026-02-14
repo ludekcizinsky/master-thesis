@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -160,6 +162,13 @@ def _resolve_scene_index() -> Optional[int]:
 
 
 def _run_scene(cfg: Config, scene: Scene) -> None:
+    if cfg.preprocess_dir is None:
+        raise ValueError("preprocess_dir must be resolved before running scenes.")
+    scene_dir = cfg.preprocess_dir / scene.seq_name
+    started_at = time.perf_counter()
+    success = False
+    error_text: Optional[str] = None
+
     script_path = _resolve_repo_path(cfg.repo_dir, cfg.infer_scene_script)
     cmd = [
         "python",
@@ -175,7 +184,62 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
         "--ref-frame-idx",
         str(scene.ref_frame_idx),
     ]
-    subprocess.run(cmd, check=True, cwd=str(cfg.repo_dir))
+    try:
+        subprocess.run(cmd, check=True, cwd=str(cfg.repo_dir))
+        success = True
+    except Exception:
+        error_text = traceback.format_exc()
+        raise
+    finally:
+        elapsed = time.perf_counter() - started_at
+        total_frames = _infer_total_frames(scene_dir, scene.cam_id)
+        _write_preprocess_info(
+            scene=scene,
+            scene_dir=scene_dir,
+            success=success,
+            elapsed_seconds=elapsed,
+            total_frames=total_frames,
+            error_text=error_text,
+        )
+
+
+def _infer_total_frames(scene_dir: Path, cam_id: int) -> int:
+    images_dir = scene_dir / "images" / str(cam_id)
+    if images_dir.exists():
+        return len([p for p in images_dir.iterdir() if p.is_file()])
+    return 0
+
+
+def _write_preprocess_info(
+    *,
+    scene: Scene,
+    scene_dir: Path,
+    success: bool,
+    elapsed_seconds: float,
+    total_frames: int,
+    error_text: Optional[str],
+) -> None:
+    misc_dir = scene_dir / "misc"
+    misc_dir.mkdir(parents=True, exist_ok=True)
+    info_path = misc_dir / "preprocess_info.txt"
+
+    lines: List[str] = []
+    lines.append(f"scene_name: {scene.seq_name}")
+    lines.append(f"video_path: {scene.video_path}")
+    lines.append(f"output_scene_dir: {scene_dir}")
+    lines.append(f"reference_camera_id: {scene.cam_id}")
+    lines.append(f"ref_frame_idx: {scene.ref_frame_idx}")
+    lines.append(f"status: {'success' if success else 'failed'}")
+    lines.append(f"elapsed_seconds: {elapsed_seconds:.3f}")
+    lines.append(f"total_frames: {total_frames}")
+    if error_text is not None:
+        lines.append("")
+        lines.append("error:")
+        lines.append(error_text.rstrip())
+    lines.append("")
+
+    with info_path.open("w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
 
 
 def _filter_scenes(cfg: Config, scenes: Sequence[Scene]) -> List[Scene]:
