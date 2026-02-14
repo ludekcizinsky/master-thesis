@@ -1,3 +1,45 @@
+## Study Versions
+
+This memo is the single source of truth for study designs and iteration history.
+Each version below should document:
+1. objective,
+2. data split (train/test scenes),
+3. key decisions,
+4. expected outputs.
+
+## V0 Plan (Ultra-Fast Sanity Check)
+
+Hypothesis:
+> with a tiny in-domain train subset, we can validate the full DiFix tuning pipeline end-to-end and get first directional signal quickly
+
+### Objective
+Run the fastest possible training/eval loop to validate:
+1. data generation pipeline,
+2. DiFix tuning integration,
+3. downstream NVS evaluation wiring.
+
+### Train Split (V0)
+Use only 2 scenes (non-eval pairs):
+1. `hi4d_pair00_dance`
+2. `hi4d_pair01_talk`
+
+### Test Split (V0)
+Keep fixed evaluation scenes:
+1. `hi4d_pair15_fight`
+2. `hi4d_pair16_jump`
+3. `hi4d_pair17_dance`
+4. `hi4d_pair19_piggyback`
+
+### Why this split
+1. no leakage with eval scenes,
+2. minimal time to first result,
+3. includes two different motion profiles (`dance` vs `talk`).
+
+### Expected Output
+1. successful generation of DiFix training samples (`image`, `target_image`, `ref_image`),
+2. successful DiFix fine-tuning run,
+3. NVS metrics on the fixed eval scenes for baseline comparison.
+
 ## V1 Plan (First End-to-End Version)
 
 Hypothesis:
@@ -33,6 +75,11 @@ JSON entry format:
 Use a strict split to avoid leakage:
 1. Train split: HI4D train subset scenes.
 2. Test split: HI4D test subset scenes (no scene overlap with train).
+3. Current evaluation scenes:
+   - `hi4d_pair15_fight`
+   - `hi4d_pair16_jump`
+   - `hi4d_pair17_dance`
+   - `hi4d_pair19_piggyback`
 
 ### 5. Filtering Rules (V1)
 Keep only samples where:

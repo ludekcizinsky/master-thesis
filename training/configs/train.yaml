@@ -1,147 +1,159 @@
-# ----------------------------
-# Experiment Identity
-# ----------------------------
-scene_name: ???
-exp_name: ???
-output_dir: ${oc.env:THESIS_RESULTS_ROOT_DIR,/scratch/izar/cizinsky/thesis/results}/${scene_name}
+# -----------------------------------------------------------------------------
+# Run Mode
+# -----------------------------------------------------------------------------
+# - train: existing pose/3DGS training + evaluation pipeline
+# - difix_data_generation_generate: per-scene shard generation
+# - difix_data_generation_aggregate: reduce all scene shards into final manifests/data.json/stats
+run_mode: train
 
-# ----------------------------
-# Scene / Data Roots
-# ----------------------------
-scene_registry_dir: /home/cizinsky/master-thesis/preprocess/scenes
-canonical_gt_scene_root_dir: ${oc.env:THESIS_CANONICAL_GT_ROOT_DIR,/scratch/izar/cizinsky/thesis/gt_scene_data}
-preprocessing_dir: ${oc.env:THESIS_PREPROCESSING_ROOT_DIR,/scratch/izar/cizinsky/thesis/preprocessing}/${scene_name}
-trn_scene_dir: ${preprocessing_dir}
-test_scene_dir: ${canonical_gt_scene_root_dir}/${scene_name}
+# -----------------------------------------------------------------------------
+# Shared (used by all modes)
+# -----------------------------------------------------------------------------
+shared:
+  scene_name: ???
+  exp_name: ???
+  output_dir: ${oc.env:THESIS_RESULTS_ROOT_DIR,/scratch/izar/cizinsky/thesis/results}/${shared.scene_name}
 
-# ----------------------------
-# Optimization Core
-# ----------------------------
-epochs: 30
-batch_size: 5
-lr: 5e-5 # v975 baseline combo
-weight_decay: 5e-4
-grad_clip: 0.1
-sample_every: 5
-train_params:
-  - offset_xyz
-  - rotation
-  - scaling
-  - opacity
-  - shs
+  scene_registry_dir: /home/cizinsky/master-thesis/preprocess/scenes
+  canonical_gt_scene_root_dir: ${oc.env:THESIS_CANONICAL_GT_ROOT_DIR,/scratch/izar/cizinsky/thesis/gt_scene_data}
+  preprocessing_dir: ${oc.env:THESIS_PREPROCESSING_ROOT_DIR,/scratch/izar/cizinsky/thesis/preprocessing}/${shared.scene_name}
+  trn_scene_dir: ${shared.preprocessing_dir}
+  test_scene_dir: ${shared.canonical_gt_scene_root_dir}/${shared.scene_name}
 
-# ----------------------------
-# Supervision / Data Options
-# ----------------------------
-use_depth: true
-use_estimated_masks: true
-mask_estimator_kind: "rgb_render_based" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
-use_bbox_crop: true
-bbox_pad: 50
-apply_mask_to_render_for_nvs: false
-use_random_init: false
+  torch_home: /scratch/izar/cizinsky/.cache
+  hf_home: /scratch/izar/cizinsky/.cache
 
-# ----------------------------
-# Alternating Optimization
-# Used only when enable_alternate_opt=true
-# ----------------------------
-enable_alternate_opt: false
-alternate_optimization:
-  confidence_threshold: 0.75 # IoU threshold for reliable frames
-  confidence_update_every: 5 # epochs between reliability recomputation
-  conf_tr_aggregation: null # null=static threshold, "median"=dynamic threshold
+  wandb:
+    enable: true
+    project: "hybrid-lhm"
+    entity: "ludekcizinsky"
+    tags:
+      - using_v2_bas_difix
+      - eval
+  wandb_local_root_dir: ${oc.env:THESIS_WANDB_ROOT_DIR,/scratch/izar/cizinsky/thesis/misc}
 
-# ----------------------------
-# Pose Tuning (SMPL-X)
-# ----------------------------
-pose_tuning:
-  enable: true
-  params: ["root_pose", "body_pose", "trans", "betas"]
-  lr: 2e-4
-  reg_w: 1e-4
-  start_epoch: 0
-  end_epoch: 14
+# -----------------------------------------------------------------------------
+# Train-Specific
+# -----------------------------------------------------------------------------
+train:
+  optimization:
+    epochs: 30
+    batch_size: 5
+    lr: 5e-5
+    weight_decay: 5e-4
+    grad_clip: 0.1
+    sample_every: 5
+    train_params:
+      - offset_xyz
+      - rotation
+      - scaling
+      - opacity
+      - shs
 
-# ----------------------------
-# 3DGS Tuning Schedule
-# ----------------------------
-gs_tuning:
-  start_epoch: 15
-  end_epoch: 30
+  supervision:
+    use_depth: true
+    use_estimated_masks: true
+    mask_estimator_kind: "rgb_render_based" # "rgb_render_based", "smplx_mesh_based", "rgb_smplx_band", "src_reprojection"
+    use_bbox_crop: true
+    bbox_pad: 50
+    apply_mask_to_render_for_nvs: false
+    use_random_init: false
 
-# ----------------------------
-# Losses / Regularization
-# ----------------------------
-loss_weights:
-  rgb: 20.0
-  sil: 2.0
-  ssim: 0.8 # v975 baseline combo
-  depth: 0.5
-  depth_order: 0.0
-  interpenetration: 0.0
+  alternate_optimization:
+    enable: false
+    confidence_threshold: 0.75
+    confidence_update_every: 5
+    conf_tr_aggregation: null
 
-interpenetration_margin: 0.01 # meters
-interpenetration_max_points: 2000
+  pose_tuning:
+    enable: true
+    params: ["root_pose", "body_pose", "trans", "betas"]
+    lr: 2e-4
+    reg_w: 1e-4
+    start_epoch: 0
+    end_epoch: 14
 
-regularization:
-  asap_w: 200.0
-  acap_w: 200.0
-  acap_margin: 0.03 # meters (3 cm), v975 baseline combo
+  gs_tuning:
+    start_epoch: 15
+    end_epoch: 30
 
-# ----------------------------
-# Novel View Generation
-# ----------------------------
-nv_gen_epoch: 15 # trigger NV generation at start of epoch 16 (0-based indexing)
-trn_nv_gen:
-  num_cameras: 7
-  start_camera_id: 100
-  runtime_camera:
-    strategy: static_orbit
-    body_radius_m: 1.3
-    up: [0.0, 1.0, 0.0]
+  losses:
+    loss_weights:
+      rgb: 20.0
+      sil: 2.0
+      ssim: 0.8
+      depth: 0.5
+      depth_order: 0.0
+      interpenetration: 0.0
+    interpenetration_margin: 0.01
+    interpenetration_max_points: 2000
+    regularization:
+      asap_w: 200.0
+      acap_w: 200.0
+      acap_margin: 0.03
 
-# ----------------------------
-# Difix
-# ----------------------------
-difix:
-  eval_enable: false
-  trn_enable: true
-  is_prev_cam_always_source: false
-  model_id: "nvidia/difix_ref"
-  prompt: "remove degradation"
-  negative_prompt: null
-  num_inference_steps: 1
-  timesteps: [199]
-  guidance_scale: 0.0
-  overwrite_existing: false
-  resolution_multiple: 8
+  nv_generation:
+    nv_gen_epoch: 15
+    trn_nv_gen:
+      num_cameras: 7
+      start_camera_id: 100
+      runtime_camera:
+        strategy: static_orbit
+        body_radius_m: 1.3
+        up: [0.0, 1.0, 0.0]
 
-# ----------------------------
-# Evaluation
-# ----------------------------
-eval_pretrain: true
-eval_every_epoch: 15
-pose_eval:
-  world_alignment_method: pelvis_trajectory # options: pelvis_trajectory, camera
-  eval_smpl: false
-nvs_eval:
-  target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
-  downscale_factor: 2
+  difix:
+    eval_enable: false
+    trn_enable: true
+    is_prev_cam_always_source: false
+    model_id: "nvidia/difix_ref"
+    prompt: "remove degradation"
+    negative_prompt: null
+    num_inference_steps: 1
+    timesteps: [199]
+    guidance_scale: 0.0
+    overwrite_existing: false
+    resolution_multiple: 8
 
-# ----------------------------
-# Logging / Runtime
-# ----------------------------
-wandb:
-  enable: true
-  project: "hybrid-lhm"
-  entity: "ludekcizinsky"
-  tags:
-    - using_v2_bas_difix
-    - eval
-wandb_local_root_dir: ${oc.env:THESIS_WANDB_ROOT_DIR,/scratch/izar/cizinsky/thesis/misc}
+  evaluation:
+    eval_pretrain: true
+    eval_every_epoch: 15
+    pose_eval:
+      world_alignment_method: pelvis_trajectory # options: pelvis_trajectory, camera
+      eval_smpl: false
+    nvs_eval:
+      target_camera_ids: [4, 16, 28, 40, 52, 64, 76, 88]
+      downscale_factor: 2
 
-torch_home: /scratch/izar/cizinsky/.cache
-hf_home: /scratch/izar/cizinsky/.cache
+# -----------------------------------------------------------------------------
+# Difix Data Generation (side pipeline config; wiring to trainer comes next)
+# -----------------------------------------------------------------------------
+difix_data_generation:
+  output_root_dir: ${oc.env:THESIS_DIFIX_DATA_ROOT_DIR,/scratch/izar/cizinsky/thesis/difix_tuning_data}
+  output_exp_dir: ${difix_data_generation.output_root_dir}/${shared.exp_name}
+  dataset_json_name: data.json
+  frame_stride: 1
+  max_samples_per_camera: 0 # 0 means all
+  target_cameras:
+    mode: all_except_source # all_except_source | explicit
+    explicit_ids: []
+  filtering:
+    require_all_files: true
+    apply_skip_frames: true
+    min_mask_coverage: 0.0
+  split_builder:
+    mode: group_holdout
+    strict_unknown_dataset: true
+    datasets:
+      hi4d:
+        group_by: pair_id
+        test_group_ids: [pair15, pair16, pair17, pair19]
+  export:
+    prompt: "remove degradation"
+    image_ext: ".png"
+    target_image_ext: ".jpg"
+    ref_image_ext: ".jpg"
+    save_stats: true
 
 hydra:
   run:

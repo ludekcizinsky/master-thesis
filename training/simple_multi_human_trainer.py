@@ -2,6 +2,8 @@ import os
 import sys
 import subprocess
 import json
+import csv
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 from collections import deque
@@ -13,7 +15,7 @@ import numpy as np
 import wandb
 import trimesh
 from tqdm import tqdm
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -409,8 +411,25 @@ class MultiHumanTrainer:
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.cfg = cfg
-        self.enable_alternate_opt = bool(cfg.enable_alternate_opt)
-        alternate_opt_cfg = cfg.alternate_optimization
+        self.run_mode = str(cfg.run_mode).strip().lower()
+        self.is_train_mode = self.run_mode == "train"
+        self.is_difix_generate_mode = self.run_mode in {
+            "difix_data_generation",
+            "difix_data_generation_generate",
+        }
+        self.is_difix_aggregate_mode = self.run_mode == "difix_data_generation_aggregate"
+        if not (
+            self.is_train_mode
+            or self.is_difix_generate_mode
+            or self.is_difix_aggregate_mode
+        ):
+            raise ValueError(
+                f"Unsupported run_mode='{cfg.run_mode}'. "
+                "Supported values: 'train', 'difix_data_generation_generate', "
+                "'difix_data_generation_aggregate'."
+            )
+        self.enable_alternate_opt = bool(cfg.train.alternate_optimization.enable)
+        alternate_opt_cfg = cfg.train.alternate_optimization
         self.confidence_threshold = float(alternate_opt_cfg.confidence_threshold)
         self.confidence_update_every = int(alternate_opt_cfg.confidence_update_every)
         self.conf_tr_aggregation = alternate_opt_cfg.conf_tr_aggregation
@@ -420,35 +439,69 @@ class MultiHumanTrainer:
         self.frame_quality_reliable_ratio: Optional[float] = None
         self.num_persons: Optional[int] = None
         self.tuner_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.preprocess_dir = Path(cfg.preprocessing_dir)
+        self.preprocess_dir: Optional[Path] = None
         self.scene_registry_dir = self._resolve_scene_registry_dir()
-        self.source_camera_id = self._resolve_source_camera_id_from_scene_metadata()
-        self.trn_scene_dir = self._resolve_trn_scene_dir()
-        self.test_scene_dir = self._resolve_test_scene_dir()
-        self.output_dir = Path(cfg.output_dir) / f"{self.cfg.exp_name}"
-        self.training_artifacts_dir = self.output_dir / "training_artifacts"
-        self.evaluation_dir = self.output_dir / "evaluation"
-        self.input_data_dir = self.output_dir / "input_data"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.training_artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.evaluation_dir.mkdir(parents=True, exist_ok=True)
-        self.input_data_dir.mkdir(parents=True, exist_ok=True)
-        self.trn_data_dir = self.input_data_dir / "train"
-        self.trn_data_dir.mkdir(parents=True, exist_ok=True)
-        self.test_data_dir = self.input_data_dir / "test"
-        self.test_data_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_path = self.output_dir / "manifest.json"
-        self.train_params = tuple(cfg.train_params)
-        self.sample_every = cfg.sample_every
+        self.source_camera_id: Optional[int] = None
+        self.trn_scene_dir: Optional[Path] = None
+        self.test_scene_dir: Optional[Path] = None
+        if self.is_train_mode or self.is_difix_generate_mode:
+            self.preprocess_dir = Path(cfg.shared.preprocessing_dir)
+            self.source_camera_id = self._resolve_source_camera_id_from_scene_metadata()
+            self.trn_scene_dir = self._resolve_trn_scene_dir()
+            self.test_scene_dir = self._resolve_test_scene_dir()
+        if self.is_train_mode:
+            self.output_dir = Path(cfg.shared.output_dir) / f"{self.cfg.shared.exp_name}"
+            self.training_artifacts_dir = self.output_dir / "training_artifacts"
+            self.evaluation_dir = self.output_dir / "evaluation"
+            self.input_data_dir = self.output_dir / "input_data"
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.training_artifacts_dir.mkdir(parents=True, exist_ok=True)
+            self.evaluation_dir.mkdir(parents=True, exist_ok=True)
+            self.input_data_dir.mkdir(parents=True, exist_ok=True)
+            self.trn_data_dir = self.input_data_dir / "train"
+            self.trn_data_dir.mkdir(parents=True, exist_ok=True)
+            self.test_data_dir = self.input_data_dir / "test"
+            self.test_data_dir.mkdir(parents=True, exist_ok=True)
+            self.manifest_path = self.output_dir / "manifest.json"
+        elif self.is_difix_generate_mode:
+            self.output_dir = Path(cfg.difix_data_generation.output_exp_dir)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.training_artifacts_dir = self.output_dir / "training_artifacts"
+            self.evaluation_dir = self.output_dir / "evaluation"
+            self.input_data_dir = None
+            self.trn_data_dir = self.trn_scene_dir
+            self.test_data_dir = self.test_scene_dir
+            self.manifest_path = None
+        else:
+            self.output_dir = Path(cfg.difix_data_generation.output_exp_dir)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.training_artifacts_dir = self.output_dir / "training_artifacts"
+            self.evaluation_dir = self.output_dir / "evaluation"
+            self.input_data_dir = None
+            self.trn_data_dir = None
+            self.test_data_dir = None
+            self.manifest_path = None
+        self.train_params = tuple(cfg.train.optimization.train_params)
+        self.sample_every = cfg.train.optimization.sample_every
+        if self.is_difix_aggregate_mode:
+            self.renderer = None
+            self.wandb_run = None
+            self.nv_generation_initialized = False
+            self.nv_gen_done = False
+            self.virtual_camera_planner = None
+            return
         self.renderer : GS3DRenderer = build_renderer().to(self.tuner_device)
         self.wandb_run = None
-        self._write_output_manifest(eval_epochs=[])
+        if self.is_train_mode:
+            self._write_output_manifest(eval_epochs=[])
 
         # Configure default local W&B paths before wandb.init().
-        self._set_default_wandb_local_dirs()
+        if self.is_train_mode:
+            self._set_default_wandb_local_dirs()
 
         # Initialize wandb 
-        self._init_wandb()
+        if self.is_train_mode:
+            self._init_wandb()
 
         # Prepare datasets for training and testing
         self._init_train_dataset()
@@ -456,7 +509,16 @@ class MultiHumanTrainer:
 
         # Preare trainable parameters
         # - (optional) pose tuning
-        self._init_pose_tuning()
+        if self.is_train_mode:
+            self._init_pose_tuning()
+        else:
+            self.pose_tuning_enabled = False
+            self.pose_deltas = None
+            self.pose_frame_index = {}
+            self.pose_param_keys = []
+            self.beta_param_keys = []
+            self.pose_params = []
+            self.beta_params = []
         self.pose_tuning_active = False
         self.gs_tuning_active = False
         # - 3dgs
@@ -470,10 +532,10 @@ class MultiHumanTrainer:
 
     def _manifest_tasks(self) -> List[str]:
         tasks: List[str] = []
-        if len(self.cfg.nvs_eval.target_camera_ids) > 0:
+        if len(self.cfg.train.evaluation.nvs_eval.target_camera_ids) > 0:
             tasks.append("nvs")
         tasks.append("pose_smplx")
-        if bool(self.cfg.pose_eval.eval_smpl):
+        if bool(self.cfg.train.evaluation.pose_eval.eval_smpl):
             tasks.append("pose_smpl")
         return tasks
 
@@ -493,13 +555,13 @@ class MultiHumanTrainer:
         )
         manifest = {
             "output_layout_version": "v1",
-            "exp_name": str(self.cfg.exp_name),
-            "scene_name": str(self.cfg.scene_name),
+            "exp_name": str(self.cfg.shared.exp_name),
+            "scene_name": str(self.cfg.shared.scene_name),
             "tasks": self._manifest_tasks(),
             "eval_epochs": merged_epochs,
             "source_camera_id": int(self.source_camera_id),
-            "nvs_cameras": [int(cam_id) for cam_id in self.cfg.nvs_eval.target_camera_ids],
-            "pose_eval_world_alignment_method": str(self.cfg.pose_eval.world_alignment_method),
+            "nvs_cameras": [int(cam_id) for cam_id in self.cfg.train.evaluation.nvs_eval.target_camera_ids],
+            "pose_eval_world_alignment_method": str(self.cfg.train.evaluation.pose_eval.world_alignment_method),
         }
         with open(self.manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
@@ -527,10 +589,10 @@ class MultiHumanTrainer:
         return task_dirs
 
     def _resolve_trn_scene_dir(self) -> Path:
-        return Path(self.cfg.trn_scene_dir)
+        return Path(self.cfg.shared.trn_scene_dir)
 
     def _resolve_test_scene_dir(self) -> Path:
-        test_scene_dir = self.cfg.test_scene_dir
+        test_scene_dir = self.cfg.shared.test_scene_dir
         if test_scene_dir is None or str(test_scene_dir).strip() == "":
             raise ValueError(
                 "Missing required config 'test_scene_dir'. "
@@ -539,7 +601,7 @@ class MultiHumanTrainer:
         return Path(test_scene_dir)
 
     def _resolve_scene_registry_dir(self) -> Path:
-        cfg_dir = self.cfg.scene_registry_dir
+        cfg_dir = self.cfg.shared.scene_registry_dir
         if cfg_dir is None or str(cfg_dir).strip() == "":
             raise ValueError(
                 "Missing required config 'scene_registry_dir'. "
@@ -548,7 +610,7 @@ class MultiHumanTrainer:
         return Path(cfg_dir)
 
     def _resolve_source_camera_id_from_scene_metadata(self) -> int:
-        scene_name = str(self.cfg.scene_name)
+        scene_name = str(self.cfg.shared.scene_name)
         scene_json_path = self.scene_registry_dir / f"{scene_name}.json"
         if not scene_json_path.exists():
             raise FileNotFoundError(
@@ -568,6 +630,96 @@ class MultiHumanTrainer:
             f"(scene: {scene_json_path})"
         )
         return source_cam_id
+
+    def _resolve_difix_target_camera_ids(self) -> List[int]:
+        camera_cfg = self.cfg.difix_data_generation.target_cameras
+        mode = str(camera_cfg.mode).strip().lower()
+        if mode == "explicit":
+            ids = [int(cam_id) for cam_id in camera_cfg.explicit_ids]
+            if len(ids) == 0:
+                raise ValueError(
+                    "difix_data_generation.target_cameras.mode=explicit requires "
+                    "non-empty explicit_ids."
+                )
+            target_ids = sorted(set(ids))
+        elif mode == "all_except_source":
+            all_cams_dir = root_dir_to_all_cameras_dir(self.test_scene_dir)
+            if not all_cams_dir.exists():
+                raise FileNotFoundError(
+                    f"Cannot resolve target cameras: missing all_cameras dir {all_cams_dir}"
+                )
+            all_ids: List[int] = []
+            for p in all_cams_dir.iterdir():
+                if p.is_dir() and p.name.isdigit():
+                    all_ids.append(int(p.name))
+            if len(all_ids) == 0:
+                raise RuntimeError(
+                    f"No camera directories found under {all_cams_dir}"
+                )
+            target_ids = sorted(
+                cam_id for cam_id in set(all_ids) if cam_id != self.source_camera_id
+            )
+        else:
+            raise ValueError(
+                f"Unsupported target camera mode '{camera_cfg.mode}'. "
+                "Supported: 'all_except_source', 'explicit'."
+            )
+
+        if len(target_ids) == 0:
+            raise RuntimeError(
+                "No target cameras resolved for difix data generation."
+            )
+        return target_ids
+
+    @staticmethod
+    def _infer_dataset_name(scene_name: str) -> str:
+        if "_" not in scene_name:
+            raise ValueError(
+                f"Scene name '{scene_name}' does not contain dataset prefix."
+            )
+        return scene_name.split("_", 1)[0]
+
+    def _resolve_group_id(self, dataset_name: str, scene_name: str) -> str:
+        split_cfg = self.cfg.difix_data_generation.split_builder
+        strict_unknown = bool(split_cfg.strict_unknown_dataset)
+        datasets_cfg = split_cfg.datasets
+        if dataset_name not in datasets_cfg:
+            if strict_unknown:
+                raise ValueError(
+                    f"No group-id rule configured for dataset '{dataset_name}'. "
+                    "Please define difix_data_generation.split_builder.datasets."
+                )
+            raise ValueError(
+                f"Unknown dataset '{dataset_name}' and strict_unknown_dataset=false is not supported."
+            )
+
+        dataset_cfg = datasets_cfg[dataset_name]
+        group_by = str(dataset_cfg.group_by).strip().lower()
+        if group_by == "pair_id":
+            m = re.match(r"^hi4d_(pair\d+)_", scene_name)
+            if m is None:
+                raise ValueError(
+                    f"Could not extract HI4D pair id from scene name '{scene_name}'."
+                )
+            return m.group(1)
+        if group_by == "scene_name":
+            return scene_name
+
+        raise ValueError(
+            f"Unsupported group_by='{dataset_cfg.group_by}' for dataset '{dataset_name}'."
+        )
+
+    def _assign_split_from_group_id(self, dataset_name: str, group_id: str) -> str:
+        split_cfg = self.cfg.difix_data_generation.split_builder
+        dataset_cfg = split_cfg.datasets[dataset_name]
+        test_group_ids = {
+            str(group).strip() for group in dataset_cfg.test_group_ids
+        }
+        if len(test_group_ids) == 0:
+            raise ValueError(
+                f"No test_group_ids configured for dataset '{dataset_name}'."
+            )
+        return "test" if group_id in test_group_ids else "train"
 
     @staticmethod
     def _scene_has_depth(scene_dir: Path, cam_id: int) -> bool:
@@ -604,24 +756,25 @@ class MultiHumanTrainer:
 
         # Fetch training dataset from the specified directories 
         # to the training data dir if not already present
-        depth_scene_dir = (
-            self.trn_scene_dir
-            if self.cfg.use_depth and self._scene_has_depth(self.trn_scene_dir, src_cam_id)
-            else None
-        )
-        smpl_scene_dir = (
-            self.trn_scene_dir if self._scene_has_smpl(self.trn_scene_dir) else None
-        )
-        fetch_data_if_available(
-            self.trn_data_dir,
-            src_cam_id,
-            self.trn_scene_dir,
-            self.trn_scene_dir,
-            self.trn_scene_dir,
-            self.trn_scene_dir,
-            depth_scene_dir,
-            smpl_scene_dir,
-        )
+        if not self.is_difix_generate_mode:
+            depth_scene_dir = (
+                self.trn_scene_dir
+                if self.cfg.train.supervision.use_depth and self._scene_has_depth(self.trn_scene_dir, src_cam_id)
+                else None
+            )
+            smpl_scene_dir = (
+                self.trn_scene_dir if self._scene_has_smpl(self.trn_scene_dir) else None
+            )
+            fetch_data_if_available(
+                self.trn_data_dir,
+                src_cam_id,
+                self.trn_scene_dir,
+                self.trn_scene_dir,
+                self.trn_scene_dir,
+                self.trn_scene_dir,
+                depth_scene_dir,
+                smpl_scene_dir,
+            )
 
         # Load skip frames if needed
         skip_frames = load_skip_frames(self.trn_data_dir)
@@ -632,7 +785,7 @@ class MultiHumanTrainer:
         trn_ds = SceneDataset(
             self.trn_data_dir, 
             src_cam_id, 
-            use_depth=self.cfg.use_depth, 
+            use_depth=self.cfg.train.supervision.use_depth, 
             device=self.tuner_device, 
             sample_every=1,
             skip_frames=skip_frames,
@@ -649,8 +802,12 @@ class MultiHumanTrainer:
 
         # Parse settings
         src_cam_id: int = self.source_camera_id
-        tgt_cam_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
-        all_cam_ids = [src_cam_id] + tgt_cam_ids
+        if self.is_difix_generate_mode:
+            all_cam_ids = [src_cam_id] + self._resolve_difix_target_camera_ids()
+            all_cam_ids = sorted(set(all_cam_ids))
+        else:
+            tgt_cam_ids: List[int] = self.cfg.train.evaluation.nvs_eval.target_camera_ids
+            all_cam_ids = [src_cam_id] + tgt_cam_ids
         if not self.test_scene_dir.exists():
             raise FileNotFoundError(
                 f"Configured test scene directory does not exist: {self.test_scene_dir}"
@@ -661,12 +818,21 @@ class MultiHumanTrainer:
                 f"Configured test scene directory is missing source camera frames at: {src_frames_dir}"
             )
 
+        # For difix data generation we read GT directly from canonical scene dir.
+        if self.is_difix_generate_mode:
+            for cam_id in all_cam_ids:
+                cam_frames_dir = root_dir_to_image_dir(self.test_scene_dir, cam_id)
+                if not cam_frames_dir.exists():
+                    raise FileNotFoundError(
+                        f"Missing camera {cam_id} frames in test scene dir: {cam_frames_dir}"
+                    )
+            return
 
-        # Fetch testing dataset from the specified directories 
+        # Fetch testing dataset from the specified directories
         for cam_id in all_cam_ids:
             depth_scene_dir = (
                 self.test_scene_dir
-                if self.cfg.use_depth and self._scene_has_depth(self.test_scene_dir, cam_id)
+                if self.cfg.train.supervision.use_depth and self._scene_has_depth(self.test_scene_dir, cam_id)
                 else None
             )
             smpl_scene_dir = (
@@ -685,7 +851,7 @@ class MultiHumanTrainer:
 
     # ---------------- Pose tuning utilities ----------------
     def _init_pose_tuning(self) -> None:
-        pose_cfg = self.cfg.pose_tuning
+        pose_cfg = self.cfg.train.pose_tuning
         if not pose_cfg.enable:
             self.pose_tuning_enabled = False
             self.pose_deltas = None
@@ -764,7 +930,7 @@ class MultiHumanTrainer:
 
     def _pose_tuning_regularization(self) -> torch.Tensor:
         # If disabled, return zero
-        reg_w = self.cfg.pose_tuning.reg_w
+        reg_w = self.cfg.train.pose_tuning.reg_w
         if not self.pose_tuning_enabled or not self.pose_tuning_active or reg_w <= 0.0:
             return torch.zeros((), device=self.tuner_device)
 
@@ -782,13 +948,13 @@ class MultiHumanTrainer:
 
     def _update_optimization_schedule(self, epoch: int) -> None:
         # Pose schedule 
-        pose_start = int(self.cfg.pose_tuning.start_epoch)
-        pose_end = int(self.cfg.pose_tuning.end_epoch)
+        pose_start = int(self.cfg.train.pose_tuning.start_epoch)
+        pose_end = int(self.cfg.train.pose_tuning.end_epoch)
         pose_active = self.pose_tuning_enabled and self._epoch_in_range(epoch, pose_start, pose_end)
 
         # GS schedule 
-        gs_start = int(self.cfg.gs_tuning.start_epoch)
-        gs_end = int(self.cfg.gs_tuning.end_epoch)
+        gs_start = int(self.cfg.train.gs_tuning.start_epoch)
+        gs_end = int(self.cfg.train.gs_tuning.end_epoch)
         gs_active = self._epoch_in_range(epoch, gs_start, gs_end)
 
         # Toggle trainability
@@ -814,7 +980,7 @@ class MultiHumanTrainer:
     @torch.no_grad()
     def _save_pose_tuned_smplx_params(self, dataset: SceneDataset, out_dir: Path) -> None:
         loader = DataLoader(
-            dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1225,7 +1391,7 @@ class MultiHumanTrainer:
                 f"Mismatch between inferred num_persons ({self.num_persons}) and loaded GS models ({len(self.gs_model_list)})."
             )
 
-        if self.cfg.use_random_init:
+        if self.cfg.train.supervision.use_random_init:
             self._randomize_gs_attributes()
 
     def _randomize_gs_attributes(self) -> None:
@@ -1314,20 +1480,20 @@ class MultiHumanTrainer:
 
             # Positional anchoring (ACAP): hinge on offset magnitude beyond margin.
             offsets = gauss.offset_xyz
-            acap = torch.clamp(offsets.norm(dim=-1) - self.cfg.regularization['acap_margin'], min=0.0).mean()
+            acap = torch.clamp(offsets.norm(dim=-1) - self.cfg.train.losses.regularization['acap_margin'], min=0.0).mean()
             acap_terms.append(acap)
 
             # Compute the percentage of Gaussians that are outside the margin
             with torch.no_grad():
-                num_outside = (offsets.norm(dim=-1) > self.cfg.regularization['acap_margin']).sum().item()
+                num_outside = (offsets.norm(dim=-1) > self.cfg.train.losses.regularization['acap_margin']).sum().item()
                 total = offsets.shape[0]
                 percent_outside = (num_outside / total) * 100.0
                 to_log = {"debug/acap_percent_outside": percent_outside}
                 if self.wandb_run is not None:
                     wandb.log(to_log)
 
-        asap_loss = torch.stack(asap_terms).mean() * self.cfg.regularization["asap_w"]
-        acap_loss = torch.stack(acap_terms).mean() * self.cfg.regularization["acap_w"]
+        asap_loss = torch.stack(asap_terms).mean() * self.cfg.train.losses.regularization["asap_w"]
+        acap_loss = torch.stack(acap_terms).mean() * self.cfg.train.losses.regularization["acap_w"]
 
         return asap_loss, acap_loss
 
@@ -1347,8 +1513,8 @@ class MultiHumanTrainer:
         if len(posed_gs_list) < 2:
             return torch.zeros((), device=self.tuner_device)
 
-        margin = float(self.cfg.interpenetration_margin)
-        max_points = int(self.cfg.interpenetration_max_points)
+        margin = float(self.cfg.train.losses.interpenetration_margin)
+        max_points = int(self.cfg.train.losses.interpenetration_max_points)
 
         total = torch.zeros((), device=posed_gs_list[0].xyz.device)
         pair_count = 0
@@ -1749,13 +1915,13 @@ class MultiHumanTrainer:
 
     def _build_loader(self, dataset: SceneDataset) -> DataLoader:
         loader = DataLoader(
-            dataset, batch_size=self.cfg.batch_size, shuffle=True, num_workers=0, drop_last=False
+            dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=True, num_workers=0, drop_last=False
         )
         return loader
 
     # ---------------- Logging utilities ----------------
     def _set_default_wandb_local_dirs(self) -> None:
-        base_root = Path(self.cfg.wandb_local_root_dir)
+        base_root = Path(self.cfg.shared.wandb_local_root_dir)
         wandb_root = base_root / "wandb"
         env_to_path = {
             "WANDB_DIR": wandb_root / "runs",
@@ -1769,28 +1935,28 @@ class MultiHumanTrainer:
             Path(os.environ[env_key]).mkdir(parents=True, exist_ok=True)
 
     def _init_wandb(self):
-        if not self.cfg.wandb.enable or wandb is None:
+        if not self.cfg.shared.wandb.enable or wandb is None:
             return
         if self.wandb_run is None:
             self.wandb_run = wandb.init(
-                project=self.cfg.wandb.project,
-                entity=self.cfg.wandb.entity,
+                project=self.cfg.shared.wandb.project,
+                entity=self.cfg.shared.wandb.entity,
                 config={
-                    "epochs": self.cfg.epochs,
-                    "batch_size": self.cfg.batch_size,
-                    "lr": self.cfg.lr,
-                    "weight_decay": self.cfg.weight_decay,
-                    "grad_clip": self.cfg.grad_clip,
+                    "epochs": self.cfg.train.optimization.epochs,
+                    "batch_size": self.cfg.train.optimization.batch_size,
+                    "lr": self.cfg.train.optimization.lr,
+                    "weight_decay": self.cfg.train.optimization.weight_decay,
+                    "grad_clip": self.cfg.train.optimization.grad_clip,
                     "train_params": self.train_params,
-                    "exp_name": self.cfg.exp_name,
-                    "scene_name": self.cfg.scene_name,
+                    "exp_name": self.cfg.shared.exp_name,
+                    "scene_name": self.cfg.shared.scene_name,
                     "output_dir": str(self.output_dir),
-                    "loss_weights": self.cfg.loss_weights,
-                    "sample_every": self.cfg.sample_every,
+                    "loss_weights": self.cfg.train.losses.loss_weights,
+                    "sample_every": self.cfg.train.optimization.sample_every,
                     "slurm_name": self._resolve_slurm_name(),
                 },
-                name=self.cfg.exp_name,
-                tags=list(self.cfg.wandb.tags) if "tags" in self.cfg.wandb else None,
+                name=self.cfg.shared.exp_name,
+                tags=list(self.cfg.shared.wandb.tags) if "tags" in self.cfg.shared.wandb else None,
             )
 
     @staticmethod
@@ -1805,6 +1971,428 @@ class MultiHumanTrainer:
             return f"{job_name}.{job_id}_{array_task_id}"
         return f"{job_name}.{job_id}"
 
+    # ---------------- Difix data generation ----------------
+    def _difix_output_dirs(self) -> Dict[str, Path]:
+        root = Path(self.cfg.difix_data_generation.output_exp_dir)
+        dirs = {
+            "root": root,
+            "samples": root / "samples",
+            "scene_runs": root / "scene_runs",
+            "manifests": root / "manifests",
+            "difix": root / "difix",
+            "meta": root / "meta",
+        }
+        for path in dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+        return dirs
+
+    @staticmethod
+    def _difix_scene_run_dir(out_dirs: Dict[str, Path], scene_name: str) -> Path:
+        scene_dir = out_dirs["scene_runs"] / scene_name
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        return scene_dir
+
+    @staticmethod
+    def _read_jsonl_by_key(path: Path, key: str) -> Dict[str, Dict[str, Any]]:
+        if not path.exists():
+            return {}
+        rows: Dict[str, Dict[str, Any]] = {}
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                row_key = str(row[key])
+                rows[row_key] = row
+        return rows
+
+    @staticmethod
+    def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+        with open(path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def _write_difix_generation_config_snapshot(self, out_meta_dir: Path) -> None:
+        difix_cfg = OmegaConf.to_container(self.cfg.difix_data_generation, resolve=True)
+        if not isinstance(difix_cfg, dict):
+            raise RuntimeError("Failed to serialize difix_data_generation config.")
+        # keep config snapshot experiment-global; scene coverage lives in manifests/stats
+        difix_cfg.pop("output_exp_dir", None)
+        snapshot = {
+            "run_mode": self.run_mode,
+            "exp_name": str(self.cfg.shared.exp_name),
+            "output_exp_dir": str(self.output_dir),
+            "difix_data_generation": difix_cfg,
+        }
+        cfg_path = out_meta_dir / "generation_config.yaml"
+        with open(cfg_path, "w") as f:
+            f.write(OmegaConf.to_yaml(OmegaConf.create(snapshot)))
+
+    @staticmethod
+    def _read_dropped_rows_csv(path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        with open(path, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(
+                    {
+                        "sample_id": row.get("sample_id", ""),
+                        "scene_name": row.get("scene_name", ""),
+                        "target_cam_id": row.get("target_cam_id", ""),
+                        "target_fname": row.get("target_fname", ""),
+                        "reason": row.get("reason", ""),
+                    }
+                )
+        return rows
+
+    @staticmethod
+    def _write_dropped_rows_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            if path.exists():
+                path.unlink()
+            return
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["sample_id", "scene_name", "target_cam_id", "target_fname", "reason"],
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def _build_difix_data_json(
+        self,
+        out_root: Path,
+        split_train_rows: List[Dict[str, Any]],
+        split_test_rows: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Dict[str, str]]]:
+        prompt = str(self.cfg.difix_data_generation.export.prompt)
+        data = {"train": {}, "test": {}}
+        for split_name, rows in (("train", split_train_rows), ("test", split_test_rows)):
+            for row in rows:
+                sample_id = str(row["sample_id"])
+                data[split_name][sample_id] = {
+                    "image": str((out_root / row["image_path"]).resolve()),
+                    "target_image": str((out_root / row["target_image_path"]).resolve()),
+                    "ref_image": str((out_root / row["ref_image_path"]).resolve()),
+                    "prompt": prompt,
+                }
+        return data
+
+    def generate_difix_data(self) -> None:
+        out_dirs = self._difix_output_dirs()
+        out_root = out_dirs["root"]
+        out_samples = out_dirs["samples"]
+        out_meta = out_dirs["meta"]
+        self._write_difix_generation_config_snapshot(out_meta)
+
+        apply_skip_frames = bool(self.cfg.difix_data_generation.filtering.apply_skip_frames)
+        require_all_files = bool(self.cfg.difix_data_generation.filtering.require_all_files)
+        skip_frames = load_skip_frames(self.test_data_dir) if apply_skip_frames else []
+        min_mask_coverage = float(self.cfg.difix_data_generation.filtering.min_mask_coverage)
+        target_image_ext = str(self.cfg.difix_data_generation.export.target_image_ext).lstrip(".")
+        reference_image_ext = str(self.cfg.difix_data_generation.export.ref_image_ext).lstrip(".")
+        image_ext = str(self.cfg.difix_data_generation.export.image_ext).lstrip(".")
+        frame_stride = int(self.cfg.difix_data_generation.frame_stride)
+        max_samples_per_camera = int(self.cfg.difix_data_generation.max_samples_per_camera)
+
+        src_cam_id = self.source_camera_id
+        src_dataset = SceneDataset(
+            self.test_data_dir,
+            src_cam_id,
+            device=self.tuner_device,
+            sample_every=max(1, frame_stride),
+            skip_frames=skip_frames,
+        )
+        src_name_to_idx = {
+            Path(frame_path).stem: idx for idx, frame_path in enumerate(src_dataset.frame_paths)
+        }
+
+        scene_name = str(self.cfg.shared.scene_name)
+        dataset_name = self._infer_dataset_name(scene_name)
+        group_id = self._resolve_group_id(dataset_name, scene_name)
+        target_cam_ids = self._resolve_difix_target_camera_ids()
+        out_scene_run = self._difix_scene_run_dir(out_dirs, scene_name)
+
+        all_rows_new: Dict[str, Dict[str, Any]] = {}
+        dropped_rows: List[Dict[str, Any]] = []
+
+        n_saved = 0
+        n_dropped = 0
+        n_total = 0
+
+        for tgt_cam_id in target_cam_ids:
+            cam_saved = 0
+            tgt_dataset = SceneDataset(
+                self.test_data_dir,
+                tgt_cam_id,
+                device=self.tuner_device,
+                sample_every=max(1, frame_stride),
+                skip_frames=skip_frames,
+            )
+            tgt_loader = DataLoader(
+                tgt_dataset,
+                batch_size=self.cfg.train.optimization.batch_size,
+                shuffle=False,
+                num_workers=0,
+                drop_last=False,
+            )
+            for batch in tqdm(tgt_loader, desc=f"DiFix data generation cam {tgt_cam_id}", leave=False):
+                frame_names = batch["frame_name"]
+                bsize = int(batch["image"].shape[0])
+                batched_neutral_pose_transform = self.tranform_mat_neutral_pose.unsqueeze(0).repeat(
+                    bsize, 1, 1, 1, 1
+                )
+                batch["smplx_params"]["transform_mat_neutral_pose"] = batched_neutral_pose_transform
+
+                renders, _, _ = self.forward(batch, apply_tuned_smplx_delta=False)
+                target_images = batch["image"]
+                target_masks = batch["mask"]
+
+                for i in range(bsize):
+                    n_total += 1
+                    target_fname = str(frame_names[i])
+                    reference_fname = target_fname
+                    ref_idx = src_name_to_idx.get(reference_fname)
+                    sample_id = (
+                        f"{scene_name}__tcam{tgt_cam_id}__rcam{src_cam_id}"
+                        f"__tf{target_fname}__rf{reference_fname}"
+                    )
+                    if ref_idx is None:
+                        n_dropped += 1
+                        dropped_rows.append(
+                            {
+                                "sample_id": sample_id,
+                                "scene_name": scene_name,
+                                "target_cam_id": tgt_cam_id,
+                                "target_fname": target_fname,
+                                "reason": "missing_reference_frame",
+                            }
+                        )
+                        continue
+
+                    ref_sample = src_dataset[ref_idx]
+                    ref_image = ref_sample["image"]
+                    ref_mask = ref_sample["mask"]
+                    target_mask = target_masks[i]
+
+                    if min_mask_coverage > 0.0:
+                        target_cov = float(target_masks[i].mean().item())
+                        ref_cov = float(ref_mask.mean().item())
+                        if min(target_cov, ref_cov) < min_mask_coverage:
+                            n_dropped += 1
+                            dropped_rows.append(
+                                {
+                                    "sample_id": sample_id,
+                                    "scene_name": scene_name,
+                                    "target_cam_id": tgt_cam_id,
+                                    "target_fname": target_fname,
+                                    "reason": f"low_mask_coverage<{min_mask_coverage}",
+                                }
+                            )
+                            continue
+
+                    sample_dir = out_samples / sample_id
+                    sample_dir.mkdir(parents=True, exist_ok=True)
+                    image_rel = Path("samples") / sample_id / f"image.{image_ext}"
+                    target_rel = Path("samples") / sample_id / f"target_image.{target_image_ext}"
+                    ref_rel = Path("samples") / sample_id / f"ref_image.{reference_image_ext}"
+
+                    save_image(renders[i].permute(2, 0, 1), str(out_root / image_rel))
+                    target_masked = target_images[i] * target_mask.repeat(1, 1, 3)
+                    ref_masked = ref_image * ref_mask.repeat(1, 1, 3)
+                    save_image(target_masked.permute(2, 0, 1), str(out_root / target_rel))
+                    save_image(ref_masked.permute(2, 0, 1), str(out_root / ref_rel))
+
+                    if require_all_files:
+                        if not (
+                            (out_root / image_rel).exists()
+                            and (out_root / target_rel).exists()
+                            and (out_root / ref_rel).exists()
+                        ):
+                            n_dropped += 1
+                            dropped_rows.append(
+                                {
+                                    "sample_id": sample_id,
+                                    "scene_name": scene_name,
+                                    "target_cam_id": tgt_cam_id,
+                                    "target_fname": target_fname,
+                                    "reason": "missing_saved_files",
+                                }
+                            )
+                            continue
+
+                    split_name = self._assign_split_from_group_id(dataset_name, group_id)
+                    row = {
+                        "sample_id": sample_id,
+                        "dataset": dataset_name,
+                        "scene_name": scene_name,
+                        "group_id": group_id,
+                        "target_cam_id": int(tgt_cam_id),
+                        "reference_cam_id": int(src_cam_id),
+                        "target_fname": target_fname,
+                        "reference_fname": reference_fname,
+                        "split": split_name,
+                        "image_path": str(image_rel),
+                        "target_image_path": str(target_rel),
+                        "ref_image_path": str(ref_rel),
+                    }
+                    with open(sample_dir / "meta.json", "w") as f:
+                        json.dump(row, f, indent=2)
+                    all_rows_new[sample_id] = row
+                    n_saved += 1
+                    cam_saved += 1
+                    if max_samples_per_camera > 0 and cam_saved >= max_samples_per_camera:
+                        break
+                if max_samples_per_camera > 0 and cam_saved >= max_samples_per_camera:
+                    break
+
+        all_rows_sorted = [all_rows_new[k] for k in sorted(all_rows_new.keys())]
+        self._write_jsonl(out_scene_run / "all_samples.jsonl", all_rows_sorted)
+        self._write_dropped_rows_csv(out_scene_run / "dropped_samples.csv", dropped_rows)
+        with open(out_scene_run / "run_stats.json", "w") as f:
+            json.dump(
+                {
+                    "scene_name": scene_name,
+                    "dataset": dataset_name,
+                    "group_id": group_id,
+                    "target_cam_ids": target_cam_ids,
+                    "n_total_candidates": n_total,
+                    "n_saved": n_saved,
+                    "n_dropped": n_dropped,
+                },
+                f,
+                indent=2,
+            )
+        print(
+            "DiFix data generation completed. "
+            f"Saved={n_saved}, dropped={n_dropped}, scene_run={out_scene_run}"
+        )
+
+    def aggregate_difix_data(self) -> None:
+        out_dirs = self._difix_output_dirs()
+        out_root = out_dirs["root"]
+        out_scene_runs = out_dirs["scene_runs"]
+        out_manifests = out_dirs["manifests"]
+        out_difix = out_dirs["difix"]
+        out_meta = out_dirs["meta"]
+        self._write_difix_generation_config_snapshot(out_meta)
+
+        scene_run_dirs = sorted([p for p in out_scene_runs.iterdir() if p.is_dir()])
+        if len(scene_run_dirs) == 0:
+            raise RuntimeError(
+                f"No scene run shards found in {out_scene_runs}. "
+                "Run difix_data_generation_generate first."
+            )
+
+        merged_rows: Dict[str, Dict[str, Any]] = {}
+        for scene_run_dir in scene_run_dirs:
+            rows = self._read_jsonl_by_key(scene_run_dir / "all_samples.jsonl", key="sample_id")
+            for sample_id, row in rows.items():
+                if sample_id in merged_rows and merged_rows[sample_id] != row:
+                    raise RuntimeError(
+                        f"Conflicting rows found for sample_id='{sample_id}' "
+                        f"(scene shard: {scene_run_dir.name})."
+                    )
+                merged_rows[sample_id] = row
+
+        if len(merged_rows) == 0:
+            raise RuntimeError(
+                f"No samples found across scene run shards in {out_scene_runs}."
+            )
+
+        all_rows_sorted = [merged_rows[k] for k in sorted(merged_rows.keys())]
+        unknown_splits = sorted(
+            {str(row.get("split", "")) for row in all_rows_sorted if row.get("split") not in {"train", "test"}}
+        )
+        if unknown_splits:
+            raise RuntimeError(
+                f"Found unsupported split values in shard manifests: {unknown_splits}."
+            )
+
+        split_train_rows = [row for row in all_rows_sorted if row["split"] == "train"]
+        split_test_rows = [row for row in all_rows_sorted if row["split"] == "test"]
+
+        self._write_jsonl(out_manifests / "all_samples.jsonl", all_rows_sorted)
+        self._write_jsonl(out_manifests / "split_train.jsonl", split_train_rows)
+        self._write_jsonl(out_manifests / "split_test.jsonl", split_test_rows)
+        with open(out_manifests / "split_summary.json", "w") as f:
+            json.dump(
+                {
+                    "n_all": len(all_rows_sorted),
+                    "n_train": len(split_train_rows),
+                    "n_test": len(split_test_rows),
+                    "datasets": sorted({row["dataset"] for row in all_rows_sorted}),
+                    "group_ids": sorted({row["group_id"] for row in all_rows_sorted}),
+                    "scene_runs": [scene_dir.name for scene_dir in scene_run_dirs],
+                },
+                f,
+                indent=2,
+            )
+
+        data_json = self._build_difix_data_json(out_root, split_train_rows, split_test_rows)
+        with open(out_difix / str(self.cfg.difix_data_generation.dataset_json_name), "w") as f:
+            json.dump(data_json, f, indent=2)
+
+        merged_dropped_rows: Dict[str, Dict[str, Any]] = {}
+        for scene_run_dir in scene_run_dirs:
+            for row in self._read_dropped_rows_csv(scene_run_dir / "dropped_samples.csv"):
+                key = f"{row.get('sample_id','')}::{row.get('reason','')}"
+                merged_dropped_rows[key] = row
+        merged_dropped_rows_sorted = [merged_dropped_rows[k] for k in sorted(merged_dropped_rows.keys())]
+        self._write_dropped_rows_csv(out_meta / "dropped_samples.csv", merged_dropped_rows_sorted)
+
+        scene_counts: Dict[str, int] = {}
+        dataset_counts: Dict[str, int] = {}
+        group_counts: Dict[str, int] = {}
+        for row in all_rows_sorted:
+            sname = str(row["scene_name"])
+            dname = str(row["dataset"])
+            gid = str(row["group_id"])
+            scene_counts[sname] = scene_counts.get(sname, 0) + 1
+            dataset_counts[dname] = dataset_counts.get(dname, 0) + 1
+            group_counts[gid] = group_counts.get(gid, 0) + 1
+
+        stats_payload = {
+            "exp_name": str(self.cfg.shared.exp_name),
+            "output_exp_dir": str(out_root),
+            "n_scene_runs": len(scene_run_dirs),
+            "scene_runs": [scene_dir.name for scene_dir in scene_run_dirs],
+            "n_all_samples": len(all_rows_sorted),
+            "n_train_samples": len(split_train_rows),
+            "n_test_samples": len(split_test_rows),
+            "n_dropped_samples": len(merged_dropped_rows_sorted),
+            "scene_sample_counts": dict(sorted(scene_counts.items())),
+            "dataset_sample_counts": dict(sorted(dataset_counts.items())),
+            "group_sample_counts": dict(sorted(group_counts.items())),
+        }
+        with open(out_meta / "generation_stats.json", "w") as f:
+            json.dump(stats_payload, f, indent=2)
+
+        print(
+            "DiFix data aggregation completed. "
+            f"scene_runs={len(scene_run_dirs)}, total_samples={len(all_rows_sorted)}, output={out_root}"
+        )
+
+    def run(self) -> None:
+        if self.is_train_mode:
+            self.train_loop()
+            return
+        if self.is_difix_generate_mode:
+            self.generate_difix_data()
+            return
+        if self.is_difix_aggregate_mode:
+            self.aggregate_difix_data()
+            return
+        raise ValueError(
+            f"Unsupported run_mode='{self.run_mode}'. "
+            "Supported values: 'train', 'difix_data_generation_generate', "
+            "'difix_data_generation_aggregate'."
+        )
+
     # ---------------- Training loop ----------------
     def train_loop(self):
 
@@ -1817,33 +2405,33 @@ class MultiHumanTrainer:
         params = self._trainable_tensors()
         self.gs_train_params = params
         gs_optimizer = torch.optim.AdamW(
-            [{"params": params, "lr": self.cfg.lr}],
-            lr=self.cfg.lr,
-            weight_decay=self.cfg.weight_decay,
+            [{"params": params, "lr": self.cfg.train.optimization.lr}],
+            lr=self.cfg.train.optimization.lr,
+            weight_decay=self.cfg.train.optimization.weight_decay,
         )
         # - pose params setup
         if self.pose_tuning_enabled and self.pose_params:
-            pose_lr = float(self.cfg.pose_tuning.lr)
+            pose_lr = float(self.cfg.train.pose_tuning.lr)
             pose_optimizer = torch.optim.AdamW(
                 [{"params": self.pose_params, "lr": pose_lr}],
                 lr=pose_lr,
-                weight_decay=self.cfg.weight_decay,
+                weight_decay=self.cfg.train.optimization.weight_decay,
             )
         else:
             pose_optimizer = None
 
         if self.pose_tuning_enabled and self.beta_params:
-            beta_lr = float(self.cfg.pose_tuning.lr)
+            beta_lr = float(self.cfg.train.pose_tuning.lr)
             betas_optimizer = torch.optim.AdamW(
                 [{"params": self.beta_params, "lr": beta_lr}],
                 lr=beta_lr,
-                weight_decay=self.cfg.weight_decay,
+                weight_decay=self.cfg.train.optimization.weight_decay,
             )
         else:
             betas_optimizer = None
 
         # Training loop
-        for epoch in range(self.cfg.epochs):
+        for epoch in range(self.cfg.train.optimization.epochs):
 
             # Update optimization schedule for this epoch
             self._update_optimization_schedule(epoch)
@@ -1867,17 +2455,17 @@ class MultiHumanTrainer:
                 trn_iter = self._infinite_loader(trn_loader)
 
             # Pre-optimization evaluation (epoch 0).
-            if self.cfg.eval_pretrain and epoch == 0:
+            if self.cfg.train.evaluation.eval_pretrain and epoch == 0:
                 self.eval_loop(epoch)
 
             trn_ds_size = len(self.trn_dataset)
             total_ds_size = trn_ds_size 
-            n_batches_per_current_epoch = total_ds_size // self.cfg.batch_size
+            n_batches_per_current_epoch = total_ds_size // self.cfg.train.optimization.batch_size
             running_loss = 0.0
             processed_batches = 0
             pbar = tqdm(
                 total=n_batches_per_current_epoch,
-                desc=f"Epoch {epoch + 1}/{self.cfg.epochs}",
+                desc=f"Epoch {epoch + 1}/{self.cfg.train.optimization.epochs}",
                 leave=False,
             )
 
@@ -1980,7 +2568,7 @@ class MultiHumanTrainer:
                     gt_depth_masked = depths * masks
 
                 # Apply mask also to render if it novel view and this mechanism is enabled
-                if self.cfg.apply_mask_to_render_for_nvs:
+                if self.cfg.train.supervision.apply_mask_to_render_for_nvs:
                     # For src view, use all-ones mask to not affect the render
                     effective_masks = masks.clone().to(pred_rgb.dtype)
                     effective_masks[is_src_cam] = 1.0
@@ -1993,8 +2581,8 @@ class MultiHumanTrainer:
                         pred_depth = pred_depth * effective_masks
 
                 # BBOX crop around the union person mask
-                if self.cfg.use_bbox_crop:
-                    bboxes = get_masks_based_bbox(masks, pad=self.cfg.bbox_pad)
+                if self.cfg.train.supervision.use_bbox_crop:
+                    bboxes = get_masks_based_bbox(masks, pad=self.cfg.train.supervision.bbox_pad)
                     loss_pred_rgb = bbox_crop(bboxes, pred_rgb)
                     loss_pred_mask = bbox_crop(bboxes, pred_mask)
                     loss_gt_masked = bbox_crop(bboxes, gt_masked)
@@ -2013,7 +2601,7 @@ class MultiHumanTrainer:
 
                 # Compute loss
                 # - RGB
-                rgb_loss = self.cfg.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
+                rgb_loss = self.cfg.train.losses.loss_weights["rgb"] * F.mse_loss(loss_pred_rgb, loss_gt_masked)
 
                 # - Silhouette
                 #   only compute silhouette loss on the source camera.
@@ -2022,7 +2610,7 @@ class MultiHumanTrainer:
                 if is_src_cam.any():
                     loss_pred_mask_src = loss_pred_mask[is_src_cam]
                     loss_masks_src = loss_masks[is_src_cam]
-                    sil_loss = self.cfg.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
+                    sil_loss = self.cfg.train.losses.loss_weights["sil"] * F.mse_loss(loss_pred_mask_src, loss_masks_src)
                 else:
                     sil_loss = torch.zeros((), device=loss_pred_mask.device, dtype=loss_pred_mask.dtype)
 
@@ -2030,16 +2618,16 @@ class MultiHumanTrainer:
                 if depths is not None and is_src_cam.any():
                     loss_pred_depth_src = loss_pred_depth[is_src_cam]
                     loss_gt_depth_src = loss_gt_depth_masked[is_src_cam]
-                    depth_loss = self.cfg.loss_weights["depth"] * F.mse_loss(loss_pred_depth_src, loss_gt_depth_src)
+                    depth_loss = self.cfg.train.losses.loss_weights["depth"] * F.mse_loss(loss_pred_depth_src, loss_gt_depth_src)
                 else:
                     depth_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
 
                 # - SSIM
                 ssim_val = fused_ssim(_ensure_nchw(loss_pred_rgb), _ensure_nchw(loss_gt_masked), padding="valid")
-                ssim_loss = self.cfg.loss_weights["ssim"] * (1.0 - ssim_val)
+                ssim_loss = self.cfg.train.losses.loss_weights["ssim"] * (1.0 - ssim_val)
 
                 # - Interpenetration
-                inter_weight = float(self.cfg.loss_weights.get("interpenetration", 0.0))
+                inter_weight = float(self.cfg.train.losses.loss_weights.get("interpenetration", 0.0))
                 if self.enable_alternate_opt and not self.pose_tuning_active:
                     inter_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
                 elif inter_weight > 0.0 and len(self.gs_model_list) > 1:
@@ -2050,7 +2638,7 @@ class MultiHumanTrainer:
                     inter_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
 
                 # - Depth Order
-                depth_order_weight = float(self.cfg.loss_weights.get("depth_order", 0.0))
+                depth_order_weight = float(self.cfg.train.losses.loss_weights.get("depth_order", 0.0))
                 if self.enable_alternate_opt and not self.pose_tuning_active:
                     depth_order_loss = torch.zeros((), device=loss_pred_rgb.device, dtype=loss_pred_rgb.dtype)
                 elif depth_order_weight > 0.0 and is_src_cam.any():
@@ -2129,7 +2717,7 @@ class MultiHumanTrainer:
                 # And finally clip grads
                 if clip_params:
                     # Apply global grad clipping to selected params.
-                    torch.nn.utils.clip_grad_norm_(clip_params, self.cfg.grad_clip)
+                    torch.nn.utils.clip_grad_norm_(clip_params, self.cfg.train.optimization.grad_clip)
 
                 # Step optimizers for the active parameter groups.
                 if self.pose_tuning_active and pose_optimizer is not None:
@@ -2222,7 +2810,7 @@ class MultiHumanTrainer:
                 wandb.log(to_log)
 
             # - Run eval loop if neccesary
-            if self.cfg.eval_every_epoch > 0 and (epoch + 1) % self.cfg.eval_every_epoch == 0:
+            if self.cfg.train.evaluation.eval_every_epoch > 0 and (epoch + 1) % self.cfg.train.evaluation.eval_every_epoch == 0:
                 self.eval_loop(epoch + 1)
 
         # End of training    
@@ -2231,7 +2819,7 @@ class MultiHumanTrainer:
 
     # ---------------- Novel view generation -------------------
     def _maybe_augment_training_data(self, epoch: int) -> bool:
-        nv_gen_epoch = self.cfg.nv_gen_epoch
+        nv_gen_epoch = self.cfg.train.nv_generation.nv_gen_epoch
         if self.nv_gen_done or nv_gen_epoch < 0 or epoch != nv_gen_epoch:
             return False
 
@@ -2286,7 +2874,7 @@ class MultiHumanTrainer:
         trn_ds = SceneDataset(
             self.trn_data_dir, 
             src_cam_id, 
-            use_depth=self.cfg.use_depth, 
+            use_depth=self.cfg.train.supervision.use_depth, 
             device=self.tuner_device, 
             sample_every=self.sample_every,
             skip_frames=skip_frames,
@@ -2313,7 +2901,7 @@ class MultiHumanTrainer:
             scene_ds = SceneDataset(
                 self.trn_data_dir,
                 int(cam_id),
-                use_depth=self.cfg.use_depth,
+                use_depth=self.cfg.train.supervision.use_depth,
                 device=self.tuner_device,
                 sample_every=1,
             )
@@ -2327,8 +2915,8 @@ class MultiHumanTrainer:
         # Runtime virtual camera planning is initialized lazily right before NV generation.
         src_cam_id = self.source_camera_id
         self.left_cam_id, self.right_cam_id = src_cam_id, src_cam_id
-        num_virtual_cams = int(self.cfg.trn_nv_gen.num_cameras)
-        start_cam_id = int(self.cfg.trn_nv_gen.start_camera_id)
+        num_virtual_cams = int(self.cfg.train.nv_generation.trn_nv_gen.num_cameras)
+        start_cam_id = int(self.cfg.train.nv_generation.trn_nv_gen.start_camera_id)
         if num_virtual_cams < 0:
             raise ValueError(
                 f"trn_nv_gen.num_cameras must be >= 0, got {num_virtual_cams}"
@@ -2354,7 +2942,7 @@ class MultiHumanTrainer:
         print(f"    Left traversed cams: {self.from_src_left_traversed_cams}")
         print(f"    Right traversed cams: {self.from_src_right_traversed_cams}")
 
-        runtime_cfg = self.cfg.trn_nv_gen.runtime_camera
+        runtime_cfg = self.cfg.train.nv_generation.trn_nv_gen.runtime_camera
         runtime_camera_cfg = RuntimeCameraConfig(
             strategy=str(runtime_cfg.strategy),
             body_radius_m=float(runtime_cfg.body_radius_m),
@@ -2384,7 +2972,7 @@ class MultiHumanTrainer:
         """
 
         # Load dataset for the previous camera (will use only images + masks as reference for Difix)
-        is_prev_cam_always_source = self.cfg.difix.is_prev_cam_always_source
+        is_prev_cam_always_source = self.cfg.train.difix.is_prev_cam_always_source
         # - if previous cam is always source cam, use that
         if is_prev_cam_always_source:
             sample_every = self.sample_every
@@ -2428,7 +3016,7 @@ class MultiHumanTrainer:
         new_cam_sample_every = 1 # because curr trn frame paths are already subsampled
         new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
         new_cam_loader = DataLoader(
-            new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            new_cam_dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
         # Render in batches novel views from target camera
@@ -2454,7 +3042,7 @@ class MultiHumanTrainer:
                 ref_images.append(ref_frame.to(self.tuner_device))
             ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
             # -- Run difix refinement
-            refined_rgb = difix_refine(self.cfg.difix, pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
+            refined_rgb = difix_refine(self.cfg.train.difix, pred_rgb, ref_images, difix_pipe) # [B, H, W, 3]
             # -- Save refined frames
             for i in range(refined_rgb.shape[0]):
                 save_path = refined_frames_save_dir / f"{frame_names[i]}.jpg"
@@ -2499,7 +3087,7 @@ class MultiHumanTrainer:
         new_cam_sample_every = 1 # because the frames are already subsampled / filtered
         new_cam_dataset = SceneDataset(self.trn_data_dir, cam_id, device=self.tuner_device, sample_every=new_cam_sample_every)
         new_cam_loader = DataLoader(
-            new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            new_cam_dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
         # Prepare directory to save depth maps
@@ -2544,7 +3132,7 @@ class MultiHumanTrainer:
 
         # Load dataset for the cam ID to compute masks for
         new_cam_sample_every = 1 # because nv frames are already subsampled / filtered
-        mask_estimation_method = self.cfg.mask_estimator_kind
+        mask_estimation_method = self.cfg.train.supervision.mask_estimator_kind
         use_depth = mask_estimation_method == "src_reprojection"
         new_cam_dataset = SceneDataset(
             self.trn_data_dir,
@@ -2554,7 +3142,7 @@ class MultiHumanTrainer:
             sample_every=new_cam_sample_every,
         )
         new_cam_loader = DataLoader(
-            new_cam_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            new_cam_dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
 
         # If using source reprojection, load source masks + cameras
@@ -2591,7 +3179,7 @@ class MultiHumanTrainer:
                 batch["smplx_params"] = self._apply_pose_tuning(batch["smplx_params"], frame_names)
 
             # - Estimate binary masks
-            mask_estimation_method = self.cfg.mask_estimator_kind
+            mask_estimation_method = self.cfg.train.supervision.mask_estimator_kind
             if mask_estimation_method == "rgb_render_based":
                 eps = 10.0 / 255.0
                 binary_masks = (rgb_frames > eps).any(dim=-1, keepdim=True).float() # [B, H, W, 1]
@@ -2668,12 +3256,12 @@ class MultiHumanTrainer:
         # Generation pipeline
         # - New rgb frames
         # -- Initialize Difix pipeline
-        is_enabled = self.cfg.difix.trn_enable
+        is_enabled = self.cfg.train.difix.trn_enable
         if not is_enabled:
             difix_pipe = None
         else:
             difix_pipe = DifixPipeline.from_pretrained(
-                self.cfg.difix.model_id, 
+                self.cfg.train.difix.model_id, 
                 trust_remote_code=True, 
                 requires_safety_checker=False,
                 num_views=2,
@@ -2698,7 +3286,7 @@ class MultiHumanTrainer:
             self.prepare_nv_depth_maps(cam_id)
 
         # - New mask maps for the new cameras (if needed)
-        if self.cfg.use_estimated_masks:
+        if self.cfg.train.supervision.use_estimated_masks:
             for cam_id in new_cams:
                 self.prepare_nv_masks(cam_id)
         else:
@@ -2723,7 +3311,7 @@ class MultiHumanTrainer:
     def eval_loop_nvs(self, epoch):
 
         # Parse the evaluation setup
-        target_camera_ids: List[int] = self.cfg.nvs_eval.target_camera_ids
+        target_camera_ids: List[int] = self.cfg.train.evaluation.nvs_eval.target_camera_ids
         task_dirs = self._ensure_eval_task_dirs(epoch, "nvs")
 
         # Load skip frames
@@ -2735,7 +3323,7 @@ class MultiHumanTrainer:
                                        device=self.tuner_device, skip_frames=skip_frames)
 
         # Init Difix if enabled for the evaluation
-        if self.cfg.difix.eval_enable:
+        if self.cfg.train.difix.eval_enable:
             difix_pipe = DifixPipeline.from_pretrained(
                 "nvidia/difix",
                 trust_remote_code=True,
@@ -2755,7 +3343,7 @@ class MultiHumanTrainer:
             val_dataset = SceneDataset(self.test_data_dir, tgt_cam_id, 
                                        device=self.tuner_device, skip_frames=skip_frames)
             loader = DataLoader(
-                val_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+                val_dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
             )
 
             # Prepare paths where to save results
@@ -2802,7 +3390,7 @@ class MultiHumanTrainer:
                         ref_images.append(ref_frame.to(self.tuner_device))
                     ref_images = torch.stack(ref_images, dim=0)  # [B, H, W, 3]
                     # -- Run difix refinement
-                    refined_rgb = difix_refine(self.cfg.difix, renders, ref_images, difix_pipe, is_eval=True) # [B, H, W, 3]
+                    refined_rgb = difix_refine(self.cfg.train.difix, renders, ref_images, difix_pipe, is_eval=True) # [B, H, W, 3]
 
                     # - Debug: save side-by-side comparison of reference, rendered, refined
                     difix_debug_dir = cam_viz_dir / "difix_debug_comparisons"
@@ -2833,8 +3421,8 @@ class MultiHumanTrainer:
                     save_image(renders_white_bg[i].permute(2, 0, 1), str(save_path))
 
                 # Before evaluation, apply downsampling if needed
-                if self.cfg.nvs_eval.downscale_factor > 1:
-                    ds_factor = self.cfg.nvs_eval.downscale_factor
+                if self.cfg.train.evaluation.nvs_eval.downscale_factor > 1:
+                    ds_factor = self.cfg.train.evaluation.nvs_eval.downscale_factor
                     renders = F.interpolate(
                         renders.permute(0, 3, 1, 2),
                         size=(gt_h // ds_factor, gt_w // ds_factor),
@@ -2932,7 +3520,7 @@ class MultiHumanTrainer:
         df_avg_cam.to_csv(csv_path_avg_cam, index=False)
 
         # - log to wandb the per cam metrics
-        if self.cfg.wandb.enable:
+        if self.cfg.shared.wandb.enable:
             for _, row in df_avg_cam.iterrows():
                 to_log = {f"eval_nv/cam_{int(row['camera_id'])}/{metric_name}": row[metric_name] for metric_name in ["psnr", "ssim", "lpips"]}
                 to_log["epoch"] = epoch
@@ -2951,13 +3539,13 @@ class MultiHumanTrainer:
                 f.write(f"{k}: {v:.4f}\n")
 
         # - log the overall average metrics to wandb
-        if self.cfg.wandb.enable:
+        if self.cfg.shared.wandb.enable:
             to_log = {f"eval_nv/all_cam/{metric_name}": v for metric_name, v in overall_avg.items()}
             to_log["epoch"] = epoch
             wandb.log(to_log)
 
         # - log the source training view metrics to wandb
-        if self.cfg.wandb.enable:
+        if self.cfg.shared.wandb.enable:
             df_source = df[df["camera_id"] == self.source_camera_id]
             if not df_source.empty:
                 source_avg = {
@@ -3008,7 +3596,7 @@ class MultiHumanTrainer:
         pose_tuned_smpl_params_dir = task_dirs["inputs"] / "smpl"
 
         # Init datasets
-        batch_size = self.cfg.batch_size
+        batch_size = self.cfg.train.optimization.batch_size
         # - pose
         # --- GT
         gt_pose_dir = root_dir_to_smplx_dir(self.test_data_dir) if pose_type == "smplx" else root_dir_to_smpl_dir(self.test_data_dir)
@@ -3041,7 +3629,7 @@ class MultiHumanTrainer:
             pred_pose_eval_by_key, batch_size
         )
 
-        pose_align_method = str(self.cfg.pose_eval.world_alignment_method).lower()
+        pose_align_method = str(self.cfg.train.evaluation.pose_eval.world_alignment_method).lower()
         print(f"Pose world alignment method: {pose_align_method}")
         gt_to_pred_transform_by_frame = self._build_gt_to_pred_transforms_by_frame(
             pose_align_method=pose_align_method,
@@ -3283,7 +3871,7 @@ class MultiHumanTrainer:
                 f.write(f"{k}: {v:.4f}\n")
         
         # - log the overall average metrics to wandb
-        if self.cfg.wandb.enable:
+        if self.cfg.shared.wandb.enable:
             to_log = {
                 f"{pose_type}_eval_pose/rr_mpjpe_mm": overall_avg["rr_mpjpe_mm"],
                 f"{pose_type}_eval_pose/rr_mve_mm": overall_avg["rr_mve_mm"],
@@ -3328,7 +3916,7 @@ class MultiHumanTrainer:
         skip_frames = load_skip_frames(self.trn_data_dir)
         pred_dataset = SceneDataset(self.trn_data_dir, src_cam_id, device=self.tuner_device, skip_frames=skip_frames, use_depth=True)
         pred_loader = DataLoader(
-            pred_dataset, batch_size=self.cfg.batch_size, shuffle=False, num_workers=0, drop_last=False
+            pred_dataset, batch_size=self.cfg.train.optimization.batch_size, shuffle=False, num_workers=0, drop_last=False
         )
         save_dir_smplx: Path = task_dirs["inputs"] / "smplx"
         save_dir_smplx.mkdir(parents=True, exist_ok=True)
@@ -3443,7 +4031,7 @@ class MultiHumanTrainer:
         # - Novel view synthesis evaluation
         if self.test_scene_dir is None:
              print("No GT scene directory available. Skipping novel view synthesis evaluation.")
-        elif len(self.cfg.nvs_eval.target_camera_ids) == 0:
+        elif len(self.cfg.train.evaluation.nvs_eval.target_camera_ids) == 0:
              print("No target cameras specified for novel view synthesis evaluation. Skipping nvs evaluation.")
         else:
              self.eval_loop_nvs(epoch)
@@ -3458,7 +4046,7 @@ class MultiHumanTrainer:
             else:
                 self.eval_loop_pose_estimation(epoch, pose_type="smplx")
 
-            if bool(self.cfg.pose_eval.eval_smpl):
+            if bool(self.cfg.train.evaluation.pose_eval.eval_smpl):
                 if not root_dir_to_smpl_dir(self.test_data_dir).exists():
                     print("No test SMPL params found in test data directory. Skipping SMPL pose evaluation.")
                 else:
@@ -3471,10 +4059,10 @@ class MultiHumanTrainer:
 
 @hydra.main(config_path="configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig):
-    os.environ["TORCH_HOME"] = str(cfg.torch_home)
-    os.environ["HF_HOME"] = str(cfg.hf_home)
+    os.environ["TORCH_HOME"] = str(cfg.shared.torch_home)
+    os.environ["HF_HOME"] = str(cfg.shared.hf_home)
     tuner = MultiHumanTrainer(cfg)
-    tuner.train_loop()
+    tuner.run()
 
 
 if __name__ == "__main__":

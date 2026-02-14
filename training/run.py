@@ -181,8 +181,8 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
     cmd = [
         "python",
         str(script_path),
-        f"scene_name={scene.seq_name}",
-        f"exp_name={cfg.exp_name}",
+        f"shared.scene_name={scene.seq_name}",
+        f"shared.exp_name={cfg.exp_name}",
     ]
     cmd.extend(cfg.overrides)
     if cfg.dry_run:

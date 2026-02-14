@@ -52,7 +52,7 @@ Forward any Hydra overrides using `--overrides`:
 python training/run.py \
   --scene-name-includes hi4d_pair17_dance \
   --exp-name my_exp \
-  --overrides wandb.enable=false pose_eval.eval_smpl=false
+  --overrides shared.wandb.enable=false train.evaluation.pose_eval.eval_smpl=false
 ```
 
 ## Slurm submission
@@ -64,7 +64,7 @@ python training/run.py \
   --submit \
   --scene-name-includes hi4d_pair17_dance \
   --exp-name my_exp \
-  --overrides wandb.enable=false
+  --overrides shared.wandb.enable=false
 ```
 
 Submit all scenes as an array:
@@ -90,7 +90,7 @@ By default, submissions use `training/submit.slurm`.
 
 ## Important flags
 
-- `--exp-name`: experiment name passed as `exp_name=<value>`
+- `--exp-name`: experiment name passed as `shared.exp_name=<value>`
 - `--scene-name-includes`: substring match on `seq_name`
 - `--run-all`: run all matched scenes
 - `--submit`: submit through Slurm (array mode)
@@ -106,9 +106,9 @@ Novel-view training cameras are now configured by count, not by explicit id list
 
 In `training/configs/train.yaml`:
 
-- `trn_nv_gen.num_cameras`: number of virtual cameras to synthesize
-- `trn_nv_gen.start_camera_id`: first virtual camera id (generated ids are contiguous)
-- `trn_nv_gen.runtime_camera.*`: strategy parameters used to place those cameras
+- `train.nv_generation.trn_nv_gen.num_cameras`: number of virtual cameras to synthesize
+- `train.nv_generation.trn_nv_gen.start_camera_id`: first virtual camera id (generated ids are contiguous)
+- `train.nv_generation.trn_nv_gen.runtime_camera.*`: strategy parameters used to place those cameras
 
 Behavior in trainer:
 
@@ -122,5 +122,5 @@ Example override:
 python training/run.py \
   --scene-name-includes hi4d_pair17_dance \
   --exp-name my_exp \
-  --overrides trn_nv_gen.num_cameras=5 trn_nv_gen.start_camera_id=200
+  --overrides train.nv_generation.trn_nv_gen.num_cameras=5 train.nv_generation.trn_nv_gen.start_camera_id=200
 ```
