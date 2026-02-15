@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import traceback
+import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -719,22 +720,6 @@ def _copy_smpl_with_person_map(
 ) -> int:
     dst_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
-    person_keys = {
-        "betas",
-        "root_pose",
-        "global_orient",
-        "body_pose",
-        "trans",
-        "transl",
-        "jaw_pose",
-        "leye_pose",
-        "reye_pose",
-        "lhand_pose",
-        "rhand_pose",
-        "expr",
-        "expression",
-        "contact",
-    }
     person_index = None if preproc_to_gt is None else np.asarray(preproc_to_gt, dtype=np.int64)
     for old_id, new_id in frame_old_to_new.items():
         src = smpl_map.get(old_id)
@@ -746,11 +731,12 @@ def _copy_smpl_with_person_map(
                 value = data[key]
                 if (
                     person_index is not None
-                    and key in person_keys
                     and isinstance(value, np.ndarray)
                     and value.ndim >= 1
                     and value.shape[0] == person_index.shape[0]
                 ):
+                    # Reorder any per-person array (including verts/joints) to keep
+                    # canonical SMPL files internally identity-consistent.
                     payload[key] = value[person_index]
                 else:
                     payload[key] = value
@@ -758,6 +744,222 @@ def _copy_smpl_with_person_map(
         np.savez(dst, **payload)
         copied += 1
     return copied
+
+
+def _flatten_person_param(value: np.ndarray, key: str) -> np.ndarray:
+    arr = np.asarray(value)
+    if key == "body_pose":
+        # Compare on first 21 joints (63 dims), shared between SMPL and SMPL-X.
+        if arr.ndim == 2 and arr.shape[-1] == 3:
+            arr = arr[:21].reshape(-1)
+        elif arr.ndim == 1 and arr.size >= 63:
+            arr = arr[:63]
+        else:
+            arr = arr.reshape(-1)
+    else:
+        arr = arr.reshape(-1)
+    return arr.astype(np.float64, copy=False)
+
+
+def _person_param_distance(
+    smpl_data: Dict[str, np.ndarray],
+    smplx_data: Dict[str, np.ndarray],
+    smpl_pid: int,
+    smplx_pid: int,
+) -> float:
+    key_pairs = [
+        ("betas", "betas"),
+        ("global_orient", "root_pose"),
+        ("body_pose", "body_pose"),
+        ("transl", "trans"),
+    ]
+    distances: List[float] = []
+    for smpl_key, smplx_key in key_pairs:
+        if smpl_key not in smpl_data or smplx_key not in smplx_data:
+            continue
+        smpl_arr = smpl_data[smpl_key]
+        smplx_arr = smplx_data[smplx_key]
+        if (
+            not isinstance(smpl_arr, np.ndarray)
+            or not isinstance(smplx_arr, np.ndarray)
+            or smpl_arr.ndim < 1
+            or smplx_arr.ndim < 1
+            or smpl_arr.shape[0] <= smpl_pid
+            or smplx_arr.shape[0] <= smplx_pid
+        ):
+            continue
+        va = _flatten_person_param(smpl_arr[smpl_pid], smpl_key)
+        vb = _flatten_person_param(smplx_arr[smplx_pid], smplx_key)
+        m = min(va.size, vb.size)
+        if m == 0:
+            continue
+        diff = va[:m] - vb[:m]
+        # Normalize by dimensionality to keep terms comparable.
+        distances.append(float(np.linalg.norm(diff) / np.sqrt(float(m))))
+    if len(distances) == 0:
+        raise RuntimeError("No comparable SMPL/SMPL-X keys found for identity consistency check.")
+    return float(np.mean(distances))
+
+
+def _best_perm_from_cost(cost: np.ndarray) -> Tuple[Tuple[int, ...], float]:
+    n_rows, n_cols = cost.shape
+    if n_rows != n_cols:
+        raise RuntimeError(
+            f"SMPL/SMPL-X identity check requires equal person counts, got {n_rows} and {n_cols}."
+        )
+    best_perm: Optional[Tuple[int, ...]] = None
+    best_cost = float("inf")
+    for perm in itertools.permutations(range(n_cols)):
+        c = float(sum(cost[row_idx, col_idx] for row_idx, col_idx in enumerate(perm)))
+        if c < best_cost:
+            best_cost = c
+            best_perm = perm
+    if best_perm is None:
+        raise RuntimeError("Failed to solve SMPL/SMPL-X identity assignment.")
+    return best_perm, best_cost
+
+
+def _compute_smpl_to_smplx_identity_report(
+    smpl_dir: Path,
+    smplx_dir: Path,
+) -> Dict[str, Any]:
+    smpl_map = _numeric_stem_to_file(smpl_dir, {".npz"})
+    smplx_map = _numeric_stem_to_file(smplx_dir, {".npz"})
+    common_ids = sorted(set(smpl_map.keys()) & set(smplx_map.keys()))
+    if len(common_ids) == 0:
+        raise RuntimeError(
+            f"No overlapping SMPL/SMPL-X frames for identity check in {smpl_dir} and {smplx_dir}."
+        )
+
+    frame_perms: List[Tuple[int, ...]] = []
+    frame_records: List[Dict[str, Any]] = []
+    aggregate_cost: Optional[np.ndarray] = None
+    n_persons: Optional[int] = None
+
+    for frame_id in common_ids:
+        with np.load(smpl_map[frame_id], allow_pickle=True) as smpl_npz:
+            with np.load(smplx_map[frame_id], allow_pickle=True) as smplx_npz:
+                smpl_data = {k: smpl_npz[k] for k in smpl_npz.files}
+                smplx_data = {k: smplx_npz[k] for k in smplx_npz.files}
+
+        if "betas" not in smpl_data or "betas" not in smplx_data:
+            raise RuntimeError(
+                f"Missing 'betas' in SMPL/SMPL-X frame {frame_id:06d} for identity check."
+            )
+        p_smpl = int(smpl_data["betas"].shape[0])
+        p_smplx = int(smplx_data["betas"].shape[0])
+        if p_smpl != p_smplx:
+            raise RuntimeError(
+                f"Person count mismatch in frame {frame_id:06d}: smpl={p_smpl}, smplx={p_smplx}."
+            )
+        if n_persons is None:
+            n_persons = p_smpl
+        elif n_persons != p_smpl:
+            raise RuntimeError(
+                f"Inconsistent person count across frames: expected {n_persons}, got {p_smpl} in frame {frame_id:06d}."
+            )
+
+        frame_cost = np.zeros((p_smpl, p_smplx), dtype=np.float64)
+        for i in range(p_smpl):
+            for j in range(p_smplx):
+                frame_cost[i, j] = _person_param_distance(smpl_data, smplx_data, i, j)
+        frame_perm, frame_cost_sum = _best_perm_from_cost(frame_cost)
+        frame_perms.append(frame_perm)
+        frame_records.append(
+            {
+                "frame_name": f"{frame_id:06d}",
+                "perm_smpl_to_smplx": list(frame_perm),
+                "perm_cost": frame_cost_sum,
+                "cost_matrix": frame_cost.tolist(),
+            }
+        )
+        if aggregate_cost is None:
+            aggregate_cost = frame_cost
+        else:
+            aggregate_cost += frame_cost
+
+    assert aggregate_cost is not None
+    aggregate_cost = aggregate_cost / float(len(common_ids))
+    aggregate_perm, aggregate_perm_cost = _best_perm_from_cost(aggregate_cost)
+
+    perm_counts: Dict[str, int] = {}
+    for perm in frame_perms:
+        key = ",".join(str(v) for v in perm)
+        perm_counts[key] = perm_counts.get(key, 0) + 1
+    dominant_key, dominant_count = max(perm_counts.items(), key=lambda kv: kv[1])
+    dominant_perm = tuple(int(v) for v in dominant_key.split(","))
+
+    identity_perm = tuple(range(int(n_persons or 0)))
+    return {
+        "n_frames": len(common_ids),
+        "n_persons": int(n_persons or 0),
+        "aggregate_cost_matrix": aggregate_cost.tolist(),
+        "aggregate_perm_smpl_to_smplx": list(aggregate_perm),
+        "aggregate_perm_cost": float(aggregate_perm_cost),
+        "dominant_perm_smpl_to_smplx": list(dominant_perm),
+        "dominant_perm_count": int(dominant_count),
+        "dominant_perm_ratio": float(dominant_count / len(frame_perms)),
+        "identity_perm_smpl_to_smplx": list(identity_perm),
+        "is_identity": bool(dominant_perm == identity_perm),
+        "frame_records": frame_records,
+    }
+
+
+def _reorder_smplx_files_to_match_smpl(
+    smplx_dir: Path,
+    smpl_to_smplx_perm: Sequence[int],
+) -> None:
+    perm = np.asarray(smpl_to_smplx_perm, dtype=np.int64)
+    smplx_map = _numeric_stem_to_file(smplx_dir, {".npz"})
+    for _, smplx_path in smplx_map.items():
+        with np.load(smplx_path, allow_pickle=True) as data:
+            payload: Dict[str, Any] = {}
+            for key in data.files:
+                value = data[key]
+                if (
+                    isinstance(value, np.ndarray)
+                    and value.ndim >= 1
+                    and value.shape[0] == perm.shape[0]
+                ):
+                    payload[key] = value[perm]
+                else:
+                    payload[key] = value
+        np.savez(smplx_path, **payload)
+
+
+def _ensure_smplx_identity_matches_smpl(dst_scene_dir: Path) -> None:
+    smpl_dir = dst_scene_dir / "smpl"
+    smplx_dir = dst_scene_dir / "smplx"
+    if not smpl_dir.exists() or not smplx_dir.exists():
+        raise RuntimeError(
+            f"Missing smpl/smplx dirs for identity consistency check in {dst_scene_dir}."
+        )
+
+    report_before = _compute_smpl_to_smplx_identity_report(smpl_dir, smplx_dir)
+    report: Dict[str, Any] = {
+        "before": report_before,
+        "auto_reordered_smplx": False,
+    }
+    if not report_before["is_identity"]:
+        perm = report_before["dominant_perm_smpl_to_smplx"]
+        _reorder_smplx_files_to_match_smpl(smplx_dir, perm)
+        report["auto_reordered_smplx"] = True
+        report["applied_perm_smpl_to_smplx"] = perm
+        report_after = _compute_smpl_to_smplx_identity_report(smpl_dir, smplx_dir)
+        report["after"] = report_after
+        if not report_after["is_identity"]:
+            raise RuntimeError(
+                "SMPL-X identity order still mismatched after auto-reorder. "
+                f"before_dominant={report_before['dominant_perm_smpl_to_smplx']}, "
+                f"after_dominant={report_after['dominant_perm_smpl_to_smplx']}."
+            )
+
+    misc_dir = dst_scene_dir / "misc"
+    misc_dir.mkdir(parents=True, exist_ok=True)
+    out_path = misc_dir / "smpl_to_smplx_identity_check.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
 
 
 def _copy_meta_with_person_map(
@@ -1189,6 +1391,7 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
                     debug_context=identity_debug_context,
                 )
         _maybe_generate_smplx_from_smpl(cfg, materialized_scene_dir)
+        _ensure_smplx_identity_matches_smpl(materialized_scene_dir)
         _maybe_update_scene_registry(cfg, scene, materialized_scene_dir)
         success = True
     except Exception:

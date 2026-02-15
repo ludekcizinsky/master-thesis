@@ -39,24 +39,24 @@ cd /home/cizinsky/master-thesis
   # train.nv_generation.nv_gen_epoch=5
 
 # DiFix data-generation smoke run (single scene generate + aggregate)
-# scene_name=hi4d_pair00_dance
-# exp_name=v0_difix_data_smoke
-# python training/simple_multi_human_trainer.py \
-  # run_mode=difix_data_generation_generate \
-  # shared.scene_name=$scene_name \
-  # shared.exp_name=$exp_name \
-  # difix_data_generation.frame_stride=10 \
-  # difix_data_generation.max_samples_per_camera=20 \
-  # difix_data_generation.target_cameras.mode=explicit \
-  # difix_data_generation.target_cameras.explicit_ids=[16,28] \
-  # difix_data_generation.filtering.min_mask_coverage=0.0
+scene_name=hi4d_pair00_dance
+exp_name=v0_difix_data_smoke
+python training/simple_multi_human_trainer.py \
+  run_mode=difix_data_generation_generate \
+  shared.scene_name=$scene_name \
+  shared.exp_name=$exp_name \
+  difix_data_generation.frame_stride=10 \
+  difix_data_generation.max_samples_per_camera=20 \
+  difix_data_generation.target_cameras.mode=explicit \
+  difix_data_generation.target_cameras.explicit_ids=[16,28] \
+  difix_data_generation.filtering.min_mask_coverage=0.0
 
-# python training/simple_multi_human_trainer.py \
-  # run_mode=difix_data_generation_aggregate \
-  # shared.scene_name=$scene_name \
-  # shared.exp_name=$exp_name
+python training/simple_multi_human_trainer.py \
+  run_mode=difix_data_generation_aggregate \
+  shared.scene_name=$scene_name \
+  shared.exp_name=$exp_name
 
-scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/hi4d_pair00_dance
-python preprocess/vis/check_scene_in_3d.py \
-  --scene-dir $scene_dir \
-  --frame-idx-range 0 50 \
+# scene_dir=/scratch/izar/cizinsky/thesis/preprocessing/$scene_name
+# python preprocess/vis/check_scene_in_3d.py \
+  # --scene-dir $scene_dir \
+  # --frame-idx-range 0 1 --vis-3dgs
