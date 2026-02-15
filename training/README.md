@@ -88,6 +88,34 @@ python training/run.py \
 
 By default, submissions use `training/submit.slurm`.
 
+## DiFix Data Generation (One Command)
+
+If you submit DiFix shard generation with:
+
+- `--submit`
+- `run_mode=difix_data_generation_generate` in `--overrides`
+
+then `training/run.py` will automatically submit a dependent aggregate job with
+Slurm dependency `afterok:<array_job_id>`.
+
+Example:
+
+```bash
+python training/run.py \
+  --submit \
+  --run-all \
+  --scenes-dir /scratch/izar/cizinsky/thesis/misc/scene_subsets/difix_train_v1 \
+  --exp-name v1_difix_data \
+  --slurm.array-parallelism 6 \
+  --overrides run_mode=difix_data_generation_generate shared.wandb.enable=false
+```
+
+You can control this behavior with:
+
+- `--auto-schedule-aggregate` / `--no-auto-schedule-aggregate`
+- `--aggregate-job-name`
+- `--aggregate-time`
+
 ## Important flags
 
 - `--exp-name`: experiment name passed as `shared.exp_name=<value>`
@@ -99,6 +127,9 @@ By default, submissions use `training/submit.slurm`.
 - `--slurm.job-name`: Slurm job name
 - `--slurm.slurm-script`: path to Slurm wrapper script
 - `--slurm.array-parallelism`: array concurrency limit
+- `--auto-schedule-aggregate`: auto-submit dependent DiFix aggregate job when submitting DiFix generate arrays
+- `--aggregate-job-name`: Slurm job name for aggregate stage
+- `--aggregate-time`: Slurm time limit for aggregate stage
 
 ## Novel-View Camera Config
 
