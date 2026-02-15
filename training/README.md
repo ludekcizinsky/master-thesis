@@ -131,6 +131,18 @@ You can control this behavior with:
 - `--aggregate-job-name`: Slurm job name for aggregate stage
 - `--aggregate-time`: Slurm time limit for aggregate stage
 
+## DiFix Fine-Tuning Scheduler
+
+DiFix fine-tuning orchestration now lives in:
+
+- `training/difix_tune/run.py`
+- `training/difix_tune/submit.slurm`
+- `training/difix_tune/README.md`
+
+Use this scheduler for single-node `accelerate` training runs on generated datasets under:
+
+- `${THESIS_DIFIX_DATA_ROOT_DIR}/<exp_name>/difix/data.json`
+
 ## Novel-View Camera Config
 
 Novel-view training cameras are now configured by count, not by explicit id list.

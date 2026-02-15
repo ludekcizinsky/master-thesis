@@ -74,10 +74,39 @@ Keep the fixed reserved evaluation scenes:
    - temporal neighbor reference (`t±k`),
    - mixed strategy (same-time + temporal offsets).
 
+### Tuning Enablement Notes (2026-02-15)
+
+The first successful DiFix tuning launch required a few stability fixes and runtime adjustments:
+
+1. Added a dedicated tuning scheduler entrypoint:
+   - `training/difix_tune/run.py`
+   - `training/difix_tune/submit.slurm`
+2. Enforced model-safe resize alignment in DiFix training code:
+   - target resize now snaps to multiples of 16 (prevents VAE skip-connection shape mismatch).
+3. Fixed dataset validation shuffle bug:
+   - `dataset_val.img_names` -> `dataset_val.img_ids`.
+4. Wired train/val dataset dimensions to the configured `--resolution`.
+5. Routed Hugging Face cache to scratch-backed paths to avoid home quota pressure during model downloads.
+6. Exposed `max_grad_norm` in the scheduler wrapper and passed it to `train_difix.py`.
+
+Observed runtime behavior during bring-up:
+
+1. `fp16` runs hit GradScaler failure (`Attempting to unscale FP16 gradients`) in current upstream training path.
+2. `mixed_precision=no` at higher resolution could hit OOM.
+3. A stable configuration was found with:
+   - `num_processes=2` (single node, 2 GPUs),
+   - `mixed_precision=no`,
+   - `resolution=320`,
+   - `max_grad_norm=0`.
+
+Current status:
+
+1. Tuning runs can be launched and kept running under the stable config above.
+2. This is sufficient for V0 to move forward and get first checkpoint outputs.
+3. Optimization for speed/quality (e.g., restoring mixed precision) is deferred to later ablation/engineering rounds.
+
 ### Interim TODOs (High-Level)
 
-- [ ] Finish V0 multi-scene DiFix data generation for the selected V0 split.
-- [ ] Confirm generated dataset integrity (split files, sample counts, and expected scene coverage).
 - [ ] Run first DiFix fine-tuning run on V0 data and save checkpoints under the experiment directory.
 - [ ] Connect tuned DiFix checkpoint to downstream 3DGS pipeline (explicit checkpoint path).
 - [ ] Run downstream evaluation on reserved scenes (`hi4d_pair15_fight`, `hi4d_pair16_jump`, `hi4d_pair17_dance`, `hi4d_pair19_piggyback`).
