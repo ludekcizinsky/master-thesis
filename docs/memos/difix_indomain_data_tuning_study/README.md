@@ -112,3 +112,15 @@ Current status:
 - [ ] Run downstream evaluation on reserved scenes (`hi4d_pair15_fight`, `hi4d_pair16_jump`, `hi4d_pair17_dance`, `hi4d_pair19_piggyback`).
 - [ ] Record baseline vs tuned deltas (PSNR, SSIM, LPIPS) as the first decision snapshot.
 - [ ] Decide the next ablation direction (more scenes, camera/frame sampling policy, reference-view strategy).
+
+### Post-V0 Limitations / Bottlenecks (To Revisit)
+
+1. `nvidia/difix_ref` as tuning start point is currently blocked.
+   - Current challenge: our DiFix tuning code initializes model components using the SD-Turbo-style component contract, while `nvidia/difix_ref` (Diffusers repo format) does not match the expected loader path in `train_difix.py`/`model.py`.
+   - Practical consequence: `--base-model-id nvidia/difix_ref` fails early during model initialization (missing component keys for current loader assumptions).
+   - Follow-up after V0: add a dedicated initialization path for `difix_ref` (warm-start path) and validate compatibility before launching long runs.
+
+2. Qualitative control is missing (currently mostly W&B quantitative curves).
+   - Current gap: we do not yet have a standard qualitative inspection loop aligned with tuning checkpoints.
+   - Follow-up after V0: design a Rerun blueprint first, then derive exactly which artifacts need to be exported per checkpoint (e.g., reference / rendered / refined triplets, scene/camera/frame metadata, and baseline-vs-tuned comparisons).
+   - Goal: make qualitative regression checks as systematic as metric tracking.

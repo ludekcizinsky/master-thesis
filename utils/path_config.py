@@ -10,6 +10,7 @@ import re
 class RuntimePaths:
     misc_root_dir: Path
     slurm_dir: Path
+    hf_cache_dir: Path
     wandb_root_dir: Path
     hydra_root_dir: Path
     results_root_dir: Path
@@ -33,6 +34,7 @@ def load_runtime_paths(config_path: str | Path | None = None) -> RuntimePaths:
     required = {
         "misc_root_dir",
         "slurm_dir",
+        "hf_cache_dir",
         "wandb_root_dir",
         "hydra_root_dir",
         "results_root_dir",
@@ -46,6 +48,7 @@ def load_runtime_paths(config_path: str | Path | None = None) -> RuntimePaths:
     return RuntimePaths(
         misc_root_dir=Path(str(resolved["misc_root_dir"])),
         slurm_dir=Path(str(resolved["slurm_dir"])),
+        hf_cache_dir=Path(str(resolved["hf_cache_dir"])),
         wandb_root_dir=Path(str(resolved["wandb_root_dir"])),
         hydra_root_dir=Path(str(resolved["hydra_root_dir"])),
         results_root_dir=Path(str(resolved["results_root_dir"])),
@@ -58,6 +61,7 @@ def ensure_runtime_dirs(paths: RuntimePaths) -> None:
     for path in (
         paths.misc_root_dir,
         paths.slurm_dir,
+        paths.hf_cache_dir,
         paths.wandb_root_dir,
         paths.hydra_root_dir,
         paths.results_root_dir,

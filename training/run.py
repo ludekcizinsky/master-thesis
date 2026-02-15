@@ -262,6 +262,7 @@ def _extract_submitted_job_id(stdout_text: str) -> Optional[str]:
 
 
 def _build_export_env(runtime_paths) -> str:
+    hf_cache_root = runtime_paths.hf_cache_dir
     return ",".join(
         [
             "ALL",
@@ -270,6 +271,11 @@ def _build_export_env(runtime_paths) -> str:
             f"THESIS_RESULTS_ROOT_DIR={runtime_paths.results_root_dir}",
             f"THESIS_PREPROCESSING_ROOT_DIR={runtime_paths.preprocessing_root_dir}",
             f"THESIS_CANONICAL_GT_ROOT_DIR={runtime_paths.canonical_gt_root_dir}",
+            f"THESIS_HF_CACHE_DIR={hf_cache_root}",
+            f"HF_HOME={hf_cache_root}",
+            f"HUGGINGFACE_HUB_CACHE={hf_cache_root / 'hub'}",
+            f"TRANSFORMERS_CACHE={hf_cache_root / 'transformers'}",
+            f"HF_DATASETS_CACHE={hf_cache_root / 'datasets'}",
         ]
     )
 
@@ -370,6 +376,12 @@ def _run_scene(cfg: Config, scene: Scene) -> None:
     env.setdefault("THESIS_RESULTS_ROOT_DIR", str(runtime_paths.results_root_dir))
     env.setdefault("THESIS_PREPROCESSING_ROOT_DIR", str(runtime_paths.preprocessing_root_dir))
     env.setdefault("THESIS_CANONICAL_GT_ROOT_DIR", str(runtime_paths.canonical_gt_root_dir))
+    hf_cache_root = runtime_paths.hf_cache_dir
+    env.setdefault("THESIS_HF_CACHE_DIR", str(hf_cache_root))
+    env.setdefault("HF_HOME", str(hf_cache_root))
+    env.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_cache_root / "hub"))
+    env.setdefault("TRANSFORMERS_CACHE", str(hf_cache_root / "transformers"))
+    env.setdefault("HF_DATASETS_CACHE", str(hf_cache_root / "datasets"))
     subprocess.run(cmd, check=True, cwd=str(cfg.repo_dir), env=env)
 
 

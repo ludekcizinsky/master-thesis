@@ -4,11 +4,12 @@ import os
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence
 
 import tyro
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +48,7 @@ class Config:
     data_root_dir: Path = field(default_factory=_default_difix_data_root_dir)
     dataset_path: Optional[Path] = None
     output_dir: Optional[Path] = None
+    resume: Optional[Path] = None
 
     # Accelerate launch config (single-node only)
     mixed_precision: str = "fp16"
@@ -57,6 +59,7 @@ class Config:
     # train_difix.py args
     max_train_steps: int = 10000
     resolution: int = 512
+    base_model_id: str = "stabilityai/sd-turbo"
     learning_rate: float = 2e-5
     train_batch_size: int = 1
     dataloader_num_workers: int = 8
@@ -80,6 +83,18 @@ class Config:
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
 
 
+_MANIFEST_REL_PATH = Path("meta/run_config.yaml")
+_CONFIG_SKIP_FIELDS = {"resume", "submit", "dry_run", "slurm"}
+_PATH_FIELDS = {
+    "repo_dir",
+    "paths_config",
+    "difix_train_script",
+    "data_root_dir",
+    "dataset_path",
+    "output_dir",
+}
+
+
 def _resolve_repo_path(repo_dir: Path, path: Path) -> Path:
     if path.is_absolute():
         return path
@@ -96,6 +111,108 @@ def _resolve_output_dir(cfg: Config) -> Path:
     if cfg.output_dir is not None:
         return _resolve_repo_path(cfg.repo_dir, cfg.output_dir)
     return cfg.data_root_dir / cfg.exp_name / "tuning_runs" / cfg.run_name
+
+
+def _to_plain(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _to_plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_plain(v) for v in value]
+    return value
+
+
+def _config_for_manifest(cfg: Config) -> dict:
+    raw = asdict(cfg)
+    for field_name in _CONFIG_SKIP_FIELDS:
+        raw.pop(field_name, None)
+    return _to_plain(raw)
+
+
+def _manifest_path_for_output_dir(output_dir: Path) -> Path:
+    return output_dir / _MANIFEST_REL_PATH
+
+
+def _resolve_resume_run_dir(resume_path: Path) -> Path:
+    if resume_path.is_file():
+        if resume_path.suffix != ".pkl":
+            raise ValueError(f"Unsupported --resume file path: {resume_path}")
+        if resume_path.parent.name == "checkpoints":
+            return resume_path.parent.parent
+        return resume_path.parent
+    if resume_path.is_dir():
+        if resume_path.name == "checkpoints":
+            return resume_path.parent
+        if (resume_path / "checkpoints").exists():
+            return resume_path
+        raise ValueError(
+            f"Unsupported --resume directory path: {resume_path}. "
+            "Pass either a checkpoints dir, run dir, or model_*.pkl file."
+        )
+    raise FileNotFoundError(f"--resume path not found: {resume_path}")
+
+
+def _load_manifest(manifest_path: Path) -> dict:
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Run config manifest not found: {manifest_path}. "
+            "This repo requires a saved run config for resume."
+        )
+    with manifest_path.open("r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f) or {}
+    if not isinstance(payload, dict) or "config" not in payload:
+        raise ValueError(f"Invalid run config manifest format: {manifest_path}")
+    return payload
+
+
+def _save_manifest(cfg: Config, dataset_path: Path, output_dir: Path) -> Path:
+    manifest_path = _manifest_path_for_output_dir(output_dir)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "config": _config_for_manifest(cfg),
+        "resolved": {
+            "dataset_path": str(dataset_path.resolve()),
+            "output_dir": str(output_dir.resolve()),
+        },
+    }
+    with manifest_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, sort_keys=False)
+    return manifest_path
+
+
+def _load_resume_locked_config(cfg: Config) -> Config:
+    if cfg.resume is None:
+        return cfg
+    resume_path = _resolve_repo_path(cfg.repo_dir, cfg.resume)
+    run_dir = _resolve_resume_run_dir(resume_path)
+    manifest_path = _manifest_path_for_output_dir(run_dir)
+    payload = _load_manifest(manifest_path)
+
+    saved_cfg = payload["config"]
+    if not isinstance(saved_cfg, dict):
+        raise ValueError(f"Invalid 'config' payload in {manifest_path}")
+
+    for key, value in saved_cfg.items():
+        if key in _CONFIG_SKIP_FIELDS:
+            continue
+        if not hasattr(cfg, key):
+            continue
+        if key in _PATH_FIELDS and value is not None:
+            setattr(cfg, key, Path(value))
+        else:
+            setattr(cfg, key, value)
+
+    resolved = payload.get("resolved", {})
+    dataset_path = resolved.get("dataset_path")
+    output_dir = resolved.get("output_dir")
+    if dataset_path:
+        cfg.dataset_path = Path(dataset_path)
+    if output_dir:
+        cfg.output_dir = Path(output_dir)
+
+    print(f"Loaded run config manifest for resume: {manifest_path}")
+    return cfg
 
 
 def _build_accelerate_cmd(cfg: Config, dataset_path: Path, output_dir: Path) -> List[str]:
@@ -136,6 +253,8 @@ def _build_accelerate_cmd(cfg: Config, dataset_path: Path, output_dir: Path) -> 
             str(cfg.max_train_steps),
             "--resolution",
             str(cfg.resolution),
+            "--base_model_id",
+            cfg.base_model_id,
             "--learning_rate",
             str(cfg.learning_rate),
             "--train_batch_size",
@@ -168,6 +287,9 @@ def _build_accelerate_cmd(cfg: Config, dataset_path: Path, output_dir: Path) -> 
             str(cfg.timestep),
         ]
     )
+    if cfg.resume is not None:
+        resume_path = _resolve_repo_path(cfg.repo_dir, cfg.resume)
+        cmd.extend(["--resume", str(resume_path)])
     if cfg.enable_xformers_memory_efficient_attention:
         cmd.append("--enable_xformers_memory_efficient_attention")
     cmd.extend(cfg.extra_train_args)
@@ -181,6 +303,9 @@ def _print_plan(cfg: Config, dataset_path: Path, output_dir: Path, launch_cmd: S
     print(f"  run_name: {cfg.run_name}")
     print(f"  dataset_path: {dataset_path}")
     print(f"  output_dir: {output_dir}")
+    print(f"  base_model_id: {cfg.base_model_id}")
+    if cfg.resume is not None:
+        print(f"  resume: {_resolve_repo_path(cfg.repo_dir, cfg.resume)}")
     print(f"  num_processes: {cfg.num_processes}")
     print(f"  mixed_precision: {cfg.mixed_precision}")
     if cfg.submit:
@@ -210,7 +335,7 @@ def _confirm_submit() -> bool:
 
 
 def _build_export_env(runtime_paths, cfg: Config) -> str:
-    hf_cache_root = runtime_paths.misc_root_dir / "hf_cache"
+    hf_cache_root = runtime_paths.hf_cache_dir
     return ",".join(
         [
             "ALL",
@@ -246,7 +371,7 @@ def _forwarded_args(argv: Sequence[str]) -> List[str]:
 def _run_local(cfg: Config, launch_cmd: Sequence[str]) -> None:
     runtime_paths = load_runtime_paths(_resolve_repo_path(cfg.repo_dir, cfg.paths_config))
     ensure_runtime_dirs(runtime_paths)
-    hf_cache_root = runtime_paths.misc_root_dir / "hf_cache"
+    hf_cache_root = runtime_paths.hf_cache_dir
     hf_hub_cache = hf_cache_root / "hub"
     hf_transformers_cache = hf_cache_root / "transformers"
     hf_datasets_cache = hf_cache_root / "datasets"
@@ -336,6 +461,7 @@ def _submit(cfg: Config) -> None:
 
 def main() -> None:
     cfg = tyro.cli(Config)
+    cfg = _load_resume_locked_config(cfg)
     dataset_path = _resolve_dataset_path(cfg)
     output_dir = _resolve_output_dir(cfg)
 
@@ -352,8 +478,10 @@ def main() -> None:
                 f"(got {cfg.num_processes} vs {cfg.slurm.gpus})."
             )
     output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = _save_manifest(cfg, dataset_path, output_dir)
     launch_cmd = _build_accelerate_cmd(cfg, dataset_path, output_dir)
     _print_plan(cfg, dataset_path, output_dir, launch_cmd)
+    print(f"  run_config_manifest: {manifest_path}")
 
     if cfg.submit:
         _submit(cfg)

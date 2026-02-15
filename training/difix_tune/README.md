@@ -83,6 +83,8 @@ python training/difix_tune/run.py \
 - `--run-name`: tuning run name under `tuning_runs/`
 - `--dataset-path`: optional explicit `data.json`
 - `--output-dir`: optional explicit output dir
+- `--base-model-id`: HF model id or local diffusers dir used as warm-start base (default `stabilityai/sd-turbo`)
+- `--resume`: optional local checkpoint file (`model_*.pkl`) or checkpoint dir to continue training state
 - `--submit`: submit via Slurm
 - `--dry-run`: print command(s) only
 - `--num-processes`: processes for `accelerate` (single-node)
@@ -110,3 +112,9 @@ By default, `run.py` launches `train_difix.py` with:
 - `--timestep 199`
 
 You can override these via CLI flags.
+
+## Warm-start vs resume
+
+1. Use `--base-model-id nvidia/difix_ref` to initialize from the published DiFix model on HF.
+2. Use `--resume <local_path>` to continue from a previously saved local training checkpoint.
+3. `--resume` restores optimizer + step state; `--base-model-id` sets the model initialization base.

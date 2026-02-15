@@ -21,7 +21,7 @@ shared:
   test_scene_dir: ${shared.canonical_gt_scene_root_dir}/${shared.scene_name}
 
   torch_home: /scratch/izar/cizinsky/.cache
-  hf_home: /scratch/izar/cizinsky/.cache
+  hf_home: ${oc.env:THESIS_HF_CACHE_DIR,/scratch/izar/cizinsky/.cache/hf/huggingface}
 
   wandb:
     enable: true

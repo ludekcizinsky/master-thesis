@@ -17,7 +17,8 @@ Main takeaways from reading PromptHMR paper:
 ## Fix render diffusion models
 
 ### 25 March / DiFix3D
-Main takeaways from Difix:
+
+Their data collection strategy:
 1. In general, to train DiFix you need pair of rendered and ground truth images. To render these views, you need to also have access to some training views. They say that a possible strategy for datasets such as as DL3DV with large enough camera motion (people go around the scene and take video) is to use the mono video as supervision as follows:
     1. Sample every nth frame and use it for training
     2. Use the remainder for novel view synthesis - render and use it as training pair for difix training
@@ -26,7 +27,15 @@ Main takeaways from Difix:
 4. Finally, for the multi cam capture, the data collection becomes trivial since they just use one of the cams as training and the remainder as novel views. 
 5. I believe that the model they released uses Dl3DV only, even if they also used the other dataset - internal self driving dataset, these are way different domains then what we are asking the model to do.
 
+
+they say tuning takes only a few hours on a single gpu, so the question is:
+- how many samples they used
+- what gpu type they used
+
+in general, we know that on 2x v100s, one step takes 1.83s
+
+
 ### 25 April / FlowR
 
 Main tetakeaways from FlowR:
-- Dataset of size 3.6M of render-gt pairs from 10.3k scenes, the majority of data comes from dl3dv and then scannet++
+- Dataset of size **3.6M** of render-gt pairs from **10.3k** scenes, the majority of data comes from dl3dv and then scannet++

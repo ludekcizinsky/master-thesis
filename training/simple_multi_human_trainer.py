@@ -4061,6 +4061,10 @@ class MultiHumanTrainer:
 def main(cfg: DictConfig):
     os.environ["TORCH_HOME"] = str(cfg.shared.torch_home)
     os.environ["HF_HOME"] = str(cfg.shared.hf_home)
+    hf_home = Path(str(cfg.shared.hf_home))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_home / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(hf_home / "transformers"))
+    os.environ.setdefault("HF_DATASETS_CACHE", str(hf_home / "datasets"))
     tuner = MultiHumanTrainer(cfg)
     tuner.run()
 
